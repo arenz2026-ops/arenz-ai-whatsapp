@@ -10,6 +10,7 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "")
 
 GRAPH_API_VERSION = "v26.0"
 
+user_sessions = {}
 
 @app.route("/", methods=["GET"])
 def home():
@@ -66,54 +67,131 @@ def data_deletion():
     </html>
     """, 200
 
-def generate_reply(text):
+def generate_reply(sender, text):
     text = text.lower().strip()
 
-    if any(word in text for word in ["hola", "buenos días", "buenas tardes", "buenas noches"]):
+    session = user_sessions.get(sender, {
+        "step": "start",
+        "intent": None,
+        "district": None,
+        "budget": None,
+        "bedrooms": None,
+    })
+
+    step = session["step"]
+
+    if step == "start":
+        if any(word in text for word in ["hola", "buenos días", "buenas tardes", "buenas noches"]):
+            session["step"] = "intent"
+            user_sessions[sender] = session
+
+            return (
+                "Hola 👋 Soy ARENZ AI, asistente inmobiliario de ARENZ.\n\n"
+                "¿Qué estás buscando?\n"
+                "1️⃣ Comprar un departamento\n"
+                "2️⃣ Alquilar un departamento\n"
+                "3️⃣ Vender una propiedad\n"
+                "4️⃣ Hablar con un asesor"
+            )
+
+        session["step"] = "intent"
+        user_sessions[sender] = session
+
         return (
-            "Hola 👋 Soy ARENZ AI, asistente inmobiliario de ARENZ.\n\n"
-            "Puedo ayudarte a encontrar una propiedad según lo que necesitas.\n\n"
-            "¿Qué estás buscando?\n"
-            "1️⃣ Comprar un departamento\n"
-            "2️⃣ Alquilar un departamento\n"
-            "3️⃣ Vender una propiedad\n"
-            "4️⃣ Hablar con un asesor"
+            "Hola 👋 Soy ARENZ AI.\n\n"
+            "Para ayudarte mejor, dime si deseas comprar, alquilar, vender "
+            "una propiedad o hablar con un asesor."
         )
 
-    if "compr" in text:
+    if step == "intent":
+        if "1" in text or "compr" in text:
+            session["intent"] = "compra"
+            session["step"] = "district"
+
+        elif "2" in text or "alquil" in text:
+            session["intent"] = "alquiler"
+            session["step"] = "district"
+
+        elif "3" in text or "vend" in text:
+            session["intent"] = "venta"
+            session["step"] = "district"
+
+        elif "4" in text or "asesor" in text or "humano" in text:
+            session["intent"] = "asesor"
+            session["step"] = "done"
+            user_sessions[sender] = session
+
+            return (
+                "Perfecto. Registraré tu solicitud para que un asesor de ARENZ "
+                "pueda continuar contigo."
+            )
+
+        else:
+            return (
+                "Por favor indícame una opción:\n"
+                "1️⃣ Comprar\n"
+                "2️⃣ Alquilar\n"
+                "3️⃣ Vender\n"
+                "4️⃣ Hablar con un asesor"
+            )
+
+        user_sessions[sender] = session
+
+        return "Perfecto. ¿En qué distrito o zona estás interesado?"
+
+    if step == "district":
+        session["district"] = text
+        session["step"] = "budget"
+        user_sessions[sender] = session
+
+        return "¿Cuál es tu presupuesto aproximado?"
+
+    if step == "budget":
+        session["budget"] = text
+        session["step"] = "bedrooms"
+        user_sessions[sender] = session
+
+        return "¿Cuántos dormitorios necesitas?"
+
+    if step == "bedrooms":
+        session["bedrooms"] = text
+        session["step"] = "summary"
+        user_sessions[sender] = session
+
         return (
-            "Perfecto 🏠. Te ayudaré a buscar una propiedad para compra.\n\n"
-            "¿En qué distrito o zona estás interesado?"
+            "Perfecto. Tengo estos datos:\n\n"
+            f"Operación: {session['intent']}\n"
+            f"Zona: {session['district']}\n"
+            f"Presupuesto: {session['budget']}\n"
+            f"Dormitorios: {session['bedrooms']}\n\n"
+            "¿La información es correcta? Responde Sí o No."
         )
 
-    if "alquil" in text:
-        return (
-            "Perfecto 🔑. Te ayudaré a buscar una propiedad en alquiler.\n\n"
-            "¿En qué distrito o zona deseas vivir?"
-        )
+    if step == "summary":
+        if "sí" in text or "si" == text:
+            session["step"] = "done"
+            user_sessions[sender] = session
 
-    if "vend" in text:
-        return (
-            "Claro. ARENZ también puede ayudarte a vender tu propiedad.\n\n"
-            "Indícame en qué distrito está ubicada y qué tipo de inmueble es."
-        )
+            return (
+                "Excelente ✅. Ya tengo tu requerimiento.\n\n"
+                "Un asesor de ARENZ podrá continuar contigo con opciones "
+                "acordes a tu búsqueda."
+            )
 
-    if any(word in text for word in ["asesor", "persona", "humano"]):
-        return (
-            "Con gusto. Registraré tu solicitud para que un asesor de ARENZ "
-            "pueda continuar contigo."
-        )
+        if "no" in text:
+            session["step"] = "intent"
+            user_sessions[sender] = session
 
-    if any(word in text for word in ["presupuesto", "precio", "cuesta", "costo"]):
-        return (
-            "Claro. Para recomendarte propiedades adecuadas, "
-            "indícame aproximadamente cuál es tu presupuesto."
-        )
+            return (
+                "De acuerdo. Empecemos nuevamente.\n\n"
+                "¿Deseas comprar, alquilar o vender una propiedad?"
+            )
+
+        return "Por favor responde Sí o No."
 
     return (
-        "Gracias por la información 😊.\n\n"
-        "Para ayudarte mejor, puedes indicarme si deseas comprar, alquilar "
-        "o vender una propiedad."
+        "Tu solicitud ya fue registrada. "
+        "Si deseas iniciar una nueva búsqueda, escribe NUEVA BÚSQUEDA."
     )
     
 @app.route("/webhook", methods=["GET"])
@@ -239,7 +317,7 @@ def receive_webhook():
 
         print(f"Mensaje recibido de {sender}: {text}")
 
-        reply = generate_reply(text)
+        reply = generate_reply(sender, text)
 
         send_whatsapp_message(sender, reply)
 
