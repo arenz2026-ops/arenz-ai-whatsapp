@@ -16,6 +16,57 @@ def home():
     return "ARENZ AI WhatsApp Webhook activo", 200
 
 
+@app.route("/privacy", methods=["GET"])
+def privacy():
+    return """
+    <html>
+    <head>
+        <title>Política de Privacidad - ARENZ</title>
+    </head>
+    <body>
+        <h1>Política de Privacidad de ARENZ</h1>
+
+        <p>ARENZ utiliza WhatsApp para atender consultas inmobiliarias,
+        brindar información sobre propiedades y gestionar solicitudes de clientes.</p>
+
+        <p>Los datos proporcionados por los usuarios, como nombre, número de teléfono
+        y contenido de sus mensajes, se utilizan únicamente para atender sus consultas
+        y mejorar la experiencia de atención.</p>
+
+        <p>ARENZ no vende ni comercializa la información personal de sus usuarios.</p>
+
+        <p>Los usuarios pueden solicitar la eliminación de sus datos personales
+        contactando directamente a ARENZ.</p>
+
+        <p>Última actualización: agosto de 2026.</p>
+    </body>
+    </html>
+    """, 200
+
+
+@app.route("/data-deletion", methods=["GET"])
+def data_deletion():
+    return """
+    <html>
+    <head>
+        <title>Eliminación de Datos - ARENZ</title>
+    </head>
+    <body>
+        <h1>Solicitud de eliminación de datos</h1>
+
+        <p>Si deseas solicitar la eliminación de tus datos personales asociados
+        a ARENZ, puedes comunicarte con nosotros indicando tu nombre y número
+        de teléfono utilizado en WhatsApp.</p>
+
+        <p>Una vez recibida la solicitud, ARENZ procederá a revisar y eliminar
+        los datos correspondientes cuando resulte aplicable.</p>
+
+        <p>Correo de contacto: arenz2026@gmail.com</p>
+    </body>
+    </html>
+    """, 200
+
+
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
     mode = request.args.get("hub.mode")
