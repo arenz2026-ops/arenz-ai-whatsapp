@@ -239,56 +239,6 @@ def send_whatsapp_message(to, message):
     print(response.text)
 
     return response
-
-def generate_reply(text):
-    text = text.lower().strip()
-
-    if any(word in text for word in ["hola", "buenos días", "buenas tardes", "buenas noches"]):
-        return (
-            "Hola 👋 Soy ARENZ AI, asistente inmobiliario de ARENZ.\n\n"
-            "Puedo ayudarte a encontrar una propiedad según lo que necesitas.\n\n"
-            "¿Qué estás buscando?\n"
-            "1️⃣ Comprar un departamento\n"
-            "2️⃣ Alquilar un departamento\n"
-            "3️⃣ Vender una propiedad\n"
-            "4️⃣ Hablar con un asesor"
-        )
-
-    if "compr" in text:
-        return (
-            "Perfecto 🏠. Te ayudaré a buscar una propiedad para compra.\n\n"
-            "¿En qué distrito o zona estás interesado?"
-        )
-
-    if "alquil" in text:
-        return (
-            "Perfecto 🔑. Te ayudaré a buscar una propiedad en alquiler.\n\n"
-            "¿En qué distrito o zona deseas vivir?"
-        )
-
-    if "vend" in text:
-        return (
-            "Claro. ARENZ también puede ayudarte a vender tu propiedad.\n\n"
-            "Indícame en qué distrito está ubicada y qué tipo de inmueble es."
-        )
-
-    if any(word in text for word in ["asesor", "persona", "humano"]):
-        return (
-            "Con gusto. Registraré tu solicitud para que un asesor de ARENZ "
-            "pueda continuar contigo."
-        )
-
-    if any(word in text for word in ["presupuesto", "precio", "cuesta", "costo"]):
-        return (
-            "Claro. Para recomendarte propiedades adecuadas, "
-            "indícame aproximadamente cuál es tu presupuesto."
-        )
-
-    return (
-        "Gracias por la información 😊.\n\n"
-        "Para ayudarte mejor, puedes indicarme si deseas comprar, alquilar "
-        "o vender una propiedad."
-    )
     
 @app.route("/webhook", methods=["POST"])
 def receive_webhook():
