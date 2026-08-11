@@ -14,8 +14,41 @@ user_sessions = {}
 
 @app.route("/", methods=["GET"])
 def home():
-    return "ARENZ AI WhatsApp Webhook activo", 200
+    return """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Arenz | Servicios Inmobiliarios</title>
+    </head>
+    <body style="font-family: Arial, sans-serif; max-width: 850px; margin: 60px auto; padding: 20px; line-height: 1.6;">
+        <h1>Arenz</h1>
+        <h2>Servicios Inmobiliarios</h2>
 
+        <p>
+            Arenz brinda servicios de orientación y atención inmobiliaria
+            para personas interesadas en comprar, vender o alquilar propiedades.
+        </p>
+
+        <p>
+            Nuestro asistente de WhatsApp facilita la atención inicial
+            y permite canalizar las consultas hacia un asesor.
+        </p>
+
+        <h3>Contacto</h3>
+        <p>Lima, Perú</p>
+
+        <hr>
+
+        <p>
+            <a href="/privacy">Política de Privacidad</a>
+        </p>
+
+        <p>© 2026 Arenz</p>
+    </body>
+    </html>
+    """, 200
 
 @app.route("/privacy", methods=["GET"])
 def privacy():
