@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: arenz-ai-whatsapp
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
+    healthCheckPath: /health
+    disk:
+      name: arenz-leads
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: APP_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: LEADS_DB_PATH
+        value: /var/data/arenz_leads.db
