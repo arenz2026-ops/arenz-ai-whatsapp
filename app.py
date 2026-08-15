@@ -245,6 +245,34 @@ def normalized_json_text(output_text):
         return text[7:-3].strip()
     return text
 
+
+def structured_output_metadata(output_text):
+    """Return safe diagnostics without retaining model or user content."""
+    text = output_text if isinstance(output_text, str) else ""
+    stripped = text.strip()
+    initial_type = "fence" if stripped.startswith("```") else "brace" if stripped.startswith("{") else "other"
+    normalized = normalized_json_text(text)
+    residual_present = False
+    if normalized.startswith("{"):
+        try:
+            _, end = json.JSONDecoder().raw_decode(normalized)
+            residual_present = bool(normalized[end:].strip())
+        except json.JSONDecodeError:
+            pass
+    return len(text), initial_type, residual_present
+
+
+def parse_structured_json(output_text):
+    """Parse exactly one JSON object, allowing only trailing whitespace."""
+    normalized = normalized_json_text(output_text)
+    if not normalized.startswith("{"):
+        raise json.JSONDecodeError("expected JSON object", normalized, 0)
+    observation, end = json.JSONDecoder().raw_decode(normalized)
+    if normalized[end:].strip():
+        raise ValueError("json_residual")
+    return observation
+
+
 def observe_conversation(sender, text, deterministic_reply):
     """Extract structured signals only; never controls the user-facing reply."""
     if not OPENAI_API_KEY:
@@ -280,7 +308,7 @@ def observe_conversation(sender, text, deterministic_reply):
             incomplete = response_body.get("incomplete_details", {})
             logger.warning("Conversation observation empty output: output_present=%s content_types=%s refusal_present=%s status=%s incomplete_reason=%s", isinstance(outputs, list), ",".join(sorted(set(content_types))) or "none", refusal_present, response_body.get("status", "unknown"), incomplete.get("reason", "none") if isinstance(incomplete, dict) else "none")
             raise ValueError("empty_output")
-        observation = json.loads(normalized_json_text(output_text))
+        observation = parse_structured_json(output_text)
         required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
         if not isinstance(observation, dict) or not required.issubset(observation) or not isinstance(observation["slot_updates"], dict):
             raise ValueError("invalid_contract")
@@ -294,9 +322,11 @@ def observe_conversation(sender, text, deterministic_reply):
             pass
         logger.warning("Conversation observation unavailable: status=%s code=%s type=%s", error.response.status_code if error.response is not None else "unknown", details.get("code", "unknown"), details.get("type", "unknown"))
     except json.JSONDecodeError:
-        logger.warning("Conversation observation unavailable: reason=invalid_json output_length=%s markdown_fence=%s", len(output_text) if isinstance(output_text, str) else 0, isinstance(output_text, str) and output_text.strip().startswith("```"))
+        output_length, initial_type, residual_present = structured_output_metadata(output_text)
+        logger.warning("Conversation observation unavailable: reason=invalid_json output_length=%s initial_type=%s residual_present=%s", output_length, initial_type, residual_present)
     except ValueError as error:
-        logger.warning("Conversation observation unavailable: reason=%s", str(error))
+        output_length, initial_type, residual_present = structured_output_metadata(output_text)
+        logger.warning("Conversation observation unavailable: reason=%s output_length=%s initial_type=%s residual_present=%s", str(error), output_length, initial_type, residual_present)
     except (requests.RequestException, KeyError, TypeError):
         logger.warning("Conversation observation unavailable: reason=request_or_response_error")
     return None

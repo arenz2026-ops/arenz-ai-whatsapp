@@ -49,11 +49,21 @@ class AppTests(unittest.TestCase):
         app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":"```json\n"+json.dumps(expected)+"\n```"}
         with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
 
+    def test_structured_observation_accepts_json_with_final_whitespace(self):
+        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":json.dumps(expected)+" \n\t"}
+        with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+
+    def test_structured_observation_rejects_json_with_residual_text_safely(self):
+        app.OPENAI_API_KEY="not-a-real-key"; sensitive="residuo-privado-no-registrar"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":json.dumps(expected)+sensitive}
+        with self.assertLogs("arenz", level="WARNING") as logs:
+            with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
+        output="\\n".join(logs.output); self.assertIn("reason=json_residual",output); self.assertIn("initial_type=brace",output); self.assertIn("residual_present=True",output); self.assertNotIn(sensitive,output)
+
     def test_invalid_json_logs_only_safe_metadata(self):
         app.OPENAI_API_KEY="not-a-real-key"; sensitive="contenido-privado-no-registrar"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":sensitive}
         with self.assertLogs("arenz", level="WARNING") as logs:
             with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
-        output="\\n".join(logs.output); self.assertIn("reason=invalid_json",output); self.assertIn("output_length=",output); self.assertNotIn(sensitive,output)
+        output="\\n".join(logs.output); self.assertIn("reason=invalid_json",output); self.assertIn("output_length=",output); self.assertIn("initial_type=other",output); self.assertIn("residual_present=False",output); self.assertNotIn(sensitive,output)
     def test_empty_structured_observation_logs_safe_shape(self):
         app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"status":"completed","output":[{"content":[{"type":"refusal","refusal":"contenido-no-registrado"}]}]}
         with self.assertLogs("arenz", level="WARNING") as logs:
@@ -102,10 +112,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["budget_max"],220000); self.assertEqual(criteria["bedrooms"],3)
 
     def test_general_question_and_handoff_do_not_reset_conversation(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"]}}}
+        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
         question={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Claro, puedo ayudarte con esa consulta."}
         reply, criteria, stage, _ = app.progressive_reply(previous, question, "fallback")
-        self.assertEqual(stage,"conversation"); self.assertEqual(criteria["operation"],"compra"); self.assertIn("consulta",reply)
+        self.assertEqual(stage,"conversation"); self.assertEqual(criteria,previous["state"]["criteria"]); self.assertEqual(reply,question["assistant_reply"])
         handoff={"intent":"human_handoff","slot_updates":{},"handoff":True}
         _, _, stage, _ = app.progressive_reply(previous, handoff, "fallback")
         self.assertEqual(stage,"handoff")
