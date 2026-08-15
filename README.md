@@ -38,21 +38,18 @@ python -m unittest discover -s tests -v
 
 1. Conecta el repositorio y usa `render.yaml`.
 2. Carga las variables secretas en el panel de Render, nunca en Git. Para durabilidad en Render Free configura `SUPABASE_URL` y `SUPABASE_KEY`.
-3. Ejecuta una vez, en el SQL Editor de Supabase, el esquema mínimo mostrado abajo.
+3. Ejecuta una vez, en el SQL Editor de Supabase, el ajuste mínimo mostrado abajo.
 4. Despliega y verifica `https://TU-SERVICIO.onrender.com/health` devuelve `{"status":"ok"}`.
 
 ## Esquema mínimo de Supabase
 
 ```sql
-create table if not exists public.leads (
-  phone text primary key,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null,
-  interest text not null,
-  conversation jsonb not null,
-  status text not null,
-  next_action text not null
-);
+-- La tabla leads existente conserva: phone, intent, district, budget,
+-- bedrooms y created_at. Cada interacción inserta un registro nuevo.
+alter table public.leads
+  add column if not exists conversation jsonb,
+  add column if not exists status text,
+  add column if not exists next_action text;
 
 create table if not exists public.processed_messages (
   message_id text primary key

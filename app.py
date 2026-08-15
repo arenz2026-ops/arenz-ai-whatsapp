@@ -86,12 +86,10 @@ class SupabaseLeadStore:
         return bool(response.json())
 
     def upsert_lead(self, phone, session, inbound, reply):
-        now = datetime.now(timezone.utc).isoformat()
-        interest = " | ".join(v for v in (session.get("intent"), session.get("district"), session.get("budget"), session.get("bedrooms")) if v) or "consulta inmobiliaria"
         status = "pendiente_asesor" if session.get("step") == "done" else "en_calificacion"
         next_action = "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"
-        payload = {"phone": phone, "created_at": now, "updated_at": now, "interest": interest, "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action}
-        response = requests.post(f"{self.url}/rest/v1/leads?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=payload, timeout=10)
+        payload = {"phone": phone, "intent": session.get("intent") or "consulta inmobiliaria", "district": session.get("district"), "budget": session.get("budget"), "bedrooms": session.get("bedrooms"), "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action}
+        response = requests.post(f"{self.url}/rest/v1/leads", headers={**self.headers, "Prefer": "return=minimal"}, json=payload, timeout=10)
         response.raise_for_status()
 
     def get_lead(self, phone):
@@ -126,8 +124,10 @@ def data_deletion():
 @app.route("/health", methods=["GET"])
 def health():
     try:
-        get_lead_store()._connect().close(); db_ok = True
-    except sqlite3.Error: db_ok = False
+        store = get_lead_store()
+        if isinstance(store, LeadStore): store._connect().close()
+        db_ok = True
+    except (sqlite3.Error, requests.RequestException): db_ok = False
     ok = all((VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID, APP_SECRET)) and db_ok
     return jsonify({"status": "ok" if ok else "degraded"}), 200 if ok else 503
 
