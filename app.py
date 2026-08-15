@@ -90,7 +90,7 @@ class SupabaseLeadStore:
         interest = " | ".join(v for v in (session.get("intent"), session.get("district"), session.get("budget"), session.get("bedrooms")) if v) or "consulta inmobiliaria"
         status = "pendiente_asesor" if session.get("step") == "done" else "en_calificacion"
         next_action = "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"
-        payload = {"phone": phone, "updated_at": now, "interest": interest, "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action}
+        payload = {"phone": phone, "created_at": now, "updated_at": now, "interest": interest, "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action}
         response = requests.post(f"{self.url}/rest/v1/leads?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=payload, timeout=10)
         response.raise_for_status()
 

@@ -40,7 +40,7 @@ class AppTests(unittest.TestCase):
         with patch.object(app.requests,"post",return_value=response) as post:
             app.get_lead_store().upsert_lead("51999999999", {"step":"done", "intent":"compra"}, "hola", "respuesta")
         self.assertEqual(post.call_args.args[0],"https://project.supabase.co/rest/v1/leads?on_conflict=phone")
-        self.assertEqual(post.call_args.kwargs["json"]["phone"],"51999999999"); self.assertEqual(post.call_args.kwargs["json"]["status"],"pendiente_asesor")
+        self.assertEqual(post.call_args.kwargs["json"]["phone"],"51999999999"); self.assertIn("created_at", post.call_args.kwargs["json"]); self.assertEqual(post.call_args.kwargs["json"]["status"],"pendiente_asesor")
     def test_supabase_duplicate_claim(self):
         os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value=[]
         with patch.object(app.requests,"post",return_value=response) as post: self.assertFalse(app.get_lead_store().claim_message("wamid-duplicate"))
