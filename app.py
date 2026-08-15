@@ -254,8 +254,20 @@ def observe_conversation(sender, text, deterministic_reply):
     try:
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
         response.raise_for_status()
-        output_text = response_output_text(response.json())
+        response_body = response.json()
+        output_text = response_output_text(response_body)
         if not output_text:
+            outputs = response_body.get("output", [])
+            content_types = []
+            refusal_present = False
+            if isinstance(outputs, list):
+                for output in outputs:
+                    for content in output.get("content", []) if isinstance(output, dict) else []:
+                        content_type = content.get("type", "unknown") if isinstance(content, dict) else "unknown"
+                        content_types.append(content_type)
+                        refusal_present = refusal_present or content_type == "refusal"
+            incomplete = response_body.get("incomplete_details", {})
+            logger.warning("Conversation observation empty output: output_present=%s content_types=%s refusal_present=%s status=%s incomplete_reason=%s", isinstance(outputs, list), ",".join(sorted(set(content_types))) or "none", refusal_present, response_body.get("status", "unknown"), incomplete.get("reason", "none") if isinstance(incomplete, dict) else "none")
             raise ValueError("empty_output")
         observation = json.loads(output_text)
         required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
