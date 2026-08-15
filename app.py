@@ -223,6 +223,17 @@ def generate_ai_reply(sender, text, fallback):
         return fallback
 
 
+def response_output_text(response_body):
+    """Read text from either supported Responses API representation."""
+    output_text = response_body.get("output_text", "")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+    for output in response_body.get("output", []):
+        for content in output.get("content", []):
+            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
+                return content["text"]
+    return ""
+
 def observe_conversation(sender, text, deterministic_reply):
     """Extract structured signals only; never controls the user-facing reply."""
     if not OPENAI_API_KEY:
@@ -243,16 +254,28 @@ def observe_conversation(sender, text, deterministic_reply):
     try:
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
         response.raise_for_status()
-        observation = json.loads(response.json().get("output_text", ""))
+        output_text = response_output_text(response.json())
+        if not output_text:
+            raise ValueError("empty_output")
+        observation = json.loads(output_text)
         required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
         if not isinstance(observation, dict) or not required.issubset(observation) or not isinstance(observation["slot_updates"], dict):
-            raise ValueError("invalid observation contract")
+            raise ValueError("invalid_contract")
         logger.info("Conversation observation: intent=%s next_action=%s slots=%s handoff=%s", observation["intent"], observation["next_action"], sum(value is not None and value != [] for value in observation["slot_updates"].values()), observation["handoff"])
         return observation
     except requests.HTTPError as error:
-        logger.warning("Conversation observation unavailable: status=%s", error.response.status_code if error.response is not None else "unknown")
-    except (requests.RequestException, ValueError, KeyError, TypeError):
-        logger.warning("Conversation observation unavailable")
+        details = {}
+        try:
+            details = error.response.json().get("error", {}) if error.response is not None else {}
+        except ValueError:
+            pass
+        logger.warning("Conversation observation unavailable: status=%s code=%s type=%s", error.response.status_code if error.response is not None else "unknown", details.get("code", "unknown"), details.get("type", "unknown"))
+    except json.JSONDecodeError:
+        logger.warning("Conversation observation unavailable: reason=invalid_json")
+    except ValueError as error:
+        logger.warning("Conversation observation unavailable: reason=%s", str(error))
+    except (requests.RequestException, KeyError, TypeError):
+        logger.warning("Conversation observation unavailable: reason=request_or_response_error")
     return None
 
 
