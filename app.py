@@ -313,6 +313,7 @@ def persist_conversation_observation(sender, message_id, inbound, outbound, obse
 
 
 ALLOWED_OPERATIONS = {"compra", "alquiler", "venta"}
+OPERATION_ALIASES = {"comprar": "compra", "alquilar": "alquiler", "vender": "venta"}
 ALLOWED_CURRENCIES = {"USD", "PEN"}
 
 
@@ -322,8 +323,10 @@ def validated_slot_updates(slot_updates):
         return {}
     clean = {}
     operation = slot_updates.get("operation")
-    if isinstance(operation, str) and operation.lower() in ALLOWED_OPERATIONS:
-        clean["operation"] = operation.lower()
+    if isinstance(operation, str):
+        operation = OPERATION_ALIASES.get(operation.lower(), operation.lower())
+        if operation in ALLOWED_OPERATIONS:
+            clean["operation"] = operation
     districts = slot_updates.get("districts")
     if isinstance(districts, list):
         clean["districts"] = [value.strip().title() for value in districts if isinstance(value, str) and 1 <= len(value.strip()) <= 60][:3]

@@ -89,6 +89,12 @@ class AppTests(unittest.TestCase):
         reply, criteria, stage, _ = app.progressive_reply(None, observation, "fallback")
         self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Miraflores"]); self.assertIn("Miraflores",reply); self.assertNotIn("¿En qué distrito",reply)
 
+    def test_operation_aliases_are_normalized_without_altering_other_slots(self):
+        for raw, expected in (("comprar","compra"),("compra","compra"),("alquilar","alquiler"),("alquiler","alquiler"),("vender","venta"),("venta","venta")):
+            slots={"operation":raw,"districts":["Surco"],"bedrooms":2}
+            clean=app.validated_slot_updates(slots)
+            self.assertEqual(clean["operation"],expected); self.assertEqual(clean["districts"],["Surco"]); self.assertEqual(clean["bedrooms"],2)
+
     def test_progressive_controller_updates_criteria_without_losing_previous(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
         observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":None,"property_type":None,"preferences":["balcón"]},"handoff":False}
