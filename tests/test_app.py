@@ -40,11 +40,11 @@ class AppTests(unittest.TestCase):
         deterministic=app.generate_reply("519","hola")
         with patch.object(app.requests,"post",return_value=response) as post: observation=app.observe_conversation("519","Busco comprar en Miraflores hasta US$200 mil, 3 dormitorios",deterministic)
         self.assertEqual(observation,expected); self.assertEqual(deterministic,"Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor")
-        self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],400)
+        self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],1200)
     def test_observation_payload_is_compact_and_preserves_durable_context(self):
         previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"last_user_message":"no enviar","last_assistant_message":"no enviar"}}
         payload=app.build_observation_payload(previous,"consulta actual")
-        self.assertEqual(payload["max_output_tokens"],400); self.assertIn("máximo 280 caracteres",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("consulta actual",payload["input"])
+        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("máximo 180 caracteres",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("consulta actual",payload["input"])
         for forbidden in ("last_observation","last_user_message","last_assistant_message","no enviar","Respuesta determinista"):
             self.assertNotIn(forbidden,payload["input"])
     def test_structured_observation_reads_output_content_format(self):

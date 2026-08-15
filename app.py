@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -277,8 +278,8 @@ def build_observation_payload(previous, text):
     """Build a bounded extraction request from durable criteria only."""
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "criteria": conversation_state(previous)}
     return {
-        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 400,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. Para consultas libres, assistant_reply debe ser breve: máximo 280 caracteres.",
+        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. Para intent=general_question, assistant_reply debe ser breve: máximo 180 caracteres. En otros intent, usa assistant_reply vacío si no es necesario. user_question debe tener como máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
@@ -296,6 +297,7 @@ def observe_conversation(sender, text, deterministic_reply):
         except requests.RequestException:
             logger.warning("Conversation memory unavailable during observation")
     payload = build_observation_payload(previous, text)
+    started_at = time.monotonic()
     try:
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
         response.raise_for_status()
@@ -318,7 +320,7 @@ def observe_conversation(sender, text, deterministic_reply):
         required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
         if not isinstance(observation, dict) or not required.issubset(observation) or not isinstance(observation["slot_updates"], dict):
             raise ValueError("invalid_contract")
-        logger.info("Conversation observation: intent=%s next_action=%s slots=%s handoff=%s", observation["intent"], observation["next_action"], sum(value is not None and value != [] for value in observation["slot_updates"].values()), observation["handoff"])
+        logger.info("Conversation observation: intent=%s next_action=%s slots=%s handoff=%s latency_ms=%s", observation["intent"], observation["next_action"], sum(value is not None and value != [] for value in observation["slot_updates"].values()), observation["handoff"], round((time.monotonic() - started_at) * 1000))
         return observation
     except requests.HTTPError as error:
         details = {}
@@ -334,7 +336,7 @@ def observe_conversation(sender, text, deterministic_reply):
         output_length, initial_type, residual_present = structured_output_metadata(output_text)
         logger.warning("Conversation observation unavailable: reason=%s output_length=%s initial_type=%s residual_present=%s", str(error), output_length, initial_type, residual_present)
     except requests.RequestException as error:
-        logger.warning("Conversation observation unavailable: reason=request_failed error_type=%s", type(error).__name__)
+        logger.warning("Conversation observation unavailable: reason=request_failed error_type=%s latency_ms=%s", type(error).__name__, round((time.monotonic() - started_at) * 1000))
     except (KeyError, TypeError, AttributeError) as error:
         logger.warning("Conversation observation unavailable: reason=response_shape_error error_type=%s", type(error).__name__)
     return None
