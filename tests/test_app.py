@@ -43,6 +43,16 @@ class AppTests(unittest.TestCase):
     def test_structured_observation_reads_output_content_format(self):
         app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output":[{"content":[{"type":"output_text","text":json.dumps(expected)}]}]}
         with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+
+    def test_structured_observation_accepts_markdown_json_fence(self):
+        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":"```json\n"+json.dumps(expected)+"\n```"}
+        with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+
+    def test_invalid_json_logs_only_safe_metadata(self):
+        app.OPENAI_API_KEY="not-a-real-key"; sensitive="contenido-privado-no-registrar"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":sensitive}
+        with self.assertLogs("arenz", level="WARNING") as logs:
+            with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
+        output="\\n".join(logs.output); self.assertIn("reason=invalid_json",output); self.assertIn("output_length=",output); self.assertNotIn(sensitive,output)
     def test_empty_structured_observation_logs_safe_shape(self):
         app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"status":"completed","output":[{"content":[{"type":"refusal","refusal":"contenido-no-registrado"}]}]}
         with self.assertLogs("arenz", level="WARNING") as logs:

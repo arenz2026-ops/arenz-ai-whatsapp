@@ -237,6 +237,14 @@ def response_output_text(response_body):
                 return content["text"]
     return ""
 
+
+def normalized_json_text(output_text):
+    """Accept JSON text or a harmless Markdown JSON fence without logging content."""
+    text = output_text.strip()
+    if text.startswith("```json") and text.endswith("```"):
+        return text[7:-3].strip()
+    return text
+
 def observe_conversation(sender, text, deterministic_reply):
     """Extract structured signals only; never controls the user-facing reply."""
     if not OPENAI_API_KEY:
@@ -272,7 +280,7 @@ def observe_conversation(sender, text, deterministic_reply):
             incomplete = response_body.get("incomplete_details", {})
             logger.warning("Conversation observation empty output: output_present=%s content_types=%s refusal_present=%s status=%s incomplete_reason=%s", isinstance(outputs, list), ",".join(sorted(set(content_types))) or "none", refusal_present, response_body.get("status", "unknown"), incomplete.get("reason", "none") if isinstance(incomplete, dict) else "none")
             raise ValueError("empty_output")
-        observation = json.loads(output_text)
+        observation = json.loads(normalized_json_text(output_text))
         required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
         if not isinstance(observation, dict) or not required.issubset(observation) or not isinstance(observation["slot_updates"], dict):
             raise ValueError("invalid_contract")
@@ -286,7 +294,7 @@ def observe_conversation(sender, text, deterministic_reply):
             pass
         logger.warning("Conversation observation unavailable: status=%s code=%s type=%s", error.response.status_code if error.response is not None else "unknown", details.get("code", "unknown"), details.get("type", "unknown"))
     except json.JSONDecodeError:
-        logger.warning("Conversation observation unavailable: reason=invalid_json")
+        logger.warning("Conversation observation unavailable: reason=invalid_json output_length=%s markdown_fence=%s", len(output_text) if isinstance(output_text, str) else 0, isinstance(output_text, str) and output_text.strip().startswith("```"))
     except ValueError as error:
         logger.warning("Conversation observation unavailable: reason=%s", str(error))
     except (requests.RequestException, KeyError, TypeError):
