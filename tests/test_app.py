@@ -40,7 +40,13 @@ class AppTests(unittest.TestCase):
         deterministic=app.generate_reply("519","hola")
         with patch.object(app.requests,"post",return_value=response) as post: observation=app.observe_conversation("519","Busco comprar en Miraflores hasta US$200 mil, 3 dormitorios",deterministic)
         self.assertEqual(observation,expected); self.assertEqual(deterministic,"Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor")
-        self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],1200)
+        self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],400)
+    def test_observation_payload_is_compact_and_preserves_durable_context(self):
+        previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"last_user_message":"no enviar","last_assistant_message":"no enviar"}}
+        payload=app.build_observation_payload(previous,"consulta actual")
+        self.assertEqual(payload["max_output_tokens"],400); self.assertIn("máximo 280 caracteres",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("consulta actual",payload["input"])
+        for forbidden in ("last_observation","last_user_message","last_assistant_message","no enviar","Respuesta determinista"):
+            self.assertNotIn(forbidden,payload["input"])
     def test_structured_observation_reads_output_content_format(self):
         app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output":[{"content":[{"type":"output_text","text":json.dumps(expected)}]}]}
         with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
@@ -69,6 +75,11 @@ class AppTests(unittest.TestCase):
         with self.assertLogs("arenz", level="WARNING") as logs:
             with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
         output="\\n".join(logs.output); self.assertIn("reason=response_shape_error",output); self.assertIn("error_type=TypeError",output); self.assertNotIn(sensitive,output)
+    def test_observation_timeout_preserves_webhook_and_graph_reply(self):
+        app.OPENAI_API_KEY="not-a-real-key"; payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-timeout","from":"51999999999","type":"text","text":{"body":"hola"}}]}}]}]}; raw,headers=self.signed(payload); graph_response=Mock(); graph_response.raise_for_status.return_value=None
+        with patch.object(app.requests,"post",side_effect=[app.requests.ReadTimeout(),graph_response]) as post:
+            result=self.client.post("/webhook",data=raw,headers=headers)
+        self.assertEqual(result.status_code,200); self.assertEqual(post.call_count,2); self.assertEqual(post.call_args_list[1].args[0],"https://graph.facebook.com/v26.0/123456/messages")
     def test_empty_structured_observation_logs_safe_shape(self):
         app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"status":"completed","output":[{"content":[{"type":"refusal","refusal":"contenido-no-registrado"}]}]}
         with self.assertLogs("arenz", level="WARNING") as logs:

@@ -273,6 +273,17 @@ def parse_structured_json(output_text):
     return observation
 
 
+def build_observation_payload(previous, text):
+    """Build a bounded extraction request from durable criteria only."""
+    context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "criteria": conversation_state(previous)}
+    return {
+        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 400,
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. Para consultas libres, assistant_reply debe ser breve: máximo 280 caracteres.",
+        "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
+        "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
+    }
+
+
 def observe_conversation(sender, text, deterministic_reply):
     """Extract structured signals only; never controls the user-facing reply."""
     if not OPENAI_API_KEY:
@@ -284,12 +295,7 @@ def observe_conversation(sender, text, deterministic_reply):
             previous = memory.load_session(sender)
         except requests.RequestException:
             logger.warning("Conversation memory unavailable during observation")
-    payload = {
-        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Eres un analizador de conversaciones inmobiliarias en Lima. Extrae solo información explícita o altamente confiable. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON solicitado. Esta salida es de observación y no decide el flujo.",
-        "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
-        "input": f"Memoria previa: {json.dumps(previous or {}, ensure_ascii=False)}\nMensaje actual: {text}\nRespuesta determinista actual: {deterministic_reply}",
-    }
+    payload = build_observation_payload(previous, text)
     try:
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
         response.raise_for_status()
