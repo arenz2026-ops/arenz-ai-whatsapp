@@ -1,7 +1,7 @@
 # ARENZ AI WhatsApp MVP
 
 Flask para: WhatsApp Cloud API → `/webhook` → IA con fallback determinista →
-respuesta Graph API → lead SQLite.
+respuesta Graph API → lead durable en Supabase (o SQLite local como fallback).
 
 ## Variables de entorno
 
@@ -15,7 +15,9 @@ Configúralas en Render o localmente, nunca en Git.
 | `APP_SECRET` | App Secret Meta para `X-Hub-Signature-256`. |
 | `OPENAI_API_KEY` | Clave de servidor para IA; si falta, usa fallback. |
 | `OPENAI_MODEL` | Opcional; por defecto `gpt-4.1-mini`. |
-| `LEADS_DB_PATH` | SQLite; en Render usa disco persistente, p. ej. `/var/data/arenz_leads.db`. |
+| `SUPABASE_URL` | URL del proyecto Supabase para persistencia durable en Render. |
+| `SUPABASE_KEY` | Clave de servidor Supabase; nunca la expongas en el cliente o Git. |
+| `LEADS_DB_PATH` | SQLite solo como fallback local. |
 | `PORT` | Render lo configura automáticamente. |
 
 ## Local
@@ -35,9 +37,30 @@ python -m unittest discover -s tests -v
 ## Render
 
 1. Conecta el repositorio y usa `render.yaml`.
-2. Crea y monta un disco persistente en `/var/data`; sin él SQLite no sobrevive a reinicios.
-3. Carga las variables secretas en el panel de Render, nunca en Git.
+2. Carga las variables secretas en el panel de Render, nunca en Git. Para durabilidad en Render Free configura `SUPABASE_URL` y `SUPABASE_KEY`.
+3. Ejecuta una vez, en el SQL Editor de Supabase, el esquema mínimo mostrado abajo.
 4. Despliega y verifica `https://TU-SERVICIO.onrender.com/health` devuelve `{"status":"ok"}`.
+
+## Esquema mínimo de Supabase
+
+```sql
+create table if not exists public.leads (
+  phone text primary key,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null,
+  interest text not null,
+  conversation jsonb not null,
+  status text not null,
+  next_action text not null
+);
+
+create table if not exists public.processed_messages (
+  message_id text primary key
+);
+```
+
+La clave usada por Render debe poder insertar y actualizar esta tabla. No publiques
+esa clave ni la uses en una aplicación cliente.
 
 ## Meta: número de prueba
 

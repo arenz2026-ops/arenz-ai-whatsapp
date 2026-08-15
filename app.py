@@ -67,7 +67,45 @@ class LeadStore:
         return dict(row) if row else None
 
 
-def get_lead_store(): return LeadStore(os.getenv("LEADS_DB_PATH", "leads.db"))
+class SupabaseLeadStore:
+    """Small REST adapter for durable MVP lead storage."""
+    def __init__(self, url, key):
+        self.url = url.rstrip("/")
+        self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    def claim_message(self, message_id):
+        if not message_id:
+            return True
+        response = requests.post(
+            f"{self.url}/rest/v1/processed_messages?on_conflict=message_id",
+            headers={**self.headers, "Prefer": "resolution=ignore-duplicates,return=representation"},
+            json={"message_id": message_id},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return bool(response.json())
+
+    def upsert_lead(self, phone, session, inbound, reply):
+        now = datetime.now(timezone.utc).isoformat()
+        interest = " | ".join(v for v in (session.get("intent"), session.get("district"), session.get("budget"), session.get("bedrooms")) if v) or "consulta inmobiliaria"
+        status = "pendiente_asesor" if session.get("step") == "done" else "en_calificacion"
+        next_action = "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"
+        payload = {"phone": phone, "updated_at": now, "interest": interest, "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action}
+        response = requests.post(f"{self.url}/rest/v1/leads?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=payload, timeout=10)
+        response.raise_for_status()
+
+    def get_lead(self, phone):
+        response = requests.get(f"{self.url}/rest/v1/leads", headers=self.headers, params={"phone": f"eq.{phone}", "select": "*"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        return rows[0] if rows else None
+
+
+def get_lead_store():
+    supabase_url, supabase_key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    if supabase_url and supabase_key:
+        return SupabaseLeadStore(supabase_url, supabase_key)
+    return LeadStore(os.getenv("LEADS_DB_PATH", "leads.db"))
 
 
 @app.route("/", methods=["GET"])
@@ -133,6 +171,9 @@ def generate_ai_reply(sender, text, fallback):
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}, json=payload, timeout=15)
         response.raise_for_status()
         return response.json().get("output_text", "").strip() or fallback
+    except requests.HTTPError as error:
+        logger.warning("AI provider rejected request: status=%s; using deterministic fallback", error.response.status_code if error.response is not None else "unknown")
+        return fallback
     except (requests.RequestException, ValueError, AttributeError):
         logger.warning("AI provider unavailable; using deterministic fallback")
         return fallback
@@ -141,7 +182,17 @@ def generate_ai_reply(sender, text, fallback):
 def send_whatsapp_message(to, message):
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID: raise RuntimeError("WhatsApp credentials are not configured")
     response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages", headers={"Authorization":f"Bearer {WHATSAPP_TOKEN}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
-    response.raise_for_status(); logger.info("WhatsApp reply accepted by Graph API"); return response
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        try:
+            details = response.json().get("error", {})
+        except ValueError:
+            details = {}
+        logger.error("Graph API rejected reply: status=%s code=%s type=%s message=%s", response.status_code, details.get("code"), details.get("type"), details.get("message"))
+        raise error
+    logger.info("WhatsApp reply accepted by Graph API")
+    return response
 
 
 def valid_meta_signature(raw_body, signature):
