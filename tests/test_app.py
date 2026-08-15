@@ -73,4 +73,32 @@ class AppTests(unittest.TestCase):
         with patch.object(app.requests,"post",return_value=response) as post: self.assertFalse(app.get_lead_store().claim_message("wamid-duplicate"))
         self.assertEqual(post.call_args.args[0],"https://project.supabase.co/rest/v1/processed_messages?on_conflict=message_id")
 
+    def test_progressive_controller_keeps_all_criteria_from_one_message(self):
+        observation={"intent":"property_search","slot_updates":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":[]},"handoff":False}
+        reply, criteria, stage, _ = app.progressive_reply(None, observation, "fallback")
+        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Miraflores"]); self.assertIn("Miraflores",reply); self.assertNotIn("¿En qué distrito",reply)
+
+    def test_progressive_controller_updates_criteria_without_losing_previous(self):
+        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
+        observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":None,"property_type":None,"preferences":["balcón"]},"handoff":False}
+        _, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
+        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["budget_max"],220000); self.assertEqual(criteria["bedrooms"],3)
+
+    def test_general_question_and_handoff_do_not_reset_conversation(self):
+        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"]}}}
+        question={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Claro, puedo ayudarte con esa consulta."}
+        reply, criteria, stage, _ = app.progressive_reply(previous, question, "fallback")
+        self.assertEqual(stage,"conversation"); self.assertEqual(criteria["operation"],"compra"); self.assertIn("consulta",reply)
+        handoff={"intent":"human_handoff","slot_updates":{},"handoff":True}
+        _, _, stage, _ = app.progressive_reply(previous, handoff, "fallback")
+        self.assertEqual(stage,"handoff")
+
+    def test_progressive_controller_uses_deterministic_fallback_when_observation_fails(self):
+        reply, criteria, stage, _ = app.progressive_reply({"state":{"criteria":{"operation":"compra"}}}, None, "fallback seguro")
+        self.assertEqual((reply,criteria,stage),("fallback seguro",{"operation":"compra"},"fallback"))
+
+    def test_memory_session_reconstructs_criteria_after_restart(self):
+        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
+        self.assertEqual(app.conversation_state(previous)["bedrooms"],3)
+
 if __name__ == "__main__": unittest.main()

@@ -114,7 +114,7 @@ class SupabaseLeadStore:
 
 
 class ConversationMemoryStore:
-    """Durable observation memory; it does not control the production dialogue yet."""
+    """Durable conversation state and turn history, keyed by WhatsApp phone."""
     def __init__(self, url, key):
         self.url = url.rstrip("/")
         self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -125,9 +125,9 @@ class ConversationMemoryStore:
         rows = response.json()
         return rows[0] if rows else None
 
-    def record_observation(self, phone, message_id, inbound, outbound, observation):
+    def record_turn(self, phone, message_id, inbound, outbound, observation, state, stage, summary):
         now = datetime.now(timezone.utc).isoformat()
-        session = {"phone": phone, "stage": "observation", "state": {"last_observation": observation, "last_user_message": inbound, "last_assistant_message": outbound}, "summary": "Observación IA almacenada; no controla el flujo productivo.", "updated_at": now}
+        session = {"phone": phone, "stage": stage, "state": {**state, "last_observation": observation, "last_user_message": inbound, "last_assistant_message": outbound}, "summary": summary, "updated_at": now}
         response = requests.post(f"{self.url}/rest/v1/conversation_sessions?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=session, timeout=10)
         response.raise_for_status()
         messages = [
@@ -136,6 +136,9 @@ class ConversationMemoryStore:
         ]
         response = requests.post(f"{self.url}/rest/v1/conversation_messages?on_conflict=message_key", headers={**self.headers, "Prefer": "resolution=ignore-duplicates,return=minimal"}, json=messages, timeout=10)
         response.raise_for_status()
+
+    def record_observation(self, phone, message_id, inbound, outbound, observation):
+        self.record_turn(phone, message_id, inbound, outbound, observation, {}, "observation", "Observación IA almacenada; no controla el flujo productivo.")
 
 
 def get_lead_store():
@@ -301,6 +304,77 @@ def persist_conversation_observation(sender, message_id, inbound, outbound, obse
         logger.warning("Conversation observation persistence unavailable")
 
 
+ALLOWED_OPERATIONS = {"compra", "alquiler", "venta"}
+ALLOWED_CURRENCIES = {"USD", "PEN"}
+
+
+def validated_slot_updates(slot_updates):
+    """Accept only bounded, typed criteria from the structured AI contract."""
+    if not isinstance(slot_updates, dict):
+        return {}
+    clean = {}
+    operation = slot_updates.get("operation")
+    if isinstance(operation, str) and operation.lower() in ALLOWED_OPERATIONS:
+        clean["operation"] = operation.lower()
+    districts = slot_updates.get("districts")
+    if isinstance(districts, list):
+        clean["districts"] = [value.strip().title() for value in districts if isinstance(value, str) and 1 <= len(value.strip()) <= 60][:3]
+    budget = slot_updates.get("budget_max")
+    if isinstance(budget, (int, float)) and 1000 <= budget <= 10000000:
+        clean["budget_max"] = int(budget)
+    currency = slot_updates.get("currency")
+    if isinstance(currency, str) and currency.upper() in ALLOWED_CURRENCIES:
+        clean["currency"] = currency.upper()
+    bedrooms = slot_updates.get("bedrooms")
+    if isinstance(bedrooms, int) and 0 <= bedrooms <= 20:
+        clean["bedrooms"] = bedrooms
+    property_type = slot_updates.get("property_type")
+    if isinstance(property_type, str) and 1 <= len(property_type.strip()) <= 40:
+        clean["property_type"] = property_type.strip().lower()
+    preferences = slot_updates.get("preferences")
+    if isinstance(preferences, list):
+        clean["preferences"] = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
+    return clean
+
+
+def conversation_state(previous):
+    state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
+    return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences") if criteria.get(key) not in (None, [], "")}
+
+
+def progressive_reply(previous, observation, fallback):
+    """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
+    if not observation:
+        return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
+    criteria = conversation_state(previous)
+    criteria.update(validated_slot_updates(observation.get("slot_updates")))
+    intent = observation.get("intent")
+    if observation.get("handoff") or intent == "human_handoff":
+        return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."
+    if intent == "general_question":
+        reply = observation.get("assistant_reply")
+        if isinstance(reply, str) and reply.strip() and "disponib" not in reply.lower():
+            return reply.strip(), criteria, "conversation", "Consulta atendida; criterios conservados."
+        return "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?", criteria, "conversation", "Consulta libre; criterios conservados."
+    missing = [("operation", "¿Deseas comprar, alquilar o vender?"), ("property_type", "¿Qué tipo de inmueble buscas?"), ("districts", "¿En qué distrito o zona estás interesado?"), ("budget_max", "¿Cuál es tu presupuesto máximo aproximado?"), ("currency", "¿Tu presupuesto es en USD o PEN?"), ("bedrooms", "¿Cuántos dormitorios necesitas?")]
+    for key, question in missing:
+        if criteria.get(key) in (None, [], ""):
+            return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
+    district = ", ".join(criteria["districts"])
+    return f"Entendido: {criteria['operation']} de {criteria['property_type']} en {district}, hasta {criteria['currency']} {criteria['budget_max']:,} y {criteria['bedrooms']} dormitorios. ¿Deseas añadir alguna preferencia, como balcón o estacionamiento?", criteria, "qualified", "Criterios básicos completos; sin derivación automática."
+
+
+def persist_conversation_turn(sender, message_id, inbound, outbound, observation, criteria, stage, summary):
+    memory = get_conversation_memory_store()
+    if not memory:
+        return
+    try:
+        memory.record_turn(sender, message_id, inbound, outbound, observation, {"criteria": criteria}, stage, summary)
+    except requests.RequestException:
+        logger.warning("Conversation memory persistence unavailable")
+
+
 def send_whatsapp_message(to, message):
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID: raise RuntimeError("WhatsApp credentials are not configured")
     response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages", headers={"Authorization":f"Bearer {WHATSAPP_TOKEN}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
@@ -348,9 +422,16 @@ def receive_webhook():
         for message in messages:
             if not store.claim_message(message.get("id")): continue
             sender, text = message["from"], message["text"]["body"]
-            reply = generate_ai_reply(sender, text, generate_reply(sender, text))
-            observation = observe_conversation(sender, text, reply)
-            persist_conversation_observation(sender, message.get("id"), text, reply, observation)
+            fallback = generate_reply(sender, text)
+            memory = get_conversation_memory_store()
+            try:
+                previous = memory.load_session(sender) if memory else None
+            except requests.RequestException:
+                previous = None
+                logger.warning("Conversation memory unavailable; using in-process fallback")
+            observation = observe_conversation(sender, text, fallback)
+            reply, criteria, stage, summary = progressive_reply(previous, observation, fallback)
+            persist_conversation_turn(sender, message.get("id"), text, reply, observation, criteria, stage, summary)
             store.upsert_lead(sender, user_sessions.get(sender, {}), text, reply)
             send_whatsapp_message(sender, reply)
             processed += 1
