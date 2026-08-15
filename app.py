@@ -327,8 +327,10 @@ def observe_conversation(sender, text, deterministic_reply):
     except ValueError as error:
         output_length, initial_type, residual_present = structured_output_metadata(output_text)
         logger.warning("Conversation observation unavailable: reason=%s output_length=%s initial_type=%s residual_present=%s", str(error), output_length, initial_type, residual_present)
-    except (requests.RequestException, KeyError, TypeError):
-        logger.warning("Conversation observation unavailable: reason=request_or_response_error")
+    except requests.RequestException as error:
+        logger.warning("Conversation observation unavailable: reason=request_failed error_type=%s", type(error).__name__)
+    except (KeyError, TypeError, AttributeError) as error:
+        logger.warning("Conversation observation unavailable: reason=response_shape_error error_type=%s", type(error).__name__)
     return None
 
 

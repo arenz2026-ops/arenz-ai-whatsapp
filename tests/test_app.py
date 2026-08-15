@@ -64,6 +64,11 @@ class AppTests(unittest.TestCase):
         with self.assertLogs("arenz", level="WARNING") as logs:
             with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
         output="\\n".join(logs.output); self.assertIn("reason=invalid_json",output); self.assertIn("output_length=",output); self.assertIn("initial_type=other",output); self.assertIn("residual_present=False",output); self.assertNotIn(sensitive,output)
+    def test_response_shape_failure_logs_only_safe_category(self):
+        app.OPENAI_API_KEY="not-a-real-key"; sensitive="respuesta-privada-no-registrar"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output":None,"private":sensitive}
+        with self.assertLogs("arenz", level="WARNING") as logs:
+            with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
+        output="\\n".join(logs.output); self.assertIn("reason=response_shape_error",output); self.assertIn("error_type=TypeError",output); self.assertNotIn(sensitive,output)
     def test_empty_structured_observation_logs_safe_shape(self):
         app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"status":"completed","output":[{"content":[{"type":"refusal","refusal":"contenido-no-registrado"}]}]}
         with self.assertLogs("arenz", level="WARNING") as logs:
