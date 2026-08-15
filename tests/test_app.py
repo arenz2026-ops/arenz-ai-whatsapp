@@ -51,6 +51,18 @@ class AppTests(unittest.TestCase):
         app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output":[{"content":[{"type":"output_text","text":json.dumps(expected)}]}]}
         with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
 
+    def test_observation_logs_safe_usage_metadata(self):
+        app.OPENAI_API_KEY="not-a-real-key"; sensitive="respuesta-privada-no-registrar"; expected={"intent":"greeting","slot_updates":{},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":sensitive}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"model":"gpt-4.1-mini-2025-04-14","usage":{"output_tokens":41,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":173},"output_text":json.dumps(expected)}
+        with self.assertLogs("arenz", level="INFO") as logs:
+            with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+        output="\n".join(logs.output); self.assertIn("model=gpt-4.1-mini-2025-04-14",output); self.assertIn("usage_available=True",output); self.assertIn("output_tokens=41",output); self.assertIn("reasoning_tokens=0",output); self.assertIn("total_tokens=173",output); self.assertIn("latency_ms=",output); self.assertNotIn(sensitive,output)
+
+    def test_observation_logs_usage_unavailable_safely(self):
+        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"model":"gpt-4.1-mini-2025-04-14","output_text":json.dumps(expected)}
+        with self.assertLogs("arenz", level="INFO") as logs:
+            with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+        output="\n".join(logs.output); self.assertIn("usage_available=False",output); self.assertIn("output_tokens=None",output); self.assertIn("reasoning_tokens=None",output); self.assertIn("total_tokens=None",output)
+
     def test_structured_observation_accepts_markdown_json_fence(self):
         app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":"```json\n"+json.dumps(expected)+"\n```"}
         with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
@@ -76,10 +88,11 @@ class AppTests(unittest.TestCase):
             with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
         output="\\n".join(logs.output); self.assertIn("reason=response_shape_error",output); self.assertIn("error_type=TypeError",output); self.assertNotIn(sensitive,output)
     def test_observation_timeout_preserves_webhook_and_graph_reply(self):
-        app.OPENAI_API_KEY="not-a-real-key"; payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-timeout","from":"51999999999","type":"text","text":{"body":"hola"}}]}}]}]}; raw,headers=self.signed(payload); graph_response=Mock(); graph_response.raise_for_status.return_value=None
-        with patch.object(app.requests,"post",side_effect=[app.requests.ReadTimeout(),graph_response]) as post:
-            result=self.client.post("/webhook",data=raw,headers=headers)
-        self.assertEqual(result.status_code,200); self.assertEqual(post.call_count,2); self.assertEqual(post.call_args_list[1].args[0],"https://graph.facebook.com/v26.0/123456/messages")
+        app.OPENAI_API_KEY="not-a-real-key"; sensitive="mensaje-privado-no-registrar"; payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-timeout","from":"51999999999","type":"text","text":{"body":sensitive}}]}}]}]}; raw,headers=self.signed(payload); graph_response=Mock(); graph_response.raise_for_status.return_value=None
+        with self.assertLogs("arenz", level="WARNING") as logs:
+            with patch.object(app.requests,"post",side_effect=[app.requests.ReadTimeout(),graph_response]) as post:
+                result=self.client.post("/webhook",data=raw,headers=headers)
+        output="\n".join(logs.output); self.assertIn("reason=request_failed error_type=ReadTimeout latency_ms=",output); self.assertNotIn(sensitive,output); self.assertEqual(result.status_code,200); self.assertEqual(post.call_count,2); self.assertEqual(post.call_args_list[1].args[0],"https://graph.facebook.com/v26.0/123456/messages")
     def test_empty_structured_observation_logs_safe_shape(self):
         app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"status":"completed","output":[{"content":[{"type":"refusal","refusal":"contenido-no-registrado"}]}]}
         with self.assertLogs("arenz", level="WARNING") as logs:

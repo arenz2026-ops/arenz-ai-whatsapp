@@ -274,6 +274,20 @@ def parse_structured_json(output_text):
     return observation
 
 
+def response_usage_metadata(response_body, started_at):
+    """Return safe, content-free telemetry for a completed Responses API call."""
+    usage = response_body.get("usage") if isinstance(response_body, dict) else None
+    details = usage.get("output_tokens_details") if isinstance(usage, dict) else None
+    return {
+        "model": response_body.get("model") if isinstance(response_body, dict) and isinstance(response_body.get("model"), str) else "unknown",
+        "usage_available": isinstance(usage, dict),
+        "output_tokens": usage.get("output_tokens") if isinstance(usage, dict) else None,
+        "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details, dict) else None,
+        "total_tokens": usage.get("total_tokens") if isinstance(usage, dict) else None,
+        "latency_ms": round((time.monotonic() - started_at) * 1000),
+    }
+
+
 def build_observation_payload(previous, text):
     """Build a bounded extraction request from durable criteria only."""
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "criteria": conversation_state(previous)}
@@ -302,6 +316,8 @@ def observe_conversation(sender, text, deterministic_reply):
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
         response.raise_for_status()
         response_body = response.json()
+        telemetry = response_usage_metadata(response_body, started_at)
+        logger.info("Conversation observation telemetry: model=%s usage_available=%s output_tokens=%s reasoning_tokens=%s total_tokens=%s latency_ms=%s", telemetry["model"], telemetry["usage_available"], telemetry["output_tokens"], telemetry["reasoning_tokens"], telemetry["total_tokens"], telemetry["latency_ms"])
         output_text = response_output_text(response_body)
         if not output_text:
             outputs = response_body.get("output", [])
@@ -320,7 +336,7 @@ def observe_conversation(sender, text, deterministic_reply):
         required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
         if not isinstance(observation, dict) or not required.issubset(observation) or not isinstance(observation["slot_updates"], dict):
             raise ValueError("invalid_contract")
-        logger.info("Conversation observation: intent=%s next_action=%s slots=%s handoff=%s latency_ms=%s", observation["intent"], observation["next_action"], sum(value is not None and value != [] for value in observation["slot_updates"].values()), observation["handoff"], round((time.monotonic() - started_at) * 1000))
+        logger.info("Conversation observation: intent=%s next_action=%s slots=%s handoff=%s latency_ms=%s", observation["intent"], observation["next_action"], sum(value is not None and value != [] for value in observation["slot_updates"].values()), observation["handoff"], telemetry["latency_ms"])
         return observation
     except requests.HTTPError as error:
         details = {}
