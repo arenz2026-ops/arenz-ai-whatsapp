@@ -21,6 +21,20 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 GRAPH_API_VERSION = "v26.0"
 user_sessions = {}
 
+OBSERVATION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "intent": {"type": "string", "enum": ["property_search", "general_question", "change_criteria", "human_handoff", "greeting", "confirmation", "unknown"]},
+        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "property_type": {"type": ["string", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"]},
+        "criteria_change": {"type": "boolean"},
+        "user_question": {"type": ["string", "null"]},
+        "next_action": {"type": "string", "enum": ["reply", "ask_clarification", "confirm", "search_inventory", "handoff"]},
+        "handoff": {"type": "boolean"},
+        "assistant_reply": {"type": "string"}
+    },
+    "required": ["intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"]
+}
+
 
 class LeadStore:
     def __init__(self, path): self.path = path
@@ -99,11 +113,41 @@ class SupabaseLeadStore:
         return rows[0] if rows else None
 
 
+class ConversationMemoryStore:
+    """Durable observation memory; it does not control the production dialogue yet."""
+    def __init__(self, url, key):
+        self.url = url.rstrip("/")
+        self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    def load_session(self, phone):
+        response = requests.get(f"{self.url}/rest/v1/conversation_sessions", headers=self.headers, params={"phone": f"eq.{phone}", "select": "state,summary,stage"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        return rows[0] if rows else None
+
+    def record_observation(self, phone, message_id, inbound, outbound, observation):
+        now = datetime.now(timezone.utc).isoformat()
+        session = {"phone": phone, "stage": "observation", "state": {"last_observation": observation, "last_user_message": inbound, "last_assistant_message": outbound}, "summary": "Observación IA almacenada; no controla el flujo productivo.", "updated_at": now}
+        response = requests.post(f"{self.url}/rest/v1/conversation_sessions?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=session, timeout=10)
+        response.raise_for_status()
+        messages = [
+            {"phone": phone, "message_key": f"in:{message_id}", "direction": "inbound", "content": inbound, "extraction": observation},
+            {"phone": phone, "message_key": f"out:{message_id}", "direction": "outbound", "content": outbound, "extraction": None},
+        ]
+        response = requests.post(f"{self.url}/rest/v1/conversation_messages?on_conflict=message_key", headers={**self.headers, "Prefer": "resolution=ignore-duplicates,return=minimal"}, json=messages, timeout=10)
+        response.raise_for_status()
+
+
 def get_lead_store():
     supabase_url, supabase_key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
     if supabase_url and supabase_key:
         return SupabaseLeadStore(supabase_url, supabase_key)
     return LeadStore(os.getenv("LEADS_DB_PATH", "leads.db"))
+
+
+def get_conversation_memory_store():
+    supabase_url, supabase_key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    return ConversationMemoryStore(supabase_url, supabase_key) if supabase_url and supabase_key else None
 
 
 @app.route("/", methods=["GET"])
@@ -179,6 +223,49 @@ def generate_ai_reply(sender, text, fallback):
         return fallback
 
 
+def observe_conversation(sender, text, deterministic_reply):
+    """Extract structured signals only; never controls the user-facing reply."""
+    if not OPENAI_API_KEY:
+        return None
+    previous = None
+    memory = get_conversation_memory_store()
+    if memory:
+        try:
+            previous = memory.load_session(sender)
+        except requests.RequestException:
+            logger.warning("Conversation memory unavailable during observation")
+    payload = {
+        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 350,
+        "instructions": "Eres un analizador de conversaciones inmobiliarias en Lima. Extrae solo información explícita o altamente confiable. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON solicitado. Esta salida es de observación y no decide el flujo.",
+        "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
+        "input": f"Memoria previa: {json.dumps(previous or {}, ensure_ascii=False)}\nMensaje actual: {text}\nRespuesta determinista actual: {deterministic_reply}",
+    }
+    try:
+        response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
+        response.raise_for_status()
+        observation = json.loads(response.json().get("output_text", ""))
+        required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
+        if not isinstance(observation, dict) or not required.issubset(observation) or not isinstance(observation["slot_updates"], dict):
+            raise ValueError("invalid observation contract")
+        logger.info("Conversation observation: intent=%s next_action=%s slots=%s handoff=%s", observation["intent"], observation["next_action"], sum(value is not None and value != [] for value in observation["slot_updates"].values()), observation["handoff"])
+        return observation
+    except requests.HTTPError as error:
+        logger.warning("Conversation observation unavailable: status=%s", error.response.status_code if error.response is not None else "unknown")
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        logger.warning("Conversation observation unavailable")
+    return None
+
+
+def persist_conversation_observation(sender, message_id, inbound, outbound, observation):
+    memory = get_conversation_memory_store()
+    if not memory:
+        return
+    try:
+        memory.record_observation(sender, message_id, inbound, outbound, observation)
+    except requests.RequestException:
+        logger.warning("Conversation observation persistence unavailable")
+
+
 def send_whatsapp_message(to, message):
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID: raise RuntimeError("WhatsApp credentials are not configured")
     response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages", headers={"Authorization":f"Bearer {WHATSAPP_TOKEN}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
@@ -227,6 +314,8 @@ def receive_webhook():
             if not store.claim_message(message.get("id")): continue
             sender, text = message["from"], message["text"]["body"]
             reply = generate_ai_reply(sender, text, generate_reply(sender, text))
+            observation = observe_conversation(sender, text, reply)
+            persist_conversation_observation(sender, message.get("id"), text, reply, observation)
             store.upsert_lead(sender, user_sessions.get(sender, {}), text, reply)
             send_whatsapp_message(sender, reply)
             processed += 1

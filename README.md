@@ -54,6 +54,24 @@ alter table public.leads
 create table if not exists public.processed_messages (
   message_id text primary key
 );
+
+create table if not exists public.conversation_sessions (
+  phone text primary key,
+  stage text not null,
+  state jsonb not null default '{}'::jsonb,
+  summary text,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.conversation_messages (
+  id uuid primary key default gen_random_uuid(),
+  phone text not null,
+  message_key text unique not null,
+  direction text not null check (direction in ('inbound', 'outbound')),
+  content text not null,
+  extraction jsonb,
+  created_at timestamptz not null default now()
+);
 ```
 
 La clave usada por Render debe poder insertar y actualizar esta tabla. No publiques
