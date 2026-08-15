@@ -257,7 +257,7 @@ def observe_conversation(sender, text, deterministic_reply):
         except requests.RequestException:
             logger.warning("Conversation memory unavailable during observation")
     payload = {
-        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 700,
+        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
         "instructions": "Eres un analizador de conversaciones inmobiliarias en Lima. Extrae solo información explícita o altamente confiable. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON solicitado. Esta salida es de observación y no decide el flujo.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Memoria previa: {json.dumps(previous or {}, ensure_ascii=False)}\nMensaje actual: {text}\nRespuesta determinista actual: {deterministic_reply}",
