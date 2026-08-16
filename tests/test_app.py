@@ -41,6 +41,14 @@ class AppTests(unittest.TestCase):
         with patch.object(app.requests,"post",return_value=response) as post: observation=app.observe_conversation("519","Busco comprar en Miraflores hasta US$200 mil, 3 dormitorios",deterministic)
         self.assertEqual(observation,expected); self.assertEqual(deterministic,"Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor")
         self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],1200)
+
+    def test_strict_schema_requires_every_declared_field_and_supports_empty_values(self):
+        schema=app.OBSERVATION_SCHEMA; slots=schema["properties"]["slot_updates"]
+        self.assertEqual(set(schema["properties"]),set(schema["required"]))
+        self.assertEqual(set(slots["properties"]),set(slots["required"]))
+        empty_slots={key: ([] if key in ("districts","preferences","preference_removals") else None) for key in slots["properties"]}
+        self.assertEqual(empty_slots["bathrooms"],None); self.assertEqual(empty_slots["preferences"],[]); self.assertEqual(empty_slots["preference_removals"],[])
+        self.assertIn("criteria_removals",schema["required"])
     def test_observation_payload_is_compact_and_preserves_durable_context(self):
         previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"recent_turns":[{"direction":"user","content":"Busco en Surco"},{"direction":"assistant","content":"Perfecto, anotado."}]}}
         payload=app.build_observation_payload(previous,"consulta actual")
