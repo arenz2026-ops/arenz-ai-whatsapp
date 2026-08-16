@@ -5,6 +5,7 @@ import logging
 import os
 import sqlite3
 import time
+import unicodedata
 from datetime import datetime, timezone
 
 import requests
@@ -509,7 +510,81 @@ def usable_assistant_reply(observation):
     return None if any(term in reply.lower() for term in prohibited) else reply
 
 
-def progressive_reply(previous, observation, fallback):
+def normalized_user_text(text):
+    """Normalize user text only for bounded intent checks."""
+    if not isinstance(text, str):
+        return ""
+    return "".join(char for char in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(char) != "Mn")
+
+
+def is_criteria_recap_request(text):
+    """Recognize explicit requests to restate the active property search."""
+    normalized = normalized_user_text(text)
+    phrases = (
+        "resumen", "resume mi busqueda", "resume la busqueda", "recapitula",
+        "mis criterios", "que criterios", "mis requisitos", "que requisitos",
+        "mi busqueda actual", "que busco", "mis filtros",
+    )
+    return any(phrase in normalized for phrase in phrases)
+
+
+def criteria_recap(criteria):
+    """Render only active durable criteria; never infer missing search details."""
+    if not criteria:
+        return "Aún no tengo criterios confirmados para resumir."
+    operation = {"compra": "comprar", "alquiler": "alquilar", "venta": "vender"}.get(criteria.get("operation"), criteria.get("operation"))
+    property_type = criteria.get("property_type")
+    parts = []
+    if operation and property_type:
+        parts.append(f"{operation} {property_type}")
+    elif operation:
+        parts.append(operation)
+    elif property_type:
+        parts.append(property_type)
+    if criteria.get("districts"):
+        parts.append("en " + ", ".join(criteria["districts"]))
+    if criteria.get("budget_max") and criteria.get("currency"):
+        currency = "US$" if criteria["currency"] == "USD" else "S/"
+        parts.append(f"hasta {currency}{criteria['budget_max']:,}")
+    if criteria.get("bedrooms") is not None:
+        parts.append(f"{criteria['bedrooms']} {'dormitorio' if criteria['bedrooms'] == 1 else 'dormitorios'}")
+    if criteria.get("bathrooms") is not None:
+        parts.append(f"{criteria['bathrooms']} {'baño' if criteria['bathrooms'] == 1 else 'baños'}")
+    if criteria.get("parking") is True:
+        parts.append("con estacionamiento")
+    elif criteria.get("parking") is False:
+        parts.append("sin estacionamiento")
+    if criteria.get("preferences"):
+        parts.append("preferencias: " + ", ".join(criteria["preferences"]))
+    area_min, area_max = criteria.get("area_min"), criteria.get("area_max")
+    if area_min and area_max:
+        parts.append(f"{area_min}–{area_max} m²")
+    elif area_min:
+        parts.append(f"desde {area_min} m²")
+    elif area_max:
+        parts.append(f"hasta {area_max} m²")
+    if criteria.get("property_condition"):
+        parts.append(f"estado {criteria['property_condition']}")
+    if criteria.get("floor_min") is not None:
+        parts.append(f"piso ≥{criteria['floor_min']}")
+    if criteria.get("floor_max") is not None:
+        parts.append(f"piso ≤{criteria['floor_max']}")
+    if criteria.get("pets_allowed") is True:
+        parts.append("acepta mascotas")
+    elif criteria.get("pets_allowed") is False:
+        parts.append("no acepta mascotas")
+    if criteria.get("furnished") is True:
+        parts.append("amoblado")
+    elif criteria.get("furnished") is False:
+        parts.append("sin amoblar")
+    if criteria.get("delivery_timing"):
+        parts.append(f"entrega {criteria['delivery_timing']}")
+    if criteria.get("max_age_years") is not None:
+        parts.append(f"antigüedad ≤{criteria['max_age_years']} años")
+    return "Resumen de tu búsqueda: " + "; ".join(parts) + "."
+
+
+def progressive_reply(previous, observation, fallback, inbound=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     if not observation:
         return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
@@ -518,6 +593,8 @@ def progressive_reply(previous, observation, fallback):
     if observation.get("handoff") or intent == "human_handoff":
         return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."
     natural_reply = usable_assistant_reply(observation)
+    if is_criteria_recap_request(inbound):
+        return criteria_recap(criteria), criteria, "conversation", "Resumen construido desde criterios durables."
     if intent == "general_question":
         if natural_reply:
             return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
@@ -606,7 +683,7 @@ def receive_webhook():
                 logger.warning("Conversation memory unavailable; using in-process fallback")
             timings["session_read_ms"] = round((time.monotonic() - started_at) * 1000)
             observation = observe_conversation(sender, text, fallback, timings, previous, True)
-            reply, criteria, stage, summary = progressive_reply(previous, observation, fallback)
+            reply, criteria, stage, summary = progressive_reply(previous, observation, fallback, text)
             persist_conversation_turn(sender, message.get("id"), text, reply, observation, criteria, stage, summary, previous, timings)
             started_at = time.monotonic()
             store.upsert_lead(sender, user_sessions.get(sender, {}), text, reply)
