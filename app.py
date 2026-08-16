@@ -26,12 +26,13 @@ OBSERVATION_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
         "intent": {"type": "string", "enum": ["property_search", "general_question", "change_criteria", "human_handoff", "greeting", "confirmation", "unknown"]},
-        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "property_type": {"type": ["string", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"]},
+        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "bathrooms": {"type": ["integer", "null"]}, "parking": {"type": ["boolean", "null"]}, "area_min": {"type": ["number", "null"]}, "area_max": {"type": ["number", "null"]}, "property_type": {"type": ["string", "null"]}, "property_condition": {"type": ["string", "null"]}, "floor_min": {"type": ["integer", "null"]}, "floor_max": {"type": ["integer", "null"]}, "pets_allowed": {"type": ["boolean", "null"]}, "furnished": {"type": ["boolean", "null"]}, "delivery_timing": {"type": ["string", "null"]}, "max_age_years": {"type": ["integer", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}, "preference_removals": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"]},
         "criteria_change": {"type": "boolean"},
         "user_question": {"type": ["string", "null"]},
         "next_action": {"type": "string", "enum": ["reply", "ask_clarification", "confirm", "search_inventory", "handoff"]},
         "handoff": {"type": "boolean"},
-        "assistant_reply": {"type": "string"}
+        "assistant_reply": {"type": "string"},
+        "criteria_removals": {"type": "array", "items": {"type": "string", "enum": ["operation", "districts", "budget_max", "currency", "bedrooms", "bathrooms", "parking", "area_min", "area_max", "property_type", "property_condition", "floor_min", "floor_max", "pets_allowed", "furnished", "delivery_timing", "max_age_years", "preferences"]}}
     },
     "required": ["intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"]
 }
@@ -318,7 +319,7 @@ def build_observation_payload(previous, text):
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
     return {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. assistant_reply es la respuesta normal para todos los intents no handoff: natural, útil y máximo 180 caracteres. Reconoce explícitamente cambios o preferencias nuevos. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. assistant_reply es la respuesta normal para todos los intents no handoff: natural, útil y máximo 180 caracteres. Los slot_updates son cambios acumulativos: incluye solo requisitos nuevos o sustituidos; no repitas ni borres criterios previos. preferences agrega preferencias; preference_removals elimina solo esas preferencias. criteria_removals elimina únicamente los slots solicitados explícitamente. Usa bathrooms para baños y parking para estacionamiento. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
@@ -400,6 +401,9 @@ def persist_conversation_observation(sender, message_id, inbound, outbound, obse
 ALLOWED_OPERATIONS = {"compra", "alquiler", "venta"}
 OPERATION_ALIASES = {"comprar": "compra", "alquilar": "alquiler", "vender": "venta"}
 ALLOWED_CURRENCIES = {"USD", "PEN"}
+CRITERIA_KEYS = ("operation", "districts", "budget_max", "currency", "bedrooms", "bathrooms", "parking", "area_min", "area_max", "property_type", "property_condition", "floor_min", "floor_max", "pets_allowed", "furnished", "delivery_timing", "max_age_years", "preferences")
+REMOVABLE_CRITERIA = set(CRITERIA_KEYS)
+PARKING_PREFERENCE_ALIASES = {"estacionamiento", "cochera", "garaje"}
 
 
 def validated_slot_updates(slot_updates):
@@ -424,19 +428,74 @@ def validated_slot_updates(slot_updates):
     bedrooms = slot_updates.get("bedrooms")
     if isinstance(bedrooms, int) and 0 <= bedrooms <= 20:
         clean["bedrooms"] = bedrooms
+    bathrooms = slot_updates.get("bathrooms")
+    if isinstance(bathrooms, int) and 0 <= bathrooms <= 20:
+        clean["bathrooms"] = bathrooms
+    parking = slot_updates.get("parking")
+    if isinstance(parking, bool):
+        clean["parking"] = parking
+    for key in ("area_min", "area_max"):
+        value = slot_updates.get(key)
+        if isinstance(value, (int, float)) and 1 <= value <= 100000:
+            clean[key] = int(value)
     property_type = slot_updates.get("property_type")
     if isinstance(property_type, str) and 1 <= len(property_type.strip()) <= 40:
         clean["property_type"] = property_type.strip().lower()
+    property_condition = slot_updates.get("property_condition")
+    if isinstance(property_condition, str) and 1 <= len(property_condition.strip()) <= 40:
+        clean["property_condition"] = property_condition.strip().lower()
+    for key in ("floor_min", "floor_max", "max_age_years"):
+        value = slot_updates.get(key)
+        if isinstance(value, int) and 0 <= value <= 200:
+            clean[key] = value
+    for key in ("pets_allowed", "furnished"):
+        value = slot_updates.get(key)
+        if isinstance(value, bool):
+            clean[key] = value
+    delivery_timing = slot_updates.get("delivery_timing")
+    if isinstance(delivery_timing, str) and 1 <= len(delivery_timing.strip()) <= 60:
+        clean["delivery_timing"] = delivery_timing.strip().lower()
     preferences = slot_updates.get("preferences")
     if isinstance(preferences, list):
         clean["preferences"] = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
+    preference_removals = slot_updates.get("preference_removals")
+    if isinstance(preference_removals, list):
+        clean["preference_removals"] = [value.strip().lower() for value in preference_removals if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
     return clean
 
 
 def conversation_state(previous):
     state = previous.get("state", {}) if isinstance(previous, dict) else {}
     criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
-    return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences") if criteria.get(key) not in (None, [], "")}
+    return {key: criteria.get(key) for key in CRITERIA_KEYS if criteria.get(key) not in (None, [], "")}
+
+
+def merge_criteria(previous, slot_updates, criteria_removals=None):
+    """Merge durable criteria; only explicit removals can delete existing values."""
+    criteria = conversation_state(previous)
+    removals = criteria_removals if isinstance(criteria_removals, list) else []
+    for key in removals:
+        if key in REMOVABLE_CRITERIA:
+            criteria.pop(key, None)
+    updates = validated_slot_updates(slot_updates)
+    removed_preferences = set(updates.pop("preference_removals", []))
+    if removed_preferences & PARKING_PREFERENCE_ALIASES:
+        criteria.pop("parking", None)
+    if "parking" in removals:
+        removed_preferences.update(PARKING_PREFERENCE_ALIASES)
+    if removed_preferences:
+        criteria["preferences"] = [value for value in criteria.get("preferences", []) if value not in removed_preferences]
+        if not criteria["preferences"]:
+            criteria.pop("preferences", None)
+    additions = updates.pop("preferences", [])
+    if set(additions) & PARKING_PREFERENCE_ALIASES:
+        updates.setdefault("parking", True)
+        additions = [value for value in additions if value not in PARKING_PREFERENCE_ALIASES]
+    if additions:
+        existing = criteria.get("preferences", [])
+        criteria["preferences"] = list(dict.fromkeys(existing + additions))[:10]
+    criteria.update(updates)
+    return criteria
 
 
 def usable_assistant_reply(observation):
@@ -454,8 +513,7 @@ def progressive_reply(previous, observation, fallback):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     if not observation:
         return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
-    criteria = conversation_state(previous)
-    criteria.update(validated_slot_updates(observation.get("slot_updates")))
+    criteria = merge_criteria(previous, observation.get("slot_updates"), observation.get("criteria_removals"))
     intent = observation.get("intent")
     if observation.get("handoff") or intent == "human_handoff":
         return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."

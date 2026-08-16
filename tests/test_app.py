@@ -149,7 +149,7 @@ class AppTests(unittest.TestCase):
         previous={"stage":"qualified","state":{"criteria":{"operation":"compra","districts":["Jesús María"],"budget_max":500000,"currency":"PEN","bedrooms":3,"property_type":"departamento"},"recent_turns":[{"direction":"assistant","content":"¿Te interesa alguna preferencia?"}]}}
         observation={"intent":"change_criteria","slot_updates":{"preferences":["estacionamiento"]},"handoff":False,"assistant_reply":"Perfecto, añado estacionamiento a tu búsqueda en Jesús María. ¿Te interesa balcón u otra preferencia?"}
         reply, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
-        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["preferences"],["estacionamiento"]); self.assertIn("añado estacionamiento",reply); self.assertNotIn("como balcón o estacionamiento",reply)
+        self.assertEqual(stage,"qualified"); self.assertTrue(criteria["parking"]); self.assertIn("añado estacionamiento",reply); self.assertNotIn("como balcón o estacionamiento",reply)
 
     def test_recent_turns_are_preserved_bounded_for_next_turn(self):
         previous={"state":{"recent_turns":[{"direction":"user","content":"uno"},{"direction":"assistant","content":"dos"},{"direction":"user","content":"tres"},{"direction":"assistant","content":"cuatro"}]}}
@@ -162,6 +162,33 @@ class AppTests(unittest.TestCase):
         self.assertEqual((criteria["operation"],stage),("compra","qualification")); self.assertIn("tipo de inmueble",reply)
         unavailable={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Tenemos disponible un departamento."}
         self.assertEqual(app.progressive_reply(None, unavailable, "fallback")[0],"¿Qué tipo de inmueble buscas?")
+
+    def test_ten_turn_accumulation_survives_window_expiry_and_explicit_changes(self):
+        previous=None
+        turns=[
+            {"intent":"property_search","slot_updates":{"operation":"compra","districts":["Miraflores"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento"},"handoff":False,"assistant_reply":"Inicio."},
+            {"intent":"change_criteria","slot_updates":{"bathrooms":2},"handoff":False,"assistant_reply":"Anoto 2 baños."},
+            {"intent":"change_criteria","slot_updates":{"parking":True},"handoff":False,"assistant_reply":"Anoto estacionamiento."},
+            {"intent":"change_criteria","slot_updates":{"preferences":["balcón"]},"handoff":False,"assistant_reply":"Anoto balcón."},
+            {"intent":"change_criteria","slot_updates":{"pets_allowed":True},"handoff":False,"assistant_reply":"Acepto mascotas."},
+            {"intent":"change_criteria","slot_updates":{"furnished":True,"area_min":85,"area_max":130,"property_condition":"usado","floor_min":3,"max_age_years":12},"handoff":False,"assistant_reply":"Anoto los demás requisitos."},
+            {"intent":"change_criteria","slot_updates":{"districts":["Surco"]},"handoff":False,"assistant_reply":"Cambio a Surco."},
+            {"intent":"change_criteria","slot_updates":{"bedrooms":2},"handoff":False,"assistant_reply":"Cambio a 2 dormitorios."},
+            {"intent":"change_criteria","slot_updates":{},"criteria_removals":["parking"],"handoff":False,"assistant_reply":"Quito estacionamiento."},
+            {"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Buscas comprar un departamento en Surco, 2 dormitorios, 2 baños, balcón, acepta mascotas y amoblado."},
+        ]
+        for index, observation in enumerate(turns):
+            reply, criteria, _, _=app.progressive_reply(previous, observation, "fallback")
+            previous={"state":{"criteria":criteria,"recent_turns":[] if index == 5 else [{"direction":"user","content":"turno"}]}}
+        self.assertIn("Surco",reply); self.assertEqual(criteria["operation"],"compra"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["bedrooms"],2); self.assertEqual(criteria["bathrooms"],2)
+        self.assertEqual(criteria["budget_max"],200000); self.assertEqual(criteria["area_min"],85); self.assertEqual(criteria["area_max"],130); self.assertEqual(criteria["property_condition"],"usado"); self.assertEqual(criteria["floor_min"],3); self.assertEqual(criteria["max_age_years"],12)
+        self.assertEqual(criteria["preferences"],["balcón"]); self.assertTrue(criteria["pets_allowed"]); self.assertTrue(criteria["furnished"]); self.assertNotIn("parking",criteria)
+
+    def test_parking_removal_cleans_only_legacy_parking_preference(self):
+        previous={"state":{"criteria":{"preferences":["balcón","estacionamiento"],"parking":True,"bathrooms":2}}}
+        observation={"intent":"change_criteria","slot_updates":{},"criteria_removals":["parking"],"handoff":False,"assistant_reply":"Quito estacionamiento."}
+        _, criteria, _, _=app.progressive_reply(previous, observation, "fallback")
+        self.assertEqual(criteria["preferences"],["balcón"]); self.assertEqual(criteria["bathrooms"],2); self.assertNotIn("parking",criteria)
 
     def test_general_question_and_handoff_do_not_reset_conversation(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
