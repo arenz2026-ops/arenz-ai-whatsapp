@@ -126,17 +126,23 @@ class ConversationMemoryStore:
         rows = response.json()
         return rows[0] if rows else None
 
-    def record_turn(self, phone, message_id, inbound, outbound, observation, state, stage, summary):
+    def record_turn(self, phone, message_id, inbound, outbound, observation, state, stage, summary, timings=None):
         now = datetime.now(timezone.utc).isoformat()
         session = {"phone": phone, "stage": stage, "state": {**state, "last_observation": observation, "last_user_message": inbound, "last_assistant_message": outbound}, "summary": summary, "updated_at": now}
+        started_at = time.monotonic()
         response = requests.post(f"{self.url}/rest/v1/conversation_sessions?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=session, timeout=10)
         response.raise_for_status()
+        if timings is not None:
+            timings["session_write_ms"] = round((time.monotonic() - started_at) * 1000)
         messages = [
             {"phone": phone, "message_key": f"in:{message_id}", "direction": "inbound", "content": inbound, "extraction": observation},
             {"phone": phone, "message_key": f"out:{message_id}", "direction": "outbound", "content": outbound, "extraction": None},
         ]
+        started_at = time.monotonic()
         response = requests.post(f"{self.url}/rest/v1/conversation_messages?on_conflict=message_key", headers={**self.headers, "Prefer": "resolution=ignore-duplicates,return=minimal"}, json=messages, timeout=10)
         response.raise_for_status()
+        if timings is not None:
+            timings["messages_write_ms"] = round((time.monotonic() - started_at) * 1000)
 
     def record_observation(self, phone, message_id, inbound, outbound, observation):
         self.record_turn(phone, message_id, inbound, outbound, observation, {}, "observation", "Observación IA almacenada; no controla el flujo productivo.")
@@ -288,35 +294,58 @@ def response_usage_metadata(response_body, started_at):
     }
 
 
+def recent_conversation_turns(previous, limit=4):
+    """Return a small durable dialogue window, without internal observation data."""
+    state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    turns = state.get("recent_turns", []) if isinstance(state, dict) else []
+    clean = []
+    for turn in turns if isinstance(turns, list) else []:
+        if not isinstance(turn, dict):
+            continue
+        direction, content = turn.get("direction"), turn.get("content")
+        if direction in ("user", "assistant") and isinstance(content, str) and content.strip():
+            clean.append({"direction": direction, "content": content.strip()[:280]})
+    if not clean and isinstance(state, dict):
+        for direction, key in (("user", "last_user_message"), ("assistant", "last_assistant_message")):
+            content = state.get(key)
+            if isinstance(content, str) and content.strip():
+                clean.append({"direction": direction, "content": content.strip()[:280]})
+    return clean[-limit:]
+
+
 def build_observation_payload(previous, text):
-    """Build a bounded extraction request from durable criteria only."""
-    context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "criteria": conversation_state(previous)}
+    """Build a bounded request from durable criteria and recent dialogue."""
+    context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
     return {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. Para intent=general_question, assistant_reply debe ser breve: máximo 180 caracteres. En otros intent, usa assistant_reply vacío si no es necesario. user_question debe tener como máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. assistant_reply es la respuesta normal para todos los intents no handoff: natural, útil y máximo 180 caracteres. Reconoce explícitamente cambios o preferencias nuevos. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
 
 
-def observe_conversation(sender, text, deterministic_reply):
+def observe_conversation(sender, text, deterministic_reply, timings=None, previous=None, previous_loaded=False):
     """Extract structured signals only; never controls the user-facing reply."""
     if not OPENAI_API_KEY:
         return None
-    previous = None
     memory = get_conversation_memory_store()
-    if memory:
+    if not previous_loaded and memory:
         try:
             previous = memory.load_session(sender)
         except requests.RequestException:
             logger.warning("Conversation memory unavailable during observation")
+    context_started_at = time.monotonic()
     payload = build_observation_payload(previous, text)
+    if timings is not None:
+        timings["context_ms"] = round((time.monotonic() - context_started_at) * 1000)
     started_at = time.monotonic()
     try:
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
         response.raise_for_status()
         response_body = response.json()
         telemetry = response_usage_metadata(response_body, started_at)
+        if timings is not None:
+            timings["openai_ms"] = telemetry["latency_ms"]
         logger.info("Conversation observation telemetry: model=%s usage_available=%s output_tokens=%s reasoning_tokens=%s total_tokens=%s latency_ms=%s", telemetry["model"], telemetry["usage_available"], telemetry["output_tokens"], telemetry["reasoning_tokens"], telemetry["total_tokens"], telemetry["latency_ms"])
         output_text = response_output_text(response_body)
         if not output_text:
@@ -410,6 +439,17 @@ def conversation_state(previous):
     return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences") if criteria.get(key) not in (None, [], "")}
 
 
+def usable_assistant_reply(observation):
+    reply = observation.get("assistant_reply") if isinstance(observation, dict) else None
+    if not isinstance(reply, str):
+        return None
+    reply = reply.strip()
+    if not reply or len(reply) > 280:
+        return None
+    prohibited = ("tenemos disponible", "encontré disponible", "hay disponibilidad")
+    return None if any(term in reply.lower() for term in prohibited) else reply
+
+
 def progressive_reply(previous, observation, fallback):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     if not observation:
@@ -419,25 +459,30 @@ def progressive_reply(previous, observation, fallback):
     intent = observation.get("intent")
     if observation.get("handoff") or intent == "human_handoff":
         return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."
+    natural_reply = usable_assistant_reply(observation)
     if intent == "general_question":
-        reply = observation.get("assistant_reply")
-        if isinstance(reply, str) and reply.strip() and "disponib" not in reply.lower():
-            return reply.strip(), criteria, "conversation", "Consulta atendida; criterios conservados."
+        if natural_reply:
+            return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
         return "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?", criteria, "conversation", "Consulta libre; criterios conservados."
     missing = [("operation", "¿Deseas comprar, alquilar o vender?"), ("property_type", "¿Qué tipo de inmueble buscas?"), ("districts", "¿En qué distrito o zona estás interesado?"), ("budget_max", "¿Cuál es tu presupuesto máximo aproximado?"), ("currency", "¿Tu presupuesto es en USD o PEN?"), ("bedrooms", "¿Cuántos dormitorios necesitas?")]
     for key, question in missing:
         if criteria.get(key) in (None, [], ""):
+            if natural_reply:
+                return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
+    if natural_reply:
+        return natural_reply, criteria, "qualified", "Criterios completos; respuesta IA validada."
     district = ", ".join(criteria["districts"])
     return f"Entendido: {criteria['operation']} de {criteria['property_type']} en {district}, hasta {criteria['currency']} {criteria['budget_max']:,} y {criteria['bedrooms']} dormitorios. ¿Deseas añadir alguna preferencia, como balcón o estacionamiento?", criteria, "qualified", "Criterios básicos completos; sin derivación automática."
 
 
-def persist_conversation_turn(sender, message_id, inbound, outbound, observation, criteria, stage, summary):
+def persist_conversation_turn(sender, message_id, inbound, outbound, observation, criteria, stage, summary, previous=None, timings=None):
     memory = get_conversation_memory_store()
     if not memory:
         return
     try:
-        memory.record_turn(sender, message_id, inbound, outbound, observation, {"criteria": criteria}, stage, summary)
+        turns = recent_conversation_turns(previous) + [{"direction": "user", "content": inbound}, {"direction": "assistant", "content": outbound}]
+        memory.record_turn(sender, message_id, inbound, outbound, observation, {"criteria": criteria, "recent_turns": turns[-4:]}, stage, summary, timings)
     except requests.RequestException:
         logger.warning("Conversation memory persistence unavailable")
 
@@ -478,6 +523,7 @@ def iter_incoming_messages(data):
 
 @app.route("/webhook", methods=["POST"])
 def receive_webhook():
+    webhook_started_at = time.monotonic()
     raw = request.get_data(cache=True)
     if not valid_meta_signature(raw, request.headers.get("X-Hub-Signature-256", "")):
         logger.warning("Rejected webhook with invalid signature"); return jsonify({"status":"invalid_signature"}), 401
@@ -487,20 +533,31 @@ def receive_webhook():
     try:
         processed = 0
         for message in messages:
+            timings = {}
+            started_at = time.monotonic()
             if not store.claim_message(message.get("id")): continue
+            timings["dedupe_ms"] = round((time.monotonic() - started_at) * 1000)
             sender, text = message["from"], message["text"]["body"]
             fallback = generate_reply(sender, text)
             memory = get_conversation_memory_store()
+            started_at = time.monotonic()
             try:
                 previous = memory.load_session(sender) if memory else None
             except requests.RequestException:
                 previous = None
                 logger.warning("Conversation memory unavailable; using in-process fallback")
-            observation = observe_conversation(sender, text, fallback)
+            timings["session_read_ms"] = round((time.monotonic() - started_at) * 1000)
+            observation = observe_conversation(sender, text, fallback, timings, previous, True)
             reply, criteria, stage, summary = progressive_reply(previous, observation, fallback)
-            persist_conversation_turn(sender, message.get("id"), text, reply, observation, criteria, stage, summary)
+            persist_conversation_turn(sender, message.get("id"), text, reply, observation, criteria, stage, summary, previous, timings)
+            started_at = time.monotonic()
             store.upsert_lead(sender, user_sessions.get(sender, {}), text, reply)
+            timings["lead_write_ms"] = round((time.monotonic() - started_at) * 1000)
+            started_at = time.monotonic()
             send_whatsapp_message(sender, reply)
+            timings["graph_ms"] = round((time.monotonic() - started_at) * 1000)
+            timings["total_ms"] = round((time.monotonic() - webhook_started_at) * 1000)
+            logger.info("Webhook timing: dedupe_ms=%s session_read_ms=%s context_ms=%s openai_ms=%s session_write_ms=%s messages_write_ms=%s lead_write_ms=%s graph_ms=%s total_ms=%s", timings.get("dedupe_ms"), timings.get("session_read_ms"), timings.get("context_ms"), timings.get("openai_ms"), timings.get("session_write_ms"), timings.get("messages_write_ms"), timings.get("lead_write_ms"), timings.get("graph_ms"), timings.get("total_ms"))
             processed += 1
         return jsonify({"status":"received" if processed else "duplicate", "processed":processed}), 200
     except (requests.RequestException, RuntimeError, sqlite3.Error):

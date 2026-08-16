@@ -42,10 +42,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(observation,expected); self.assertEqual(deterministic,"Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor")
         self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],1200)
     def test_observation_payload_is_compact_and_preserves_durable_context(self):
-        previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"last_user_message":"no enviar","last_assistant_message":"no enviar"}}
+        previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"recent_turns":[{"direction":"user","content":"Busco en Surco"},{"direction":"assistant","content":"Perfecto, anotado."}]}}
         payload=app.build_observation_payload(previous,"consulta actual")
-        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("máximo 180 caracteres",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("consulta actual",payload["input"])
-        for forbidden in ("last_observation","last_user_message","last_assistant_message","no enviar","Respuesta determinista"):
+        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("assistant_reply es la respuesta normal",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("Busco en Surco",payload["input"]); self.assertIn("consulta actual",payload["input"])
+        for forbidden in ("last_observation","no enviar","Respuesta determinista"):
             self.assertNotIn(forbidden,payload["input"])
     def test_structured_observation_reads_output_content_format(self):
         app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output":[{"content":[{"type":"output_text","text":json.dumps(expected)}]}]}
@@ -93,6 +93,11 @@ class AppTests(unittest.TestCase):
             with patch.object(app.requests,"post",side_effect=[app.requests.ReadTimeout(),graph_response]) as post:
                 result=self.client.post("/webhook",data=raw,headers=headers)
         output="\n".join(logs.output); self.assertIn("reason=request_failed error_type=ReadTimeout latency_ms=",output); self.assertNotIn(sensitive,output); self.assertEqual(result.status_code,200); self.assertEqual(post.call_count,2); self.assertEqual(post.call_args_list[1].args[0],"https://graph.facebook.com/v26.0/123456/messages")
+    def test_webhook_logs_safe_component_timings(self):
+        app.OPENAI_API_KEY="not-a-real-key"; sensitive="mensaje-privado-no-registrar"; expected={"intent":"property_search","slot_updates":{"operation":"compra","districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"ask_clarification","handoff":False,"assistant_reply":"Perfecto, ¿qué inmueble buscas?"}; payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-timing","from":"51999999999","type":"text","text":{"body":sensitive}}]}}]}]}; raw,headers=self.signed(payload); openai=Mock(); openai.raise_for_status.return_value=None; openai.json.return_value={"output_text":json.dumps(expected)}; graph=Mock(); graph.raise_for_status.return_value=None
+        with self.assertLogs("arenz", level="INFO") as logs:
+            with patch.object(app.requests,"post",side_effect=[openai,graph]): result=self.client.post("/webhook",data=raw,headers=headers)
+        output="\n".join(logs.output); self.assertEqual(result.status_code,200); self.assertIn("Webhook timing: dedupe_ms=",output); self.assertIn("context_ms=",output); self.assertIn("openai_ms=",output); self.assertIn("graph_ms=",output); self.assertIn("total_ms=",output); self.assertNotIn(sensitive,output)
     def test_empty_structured_observation_logs_safe_shape(self):
         app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"status":"completed","output":[{"content":[{"type":"refusal","refusal":"contenido-no-registrado"}]}]}
         with self.assertLogs("arenz", level="WARNING") as logs:
@@ -139,6 +144,24 @@ class AppTests(unittest.TestCase):
         observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":None,"property_type":None,"preferences":["balcón"]},"handoff":False}
         _, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
         self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["budget_max"],220000); self.assertEqual(criteria["bedrooms"],3)
+
+    def test_preference_update_uses_natural_reply_and_never_reasks_known_preference(self):
+        previous={"stage":"qualified","state":{"criteria":{"operation":"compra","districts":["Jesús María"],"budget_max":500000,"currency":"PEN","bedrooms":3,"property_type":"departamento"},"recent_turns":[{"direction":"assistant","content":"¿Te interesa alguna preferencia?"}]}}
+        observation={"intent":"change_criteria","slot_updates":{"preferences":["estacionamiento"]},"handoff":False,"assistant_reply":"Perfecto, añado estacionamiento a tu búsqueda en Jesús María. ¿Te interesa balcón u otra preferencia?"}
+        reply, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
+        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["preferences"],["estacionamiento"]); self.assertIn("añado estacionamiento",reply); self.assertNotIn("como balcón o estacionamiento",reply)
+
+    def test_recent_turns_are_preserved_bounded_for_next_turn(self):
+        previous={"state":{"recent_turns":[{"direction":"user","content":"uno"},{"direction":"assistant","content":"dos"},{"direction":"user","content":"tres"},{"direction":"assistant","content":"cuatro"}]}}
+        self.assertEqual(len(app.recent_conversation_turns(previous)),4)
+        self.assertEqual(app.recent_conversation_turns(previous)[-1]["content"],"cuatro")
+
+    def test_assistant_reply_is_used_for_partial_search_and_fallback_remains_safe(self):
+        observation={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Perfecto, te ayudo a comprar. ¿Qué tipo de inmueble buscas?"}
+        reply, criteria, stage, _ = app.progressive_reply(None, observation, "fallback")
+        self.assertEqual((criteria["operation"],stage),("compra","qualification")); self.assertIn("tipo de inmueble",reply)
+        unavailable={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Tenemos disponible un departamento."}
+        self.assertEqual(app.progressive_reply(None, unavailable, "fallback")[0],"¿Qué tipo de inmueble buscas?")
 
     def test_general_question_and_handoff_do_not_reset_conversation(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
