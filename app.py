@@ -120,7 +120,7 @@ class SupabaseLeadStore:
 
 
 class ConversationMemoryStore:
-    """Durable conversation state and turn history, keyed by WhatsApp phone."""
+    """Durable phone session pointer, search state, and turn history."""
     def __init__(self, url, key):
         self.url = url.rstrip("/")
         self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -129,19 +129,63 @@ class ConversationMemoryStore:
         response = requests.get(f"{self.url}/rest/v1/conversation_sessions", headers=self.headers, params={"phone": f"eq.{phone}", "select": "state,summary,stage"}, timeout=10)
         response.raise_for_status()
         rows = response.json()
+        if not rows:
+            return None
+        session = rows[0]
+        active_id = active_search_id(session)
+        if active_id:
+            search = self.load_search(active_id)
+            if search:
+                state = dict(session.get("state") or {})
+                legacy_searches = state.get("legacy_searches", state.get("searches", {}))
+                state["searches"] = dict(legacy_searches) if isinstance(legacy_searches, dict) else {}
+                state["searches"][active_id] = search.get("state") or {}
+                session["state"] = state
+        return session
+
+    def load_search(self, search_id):
+        response = requests.get(f"{self.url}/rest/v1/conversation_searches", headers=self.headers, params={"search_id": f"eq.{search_id}", "select": "search_id,phone,operation,state,status,created_at,updated_at,closed_at"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
         return rows[0] if rows else None
+
+    def close_search(self, search_id, now):
+        response = requests.patch(f"{self.url}/rest/v1/conversation_searches", headers={**self.headers, "Prefer": "return=minimal"}, params={"search_id": f"eq.{search_id}"}, json={"status": "inactive", "closed_at": now, "updated_at": now}, timeout=10)
+        response.raise_for_status()
+
+    def save_search(self, phone, search_id, state, now):
+        payload = {"search_id": search_id, "phone": phone, "operation": state.get("criteria", {}).get("operation"), "state": state, "status": "active", "closed_at": None, "updated_at": now}
+        response = requests.post(f"{self.url}/rest/v1/conversation_searches?on_conflict=search_id", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=payload, timeout=10)
+        response.raise_for_status()
 
     def record_turn(self, phone, message_id, inbound, outbound, observation, state, stage, summary, timings=None):
         now = datetime.now(timezone.utc).isoformat()
-        session = {"phone": phone, "stage": stage, "state": {**state, "last_observation": observation, "last_user_message": inbound, "last_assistant_message": outbound}, "summary": summary, "updated_at": now}
+        active_id = state.get("active_search_id") if isinstance(state, dict) else None
+        previous_id = active_search_id(state.get("previous", {})) if isinstance(state, dict) else None
+        searches = state.get("searches", {}) if isinstance(state, dict) else {}
+        if active_id:
+            if previous_id and previous_id != active_id:
+                self.close_search(previous_id, now)
+            current_search_state = searches.get(active_id, {}) if isinstance(searches, dict) else {}
+            self.save_search(phone, active_id, current_search_state, now)
+        session_state = {"active_search_id": active_id} if active_id else {}
+        legacy_searches = dict(state.get("legacy_searches", {})) if isinstance(state, dict) and isinstance(state.get("legacy_searches", {}), dict) else {}
+        legacy_searches.pop(active_id, None)
+        if not legacy_searches and isinstance(searches, dict):
+            # Preserve only legacy searches in the phone session. The active search
+            # is canonical in conversation_searches and is not duplicated here.
+            legacy_searches = {search_id: search_state for search_id, search_state in searches.items() if search_id != active_id}
+        if legacy_searches:
+            session_state["legacy_searches"] = legacy_searches
+        session = {"phone": phone, "stage": stage, "state": session_state, "summary": summary, "updated_at": now}
         started_at = time.monotonic()
         response = requests.post(f"{self.url}/rest/v1/conversation_sessions?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=session, timeout=10)
         response.raise_for_status()
         if timings is not None:
             timings["session_write_ms"] = round((time.monotonic() - started_at) * 1000)
         messages = [
-            {"phone": phone, "message_key": f"in:{message_id}", "direction": "inbound", "content": inbound, "extraction": observation},
-            {"phone": phone, "message_key": f"out:{message_id}", "direction": "outbound", "content": outbound, "extraction": None},
+            {"phone": phone, "search_id": active_id, "message_key": f"in:{message_id}", "direction": "inbound", "content": inbound, "extraction": observation},
+            {"phone": phone, "search_id": active_id, "message_key": f"out:{message_id}", "direction": "outbound", "content": outbound, "extraction": None},
         ]
         started_at = time.monotonic()
         response = requests.post(f"{self.url}/rest/v1/conversation_messages?on_conflict=message_key", headers={**self.headers, "Prefer": "resolution=ignore-duplicates,return=minimal"}, json=messages, timeout=10)
@@ -408,13 +452,15 @@ ALLOWED_CURRENCIES = {"USD", "PEN"}
 
 
 def explicit_operation_from_text(text):
-    """Recognize only explicit purchase/rental requests without touching other slots."""
+    """Recognize only explicit purchase/rental/sale requests without touching other slots."""
     normalized = " ".join((text or "").casefold().split())
     wants_purchase = bool(re.search(r"\b(?:quiero|busco|deseo)\s+comprar\b|\bcomprar\b|\bcompra\b", normalized))
     wants_rental = bool(re.search(r"\b(?:quiero|busco|deseo)\s+alquilar\b|\balquilar\b|\balquiler\b", normalized))
-    if wants_purchase == wants_rental:
+    wants_sale = bool(re.search(r"\b(?:quiero|deseo)\s+vender\b|\bvender\s+mi\s+(?:departamento|inmueble)\b|\bventa\b", normalized))
+    matches = [operation for operation, matched in (("compra", wants_purchase), ("alquiler", wants_rental), ("venta", wants_sale)) if matched]
+    if len(matches) != 1:
         return None
-    return "compra" if wants_purchase else "alquiler"
+    return matches[0]
 
 
 def with_explicit_operation(observation, text):
@@ -496,9 +542,12 @@ def search_state_for_turn(previous, observation, user_text=None):
     current = searches.get(active, {}).get("criteria", {}) if active else {}
     if requested_operation and current.get("operation") and requested_operation != current.get("operation"):
         starts_new = True
-    if starts_new or active not in searches:
+    create_search = starts_new or (active not in searches and bool(requested_operation))
+    if create_search:
         active = str(uuid.uuid4())
         searches[active] = {"criteria": {}}
+    if active not in searches:
+        return {"active_search_id": None, "searches": searches}, {}
     return {"active_search_id": active, "searches": searches}, searches[active]["criteria"]
 
 
@@ -575,8 +624,13 @@ def persist_conversation_turn(sender, message_id, inbound, outbound, observation
     try:
         turns = recent_conversation_turns(previous) + [{"direction": "user", "content": inbound}, {"direction": "assistant", "content": outbound}]
         search_state, _ = search_state_for_turn(previous, observation, inbound)
-        search_state["searches"][search_state["active_search_id"]]["criteria"] = criteria
-        memory.record_turn(sender, message_id, inbound, outbound, observation, {**search_state, "criteria": criteria, "recent_turns": turns[-4:]}, stage, summary, timings)
+        active_id = search_state.get("active_search_id")
+        if active_id:
+            search_state["searches"][active_id]["criteria"] = criteria
+            search_state["searches"][active_id]["recent_turns"] = turns[-4:]
+        prior_state = previous.get("state", {}) if isinstance(previous, dict) else {}
+        legacy_searches = prior_state.get("legacy_searches", prior_state.get("searches", {})) if isinstance(prior_state, dict) else {}
+        memory.record_turn(sender, message_id, inbound, outbound, observation, {**search_state, "legacy_searches": legacy_searches, "previous": previous or {}}, stage, summary, timings)
     except requests.RequestException:
         logger.warning("Conversation memory persistence unavailable")
 
