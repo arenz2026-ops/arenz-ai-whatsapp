@@ -28,9 +28,9 @@ OBSERVATION_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
         "intent": {"type": "string", "enum": ["property_search", "new_search", "general_question", "change_criteria", "human_handoff", "greeting", "confirmation", "unknown"]},
-        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "property_type": {"type": ["string", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"]},
+        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "property_type": {"type": ["string", "null"]}, "parking_required": {"type": ["boolean", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences"]},
         "criteria_change": {"type": "boolean"},
-        "criteria_actions": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"action": {"type": "string", "enum": ["ADD", "UPDATE", "REMOVE"]}, "field": {"type": "string", "enum": ["districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"]}, "values": {"type": "array", "items": {"type": ["string", "number", "integer"]}}}, "required": ["action", "field", "values"]}},
+        "criteria_actions": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"action": {"type": "string", "enum": ["ADD", "UPDATE", "REMOVE"]}, "field": {"type": "string", "enum": ["districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences"]}, "values": {"type": "array", "items": {"type": ["string", "number", "integer", "boolean"]}}}, "required": ["action", "field", "values"]}},
         "user_question": {"type": ["string", "null"]},
         "next_action": {"type": "string", "enum": ["reply", "ask_clarification", "confirm", "search_inventory", "handoff"]},
         "handoff": {"type": "boolean"},
@@ -396,7 +396,7 @@ def build_observation_payload(previous, text):
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
     return {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, pero nunca afirmar disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, pero nunca afirmar disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
@@ -534,6 +534,9 @@ def validated_slot_updates(slot_updates):
     property_type = slot_updates.get("property_type")
     if isinstance(property_type, str) and 1 <= len(property_type.strip()) <= 40:
         clean["property_type"] = property_type.strip().lower()
+    parking_required = slot_updates.get("parking_required")
+    if isinstance(parking_required, bool):
+        clean["parking_required"] = parking_required
     preferences = slot_updates.get("preferences")
     if isinstance(preferences, list):
         preferences = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
@@ -550,7 +553,7 @@ def conversation_state(previous):
         criteria = searches[active].get("criteria", {})
     else:
         criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
-    return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences") if criteria.get(key) not in (None, [], "")}
+    return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences") if criteria.get(key) not in (None, [], "")}
 
 
 def active_search_id(previous):
@@ -601,12 +604,12 @@ def search_state_for_turn(previous, observation, user_text=None):
 def apply_criteria_actions(criteria, actions):
     """Apply explicit mutations so removed values cannot reappear from stale state."""
     result = dict(criteria)
-    scalar_update_fields = {"budget_max", "currency", "bedrooms", "property_type"}
+    scalar_update_fields = {"budget_max", "currency", "bedrooms", "property_type", "parking_required"}
     for action in actions if isinstance(actions, list) else []:
         if not isinstance(action, dict):
             continue
         kind, field, values = action.get("action"), action.get("field"), action.get("values")
-        if kind not in {"ADD", "UPDATE", "REMOVE"} or field not in {"districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"}:
+        if kind not in {"ADD", "UPDATE", "REMOVE"} or field not in {"districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences"}:
             continue
         value_for_validation = values
         if kind == "UPDATE" and field in scalar_update_fields and isinstance(values, list) and len(values) == 1:
@@ -696,6 +699,8 @@ def property_matches_criteria(property_row, criteria):
     if property_row.get("currency") != criteria.get("currency"):
         return False
     if property_row.get("property_type") != criteria.get("property_type"):
+        return False
+    if criteria.get("parking_required") is True and not property_row.get("parking_spaces"):
         return False
     try:
         return float(property_row["price_amount"]) <= float(criteria["budget_max"])

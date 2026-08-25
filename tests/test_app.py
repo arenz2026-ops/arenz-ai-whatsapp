@@ -340,6 +340,38 @@ class AppTests(unittest.TestCase):
         self.assertEqual(updated["districts"],["Surco","Barranco"])
         self.assertEqual(updated["preferences"],["estacionamiento","vista"])
 
+    def test_parking_required_actions_preserve_incremental_criteria(self):
+        prior={"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["cocina independiente"]}
+        observation={"intent":"change_criteria","criteria_change":True,"slot_updates":{"bedrooms":2,"parking_required":False,"preferences":[]},"criteria_actions":[{"action":"UPDATE","field":"bedrooms","values":[2]},{"action":"UPDATE","field":"parking_required","values":[False]}],"handoff":False}
+        _, criteria, _, _=app.progressive_reply({"state":{"criteria":prior}},observation,"fallback","Prefiero 2 dormitorios y sin estacionamiento.")
+        self.assertEqual(criteria,{**prior,"bedrooms":2,"parking_required":False})
+
+    def test_parking_prompt_contract_covers_required_and_not_required_expressions(self):
+        instructions=app.build_observation_payload(None,"consulta")["instructions"]
+        for expression in ("con estacionamiento", "con cochera", "necesito estacionamiento", "necesito cochera", "sin estacionamiento", "sin cochera", "no necesito estacionamiento", "no necesito cochera"):
+            self.assertIn(expression,instructions)
+        self.assertIn("parking_required",instructions)
+
+    def test_parking_required_validation_and_actions_accept_only_boolean_scalars(self):
+        self.assertEqual(app.validated_slot_updates({"parking_required":True}),{"parking_required":True})
+        self.assertEqual(app.validated_slot_updates({"parking_required":False}),{"parking_required":False})
+        self.assertEqual(app.validated_slot_updates({"parking_required":"false"}),{})
+        self.assertEqual(app.apply_criteria_actions({},[{"action":"UPDATE","field":"parking_required","values":[False]}]),{"parking_required":False})
+        self.assertEqual(app.apply_criteria_actions({"parking_required":True},[{"action":"UPDATE","field":"parking_required","values":[]}]),{"parking_required":True})
+
+    def test_parking_required_filters_only_when_true(self):
+        base={"operation":"compra","district":"Surco","currency":"USD","property_type":"departamento","price_amount":200000}
+        with_parking={**base,"parking_spaces":1}
+        without_parking={**base,"parking_spaces":0}
+        common={"operation":"compra","districts":["Surco"],"currency":"USD","property_type":"departamento","budget_max":250000}
+        self.assertTrue(app.property_matches_criteria(with_parking,{**common,"parking_required":True}))
+        self.assertFalse(app.property_matches_criteria(without_parking,{**common,"parking_required":True}))
+        self.assertTrue(app.property_matches_criteria(with_parking,{**common,"parking_required":False}))
+        self.assertTrue(app.property_matches_criteria(without_parking,{**common,"parking_required":False}))
+        self.assertTrue(app.property_matches_criteria(without_parking,common))
+        self.assertNotIn("parking_required",app.conversation_state({"state":{"criteria":common}}))
+        self.assertIsNone(app.conversation_state({"state":{"criteria":common}}).get("parking_required"))
+
     def test_invalid_scalar_update_lists_do_not_coerce_or_replace_existing_values(self):
         prior={"budget_max":200000,"currency":"USD","bedrooms":2,"property_type":"departamento"}
         updated=app.apply_criteria_actions(prior,[
