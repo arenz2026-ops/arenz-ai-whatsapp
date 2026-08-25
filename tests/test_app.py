@@ -1,477 +1,1018 @@
-import hashlib, hmac, json, os, tempfile, unittest
-from unittest.mock import Mock, patch
+import hashlib
+import hmac
+import json
+import logging
+import os
+import re
+import sqlite3
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
 
-os.environ.setdefault("VERIFY_TOKEN", "test-verify-token")
-os.environ.setdefault("WHATSAPP_TOKEN", "test-whatsapp-token")
-os.environ.setdefault("PHONE_NUMBER_ID", "123456")
-os.environ.setdefault("APP_SECRET", "test-app-secret")
-import app
+import requests
+from flask import Flask, jsonify, request
 
-class AppTests(unittest.TestCase):
-    def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory(); os.environ["LEADS_DB_PATH"] = os.path.join(self.tempdir.name, "leads.db"); os.environ.pop("SUPABASE_URL", None); os.environ.pop("SUPABASE_KEY", None)
-        app.VERIFY_TOKEN="test-verify-token"; app.WHATSAPP_TOKEN="test-whatsapp-token"; app.PHONE_NUMBER_ID="123456"; app.APP_SECRET="test-app-secret"; app.OPENAI_API_KEY=""; app.user_sessions.clear(); self.client=app.app.test_client()
-    def tearDown(self): self.tempdir.cleanup()
-    def signed(self, payload):
-        raw=json.dumps(payload,separators=(",",":")).encode(); digest=hmac.new(app.APP_SECRET.encode(),raw,hashlib.sha256).hexdigest()
-        return raw,{"Content-Type":"application/json","X-Hub-Signature-256":f"sha256={digest}"}
-    def test_get_verification(self):
-        response=self.client.get("/webhook?hub.mode=subscribe&hub.verify_token=test-verify-token&hub.challenge=ok")
-        self.assertEqual((response.status_code,response.get_data(as_text=True)),(200,"ok")); self.assertEqual(self.client.get("/webhook?hub.mode=subscribe&hub.verify_token=bad&hub.challenge=ok").status_code,403)
-    def test_health(self): self.assertEqual(self.client.get("/health").get_json()["status"],"ok")
-    def test_invalid_signature(self): self.assertEqual(self.client.post("/webhook",json={}).status_code,401)
-    def test_post_graph_mock_and_lead(self):
-        payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-1","from":"51999999999","type":"text","text":{"body":"hola"}}]}}]}]}; raw,headers=self.signed(payload); response=Mock(); response.raise_for_status.return_value=None
-        with patch.object(app.requests,"post",return_value=response) as post: result=self.client.post("/webhook",data=raw,headers=headers)
-        self.assertEqual(result.get_json(),{"status":"received","processed":1}); self.assertEqual(post.call_count,1); lead=app.get_lead_store().get_lead("51999999999"); self.assertEqual(lead["status"],"en_calificacion"); self.assertIn("consulta inmobiliaria",lead["interest"])
-    def test_duplicate_is_not_sent_twice(self):
-        payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-2","from":"51999999999","type":"text","text":{"body":"hola"}}]}}]}]}; raw,headers=self.signed(payload); response=Mock(); response.raise_for_status.return_value=None
-        with patch.object(app.requests,"post",return_value=response) as post: self.client.post("/webhook",data=raw,headers=headers); duplicate=self.client.post("/webhook",data=raw,headers=headers)
-        self.assertEqual(duplicate.get_json(),{"status":"duplicate","processed":0}); self.assertEqual(post.call_count,1)
-    def test_ai_simulated(self):
-        app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":"Respuesta IA"}
-        with patch.object(app.requests,"post",return_value=response) as post: self.assertEqual(app.generate_ai_reply("519","hola","base"),"Respuesta IA")
-        self.assertEqual(post.call_args.args[0],"https://api.openai.com/v1/responses")
-    def test_ai_http_error_uses_fallback(self):
-        app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.status_code=401; error=app.requests.HTTPError(); error.response=response; response.raise_for_status.side_effect=error
-        with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.generate_ai_reply("519","hola","base"),"base")
-    def test_structured_observation_is_parsed_without_changing_reply(self):
-        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"property_search","slot_updates":{"operation":"compra","districts":["Miraflores"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":[]},"criteria_change":False,"user_question":None,"next_action":"ask_clarification","handoff":False,"assistant_reply":"¿Prefieres nuevo o usado?"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":json.dumps(expected)}
-        deterministic=app.generate_reply("519","hola")
-        with patch.object(app.requests,"post",return_value=response) as post: observation=app.observe_conversation("519","Busco comprar en Miraflores hasta US$200 mil, 3 dormitorios",deterministic)
-        self.assertEqual(observation,expected); self.assertEqual(deterministic,"Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor")
-        self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],1200)
-    def test_observation_payload_is_compact_and_preserves_durable_context(self):
-        previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"recent_turns":[{"direction":"user","content":"Busco en Surco"},{"direction":"assistant","content":"Perfecto, anotado."}]}}
-        payload=app.build_observation_payload(previous,"consulta actual")
-        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("criteria_actions",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("Busco en Surco",payload["input"]); self.assertIn("consulta actual",payload["input"])
-        for forbidden in ("last_observation","no enviar","Respuesta determinista"):
-            self.assertNotIn(forbidden,payload["input"])
-    def test_structured_observation_reads_output_content_format(self):
-        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output":[{"content":[{"type":"output_text","text":json.dumps(expected)}]}]}
-        with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+app = Flask(__name__)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("arenz")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
+APP_SECRET = os.getenv("APP_SECRET", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+GRAPH_API_VERSION = "v26.0"
+user_sessions = {}
 
-    def test_observation_logs_safe_usage_metadata(self):
-        app.OPENAI_API_KEY="not-a-real-key"; sensitive="respuesta-privada-no-registrar"; expected={"intent":"greeting","slot_updates":{},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":sensitive}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"model":"gpt-4.1-mini-2025-04-14","usage":{"output_tokens":41,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":173},"output_text":json.dumps(expected)}
-        with self.assertLogs("arenz", level="INFO") as logs:
-            with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
-        output="\n".join(logs.output); self.assertIn("model=gpt-4.1-mini-2025-04-14",output); self.assertIn("usage_available=True",output); self.assertIn("output_tokens=41",output); self.assertIn("reasoning_tokens=0",output); self.assertIn("total_tokens=173",output); self.assertIn("latency_ms=",output); self.assertNotIn(sensitive,output)
+OBSERVATION_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "intent": {"type": "string", "enum": ["property_search", "new_search", "general_question", "change_criteria", "human_handoff", "greeting", "confirmation", "unknown"]},
+        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "property_type": {"type": ["string", "null"]}, "parking_required": {"type": ["boolean", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences"]},
+        "criteria_change": {"type": "boolean"},
+        "criteria_actions": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"action": {"type": "string", "enum": ["ADD", "UPDATE", "REMOVE"]}, "field": {"type": "string", "enum": ["districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences"]}, "values": {"type": "array", "items": {"type": ["string", "number", "integer", "boolean"]}}}, "required": ["action", "field", "values"]}},
+        "user_question": {"type": ["string", "null"]},
+        "next_action": {"type": "string", "enum": ["reply", "ask_clarification", "confirm", "search_inventory", "handoff"]},
+        "handoff": {"type": "boolean"},
+        "assistant_reply": {"type": "string"}
+    },
+    "required": ["intent", "slot_updates", "criteria_change", "criteria_actions", "user_question", "next_action", "handoff", "assistant_reply"]
+}
 
-    def test_observation_logs_usage_unavailable_safely(self):
-        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"model":"gpt-4.1-mini-2025-04-14","output_text":json.dumps(expected)}
-        with self.assertLogs("arenz", level="INFO") as logs:
-            with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
-        output="\n".join(logs.output); self.assertIn("usage_available=False",output); self.assertIn("output_tokens=None",output); self.assertIn("reasoning_tokens=None",output); self.assertIn("total_tokens=None",output)
 
-    def test_structured_observation_accepts_markdown_json_fence(self):
-        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":"```json\n"+json.dumps(expected)+"\n```"}
-        with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+class LeadStore:
+    def __init__(self, path): self.path = path
 
-    def test_structured_observation_accepts_json_with_final_whitespace(self):
-        app.OPENAI_API_KEY="not-a-real-key"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":json.dumps(expected)+" \n\t"}
-        with patch.object(app.requests,"post",return_value=response): self.assertEqual(app.observe_conversation("519","hola","base"),expected)
+    def _connect(self):
+        parent = os.path.dirname(self.path)
+        if parent: os.makedirs(parent, exist_ok=True)
+        db = sqlite3.connect(self.path)
+        db.row_factory = sqlite3.Row
+        db.execute("CREATE TABLE IF NOT EXISTS leads (phone TEXT PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, interest TEXT NOT NULL, conversation TEXT NOT NULL, status TEXT NOT NULL, next_action TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS processed_messages (message_id TEXT PRIMARY KEY)")
+        return db
 
-    def test_structured_observation_rejects_json_with_residual_text_safely(self):
-        app.OPENAI_API_KEY="not-a-real-key"; sensitive="residuo-privado-no-registrar"; expected={"intent":"greeting","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"reply","handoff":False,"assistant_reply":"Hola"}; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":json.dumps(expected)+sensitive}
-        with self.assertLogs("arenz", level="WARNING") as logs:
-            with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
-        output="\\n".join(logs.output); self.assertIn("reason=json_residual",output); self.assertIn("initial_type=brace",output); self.assertIn("residual_present=True",output); self.assertNotIn(sensitive,output)
+    def claim_message(self, message_id):
+        if not message_id: return True
+        db = self._connect()
+        try:
+            try:
+                db.execute("INSERT INTO processed_messages (message_id) VALUES (?)", (message_id,))
+                db.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+        finally:
+            db.close()
 
-    def test_invalid_json_logs_only_safe_metadata(self):
-        app.OPENAI_API_KEY="not-a-real-key"; sensitive="contenido-privado-no-registrar"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":sensitive}
-        with self.assertLogs("arenz", level="WARNING") as logs:
-            with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
-        output="\\n".join(logs.output); self.assertIn("reason=invalid_json",output); self.assertIn("output_length=",output); self.assertIn("initial_type=other",output); self.assertIn("residual_present=False",output); self.assertNotIn(sensitive,output)
-    def test_response_shape_failure_logs_only_safe_category(self):
-        app.OPENAI_API_KEY="not-a-real-key"; sensitive="respuesta-privada-no-registrar"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output":None,"private":sensitive}
-        with self.assertLogs("arenz", level="WARNING") as logs:
-            with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
-        output="\\n".join(logs.output); self.assertIn("reason=response_shape_error",output); self.assertIn("error_type=TypeError",output); self.assertNotIn(sensitive,output)
-    def test_observation_timeout_preserves_webhook_and_graph_reply(self):
-        app.OPENAI_API_KEY="not-a-real-key"; sensitive="mensaje-privado-no-registrar"; payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-timeout","from":"51999999999","type":"text","text":{"body":sensitive}}]}}]}]}; raw,headers=self.signed(payload); graph_response=Mock(); graph_response.raise_for_status.return_value=None
-        with self.assertLogs("arenz", level="WARNING") as logs:
-            with patch.object(app.requests,"post",side_effect=[app.requests.ReadTimeout(),graph_response]) as post:
-                result=self.client.post("/webhook",data=raw,headers=headers)
-        output="\n".join(logs.output); self.assertIn("reason=request_failed error_type=ReadTimeout latency_ms=",output); self.assertNotIn(sensitive,output); self.assertEqual(result.status_code,200); self.assertEqual(post.call_count,2); self.assertEqual(post.call_args_list[1].args[0],"https://graph.facebook.com/v26.0/123456/messages")
-    def test_webhook_logs_safe_component_timings(self):
-        app.OPENAI_API_KEY="not-a-real-key"; sensitive="mensaje-privado-no-registrar"; expected={"intent":"property_search","slot_updates":{"operation":"compra","districts":[],"budget_max":None,"currency":None,"bedrooms":None,"property_type":None,"preferences":[]},"criteria_change":False,"user_question":None,"next_action":"ask_clarification","handoff":False,"assistant_reply":"Perfecto, ¿qué inmueble buscas?"}; payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-timing","from":"51999999999","type":"text","text":{"body":sensitive}}]}}]}]}; raw,headers=self.signed(payload); openai=Mock(); openai.raise_for_status.return_value=None; openai.json.return_value={"output_text":json.dumps(expected)}; graph=Mock(); graph.raise_for_status.return_value=None
-        with self.assertLogs("arenz", level="INFO") as logs:
-            with patch.object(app.requests,"post",side_effect=[openai,graph]): result=self.client.post("/webhook",data=raw,headers=headers)
-        output="\n".join(logs.output); self.assertEqual(result.status_code,200); self.assertIn("Webhook timing: dedupe_ms=",output); self.assertIn("context_ms=",output); self.assertIn("openai_ms=",output); self.assertIn("graph_ms=",output); self.assertIn("total_ms=",output); self.assertNotIn(sensitive,output)
-    def test_empty_structured_observation_logs_safe_shape(self):
-        app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"status":"completed","output":[{"content":[{"type":"refusal","refusal":"contenido-no-registrado"}]}]}
-        with self.assertLogs("arenz", level="WARNING") as logs:
-            with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
-        output = "\n".join(logs.output)
-        self.assertIn("output_present=True", output)
-        self.assertIn("content_types=refusal", output)
-        self.assertIn("refusal_present=True", output)
-        self.assertNotIn("contenido-no-registrado", output)
-    def test_invalid_structured_observation_is_ignored(self):
-        app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":"{\"intent\":\"unknown\"}"}
-        with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
-    def test_supabase_lead_upsert(self):
-        os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"; response=Mock(); response.raise_for_status.return_value=None; current=Mock(); current.raise_for_status.return_value=None; current.json.return_value=[{"phone":"51999999999","district":"Miraflores","budget":"USD 200000","bedrooms":"3"}]
-        with patch.object(app.requests,"get",return_value=current), patch.object(app.requests,"post",return_value=response) as post:
-            app.get_lead_store().upsert_lead("51999999999", {"step":"done", "intent":"compra", "district":"Miraflores", "budget":"US$ 200000", "bedrooms":"3"}, "hola", "respuesta")
-        self.assertEqual(post.call_args.args[0],"https://project.supabase.co/rest/v1/lead_profiles?on_conflict=phone")
-        self.assertEqual(post.call_args.kwargs["json"]["phone"],"51999999999"); self.assertEqual(post.call_args.kwargs["json"]["intent"],"compra"); self.assertEqual(post.call_args.kwargs["json"]["district"],"Miraflores"); self.assertEqual(post.call_args.kwargs["json"]["status"],"pendiente_asesor")
+    def upsert_lead(self, phone, session, inbound, reply):
+        now = datetime.now(timezone.utc).isoformat()
+        interest = " | ".join(v for v in (session.get("intent"), session.get("district"), session.get("budget"), session.get("bedrooms")) if v) or "consulta inmobiliaria"
+        status = "pendiente_asesor" if session.get("step") == "done" else "en_calificacion"
+        next_action = "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"
+        conversation = json.dumps({"last_user_message": inbound, "last_assistant_message": reply}, ensure_ascii=False)
+        db = self._connect()
+        try:
+            db.execute("INSERT INTO leads (phone,created_at,updated_at,interest,conversation,status,next_action) VALUES (?,?,?,?,?,?,?) ON CONFLICT(phone) DO UPDATE SET updated_at=excluded.updated_at,interest=excluded.interest,conversation=excluded.conversation,status=excluded.status,next_action=excluded.next_action", (phone, now, now, interest, conversation, status, next_action))
+            db.commit()
+        finally:
+            db.close()
 
-    def test_supabase_profile_upsert_preserves_unknown_fields(self):
-        store=app.SupabaseLeadStore("https://project.supabase.co","key"); current=Mock(); current.raise_for_status.return_value=None; current.json.return_value=[{"phone":"519","intent":"compra","district":"Surco","budget":"USD 200000","bedrooms":"3"}]; saved=Mock(); saved.raise_for_status.return_value=None
-        with patch.object(app.requests,"get",return_value=current), patch.object(app.requests,"post",return_value=saved) as post:
-            store.upsert_lead("519", {"intent":"alquiler","district":None,"budget":None,"bedrooms":None}, "nuevo mensaje", "respuesta")
-        payload=post.call_args.kwargs["json"]; self.assertEqual(payload["intent"],"alquiler"); self.assertEqual(payload["district"],"Surco"); self.assertEqual(payload["budget"],"USD 200000"); self.assertEqual(payload["bedrooms"],"3"); self.assertIn("updated_at",payload)
+    def get_lead(self, phone):
+        db = self._connect()
+        try: row = db.execute("SELECT * FROM leads WHERE phone=?", (phone,)).fetchone()
+        finally: db.close()
+        return dict(row) if row else None
 
-    def test_supabase_profile_upsert_reuses_phone_and_applies_explicit_change(self):
-        store=app.SupabaseLeadStore("https://project.supabase.co","key"); first=Mock(); first.raise_for_status.return_value=None; first.json.return_value=[]; second=Mock(); second.raise_for_status.return_value=None; second.json.return_value=[{"phone":"519","intent":"compra","district":"Surco","budget":"USD 200000","bedrooms":"3"}]; saved=Mock(); saved.raise_for_status.return_value=None
-        with patch.object(app.requests,"get",side_effect=[first,second]), patch.object(app.requests,"post",return_value=saved) as post:
-            store.upsert_lead("519", {"intent":"compra","district":"Surco","budget":"USD 200000","bedrooms":"3"}, "uno", "r1")
-            store.upsert_lead("519", {"intent":"alquiler","district":None,"budget":None,"bedrooms":None}, "dos", "r2")
-        self.assertEqual(post.call_count,2); self.assertTrue(all("lead_profiles?on_conflict=phone" in call.args[0] for call in post.call_args_list)); second_payload=post.call_args_list[1].kwargs["json"]; self.assertEqual(second_payload["intent"],"alquiler"); self.assertEqual(second_payload["district"],"Surco"); self.assertEqual(second_payload["budget"],"USD 200000"); self.assertEqual(second_payload["bedrooms"],"3")
-    def test_health_with_supabase_store(self):
-        os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"
-        self.assertEqual(self.client.get("/health").get_json()["status"],"ok")
-    def test_conversation_memory_persists_session_and_turns(self):
-        os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"; response=Mock(); response.raise_for_status.return_value=None; observation={"intent":"greeting"}
-        with patch.object(app.requests,"post",return_value=response) as post: app.get_conversation_memory_store().record_observation("519","wamid-1","hola","respuesta",observation)
-        self.assertEqual(post.call_count,2); self.assertIn("conversation_sessions?on_conflict=phone",post.call_args_list[0].args[0]); self.assertIn("conversation_messages?on_conflict=message_key",post.call_args_list[1].args[0]); self.assertEqual(post.call_args_list[1].kwargs["json"][0]["message_key"],"in:wamid-1")
-    def test_supabase_duplicate_claim(self):
-        os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value=[]
-        with patch.object(app.requests,"post",return_value=response) as post: self.assertFalse(app.get_lead_store().claim_message("wamid-duplicate"))
-        self.assertEqual(post.call_args.args[0],"https://project.supabase.co/rest/v1/processed_messages?on_conflict=message_id")
 
-    def test_progressive_controller_keeps_all_criteria_from_one_message(self):
-        observation={"intent":"property_search","slot_updates":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":[]},"handoff":False}
-        reply, criteria, stage, _ = app.progressive_reply(None, observation, "fallback")
-        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Miraflores"]); self.assertIn("inventario verificado",reply)
+class SupabaseLeadStore:
+    """Small REST adapter for durable MVP lead storage."""
+    def __init__(self, url, key):
+        self.url = url.rstrip("/")
+        self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-    def test_operation_aliases_are_normalized_without_altering_other_slots(self):
-        for raw, expected in (("comprar","compra"),("compra","compra"),("alquilar","alquiler"),("alquiler","alquiler"),("vender","venta"),("venta","venta")):
-            slots={"operation":raw,"districts":["Surco"],"bedrooms":2}
-            clean=app.validated_slot_updates(slots)
-            self.assertEqual(clean["operation"],expected); self.assertEqual(clean["districts"],["Surco"]); self.assertEqual(clean["bedrooms"],2)
+    def claim_message(self, message_id):
+        if not message_id:
+            return True
+        response = requests.post(
+            f"{self.url}/rest/v1/processed_messages?on_conflict=message_id",
+            headers={**self.headers, "Prefer": "resolution=ignore-duplicates,return=representation"},
+            json={"message_id": message_id},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return bool(response.json())
 
-    def test_explicit_purchase_text_sets_compra(self):
-        observation={"intent":"property_search","slot_updates":{},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(None, observation, "fallback", "Quiero comprar un departamento")
-        self.assertEqual(criteria["operation"],"compra")
+    def upsert_lead(self, phone, session, inbound, reply):
+        status = "pendiente_asesor" if session.get("step") == "done" else "en_calificacion"
+        next_action = "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"
+        existing = self.get_lead(phone) or {}
+        incoming = {"intent": session.get("intent"), "district": session.get("district"), "budget": session.get("budget"), "bedrooms": session.get("bedrooms")}
+        payload = {"phone": phone, **{field: value if value not in (None, "") else existing.get(field) for field, value in incoming.items()}, "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action, "updated_at": datetime.now(timezone.utc).isoformat()}
+        response = requests.post(f"{self.url}/rest/v1/lead_profiles?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=payload, timeout=10)
+        response.raise_for_status()
 
-    def test_explicit_rental_text_sets_alquiler(self):
-        observation={"intent":"property_search","slot_updates":{},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(None, observation, "fallback", "Ahora quiero alquilar")
-        self.assertEqual(criteria["operation"],"alquiler")
+    def get_lead(self, phone):
+        response = requests.get(f"{self.url}/rest/v1/lead_profiles", headers=self.headers, params={"phone": f"eq.{phone}", "select": "*"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        return rows[0] if rows else None
 
-    def test_text_without_operation_does_not_invent_operation(self):
-        self.assertIsNone(app.explicit_operation_from_text("Busco un departamento con balcón"))
 
-    def test_explicit_operation_switches_alquiler_to_compra(self):
-        previous={"state":{"criteria":{"operation":"alquiler","districts":["Surco"]}}}
-        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Quiero comprar un departamento")
-        self.assertEqual(criteria["operation"],"compra")
-        self.assertEqual(criteria.get("districts"),None)
+class ConversationMemoryStore:
+    """Durable phone session pointer, search state, and turn history."""
+    def __init__(self, url, key):
+        self.url = url.rstrip("/")
+        self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-    def test_explicit_operation_switches_compra_to_alquiler(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Surco"]}}}
-        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Ahora quiero alquilar")
-        self.assertEqual(criteria["operation"],"alquiler")
-        self.assertEqual(criteria.get("districts"),None)
+    def load_session(self, phone):
+        response = requests.get(f"{self.url}/rest/v1/conversation_sessions", headers=self.headers, params={"phone": f"eq.{phone}", "select": "state,summary,stage"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            return None
+        session = rows[0]
+        active_id = active_search_id(session)
+        if active_id:
+            search = self.load_search(active_id)
+            if search:
+                state = dict(session.get("state") or {})
+                legacy_searches = state.get("legacy_searches", state.get("searches", {}))
+                state["searches"] = dict(legacy_searches) if isinstance(legacy_searches, dict) else {}
+                state["searches"][active_id] = search.get("state") or {}
+                session["state"] = state
+        return session
 
-    def test_partial_message_preserves_previous_operation(self):
-        previous={"state":{"criteria":{"operation":"alquiler","districts":["Surco"]}}}
-        observation={"intent":"general_question","slot_updates":{},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Continuemos con la búsqueda")
-        self.assertEqual(criteria["operation"],"alquiler")
+    def load_search(self, search_id):
+        response = requests.get(f"{self.url}/rest/v1/conversation_searches", headers=self.headers, params={"search_id": f"eq.{search_id}", "select": "search_id,phone,operation,state,status,created_at,updated_at,closed_at"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        return rows[0] if rows else None
 
-    def test_initial_purchase_creates_one_search_id_and_followup_reuses_it(self):
-        observation={"intent":"property_search","slot_updates":{"operation":"compra"},"criteria_actions":[],"handoff":False}
-        first, _ = app.search_state_for_turn(None, observation, "Quiero comprar")
-        previous={"state":first}
-        second, _ = app.search_state_for_turn(previous, {"intent":"change_criteria","slot_updates":{"districts":["Lince"]},"criteria_actions":[],"handoff":False}, "en Lince")
-        self.assertIsNotNone(first["active_search_id"])
-        self.assertEqual(first["active_search_id"],second["active_search_id"])
+    def rpc(self, name, payload):
+        response = requests.post(f"{self.url}/rest/v1/rpc/{name}", headers=self.headers, json=payload, timeout=15)
+        response.raise_for_status()
+        return response.json()
 
-    def test_new_search_keeps_previous_search_and_starts_empty(self):
-        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"bedrooms":2}}}}}
-        state, criteria = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
-        self.assertIn("buy",state["searches"]); self.assertNotEqual(state["active_search_id"],"buy"); self.assertEqual(criteria,{})
+    def claim_work(self, message_id):
+        rows = self.rpc("claim_processed_message", {"p_message_id": message_id})
+        row = rows[0] if rows else {}
+        return row.get("outcome"), row.get("claim_token")
 
-    def test_explicit_new_search_discards_stale_extractor_criteria(self):
-        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]}}}}}
-        inherited={"intent":"new_search","slot_updates":{"operation":"compra","districts":["Lince"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"criteria_actions":[{"action":"UPDATE","field":"districts","values":["Lince"]}],"criteria_change":True,"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, inherited, "fallback", "NUEVA BÚSQUEDA")
-        self.assertEqual(criteria,{})
-        state, _ = app.search_state_for_turn(previous, app.sanitize_new_search_observation(inherited, "NUEVA BÚSQUEDA"), "NUEVA BÚSQUEDA")
-        active=state["active_search_id"]
-        self.assertNotEqual(active,"buy")
-        self.assertEqual(state["searches"]["buy"]["criteria"]["operation"],"compra")
-        self.assertEqual(state["searches"][active]["criteria"],{})
+    def finish_work(self, message_id, claim_token):
+        rows = self.rpc("finish_processed_message", {"p_message_id": message_id, "p_claim_token": claim_token})
+        return bool(rows and rows[0].get("finish_processed_message"))
 
-    def test_first_criteria_after_explicit_new_search_populates_only_new_search(self):
-        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":3}}}}}
-        reset, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
-        observation={"intent":"property_search","slot_updates":{"operation":"alquiler","districts":["Surco"]},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply({"state":reset}, observation, "fallback", "Quiero alquilar en Surco")
-        self.assertEqual(criteria,{"operation":"alquiler","districts":["Surco"]})
-        self.assertEqual(previous["state"]["searches"]["buy"]["criteria"],{"operation":"compra","districts":["Lince"],"bedrooms":3})
+    def commit_work(self, payload):
+        """Invoke the single database transaction; never fall back to REST writes."""
+        rows = self.rpc("commit_webhook_message", payload)
+        return rows
 
-    def test_new_search_separates_purchase_lince_from_rental_miraflores(self):
-        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"bedrooms":2}}}}}
-        reset, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
-        rental={"intent":"property_search","slot_updates":{"operation":"alquiler","districts":["Miraflores"]},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply({"state":reset}, rental, "fallback", "Quiero alquilar en Miraflores")
-        self.assertEqual(criteria,{"operation":"alquiler","districts":["Miraflores"]})
-        self.assertEqual(previous["state"]["searches"]["buy"]["criteria"]["districts"],["Lince"])
+    def fail_work(self, message_id, claim_token, stage):
+        try:
+            self.rpc("fail_processed_message", {"p_message_id": message_id, "p_claim_token": claim_token, "p_stage": stage})
+        except requests.RequestException:
+            logger.error("Unable to record internal failure: stage=%s", stage)
 
-    def test_explicit_sale_creates_independent_search(self):
-        previous={"state":{"active_search_id":"rent","searches":{"rent":{"criteria":{"operation":"alquiler","districts":["Miraflores"]}}}}}
-        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
-        state, _ = app.search_state_for_turn(previous, app.with_explicit_operation(observation,"Quiero vender mi departamento"), "Quiero vender mi departamento")
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Quiero vender mi departamento")
-        self.assertEqual(app.explicit_operation_from_text("Quiero vender mi departamento"),"venta")
-        self.assertNotEqual(state["active_search_id"],"rent"); self.assertEqual(criteria["operation"],"venta")
+    def record_delivery(self, message_id, state, code=None):
+        response = requests.patch(f"{self.url}/rest/v1/processed_messages", headers={**self.headers, "Prefer": "return=minimal"}, params={"message_id": f"eq.{message_id}", "status": "eq.processed"}, json={"delivery_state": state, "delivery_attempted_at": datetime.now(timezone.utc).isoformat(), "delivery_failure_code": code}, timeout=10)
+        response.raise_for_status()
 
-    def test_memory_load_reconstructs_active_search_after_restart(self):
-        session=Mock(); session.raise_for_status.return_value=None; session.json.return_value=[{"stage":"qualification","summary":"active","state":{"active_search_id":"11111111-1111-1111-1111-111111111111"}}]
-        search=Mock(); search.raise_for_status.return_value=None; search.json.return_value=[{"search_id":"11111111-1111-1111-1111-111111111111","state":{"criteria":{"operation":"compra","districts":["Lince"]}},"status":"active"}]
-        with patch.object(app.requests,"get",side_effect=[session,search]):
-            restored=app.ConversationMemoryStore("https://project.supabase.co","key").load_session("519")
-        self.assertEqual(restored["state"]["active_search_id"],"11111111-1111-1111-1111-111111111111")
-        self.assertEqual(app.conversation_state(restored),{"operation":"compra","districts":["Lince"]})
+    def close_search(self, search_id, now):
+        response = requests.patch(f"{self.url}/rest/v1/conversation_searches", headers={**self.headers, "Prefer": "return=minimal"}, params={"search_id": f"eq.{search_id}"}, json={"status": "inactive", "closed_at": now, "updated_at": now}, timeout=10)
+        response.raise_for_status()
 
-    def test_new_turn_is_persisted_with_active_search_id_and_closes_previous(self):
-        response=Mock(); response.raise_for_status.return_value=None
-        state={"active_search_id":"22222222-2222-2222-2222-222222222222","searches":{"22222222-2222-2222-2222-222222222222":{"criteria":{"operation":"alquiler"}}},"previous":{"state":{"active_search_id":"11111111-1111-1111-1111-111111111111"}}}
-        with patch.object(app.requests,"post",return_value=response) as post, patch.object(app.requests,"patch",return_value=response) as close:
-            app.ConversationMemoryStore("https://project.supabase.co","key").record_turn("519","wamid-search","hola","respuesta",{},state,"qualification","summary")
-        self.assertEqual(close.call_count,1); self.assertIn("conversation_searches",close.call_args.args[0])
-        self.assertIn("conversation_searches?on_conflict=search_id",post.call_args_list[0].args[0])
-        messages=post.call_args_list[-1].kwargs["json"]
-        self.assertTrue(all(message["search_id"]=="22222222-2222-2222-2222-222222222222" for message in messages))
+    def save_search(self, phone, search_id, state, now):
+        payload = {"search_id": search_id, "phone": phone, "operation": state.get("criteria", {}).get("operation"), "state": state, "status": "active", "closed_at": None, "updated_at": now}
+        response = requests.post(f"{self.url}/rest/v1/conversation_searches?on_conflict=search_id", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=payload, timeout=10)
+        response.raise_for_status()
 
-    def test_new_search_command_persists_empty_criteria_without_operation_or_bedrooms(self):
-        class Memory:
-            def record_turn(self, *args): self.call=args
-        memory=Memory()
-        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","bedrooms":3,"districts":["Lince"]}}}}}
-        with patch.object(app,"get_conversation_memory_store",return_value=memory):
-            app.persist_conversation_turn("519","wamid-reset","NUEVA BÚSQUEDA","Nueva búsqueda iniciada.",None,{},"qualification","reset",previous)
-        state=memory.call[5]
-        active=state["active_search_id"]
-        self.assertNotEqual(active,"buy")
-        self.assertEqual(state["searches"][active]["criteria"],{})
-        self.assertNotIn("operation",state["searches"][active]["criteria"])
-        self.assertNotIn("bedrooms",state["searches"][active]["criteria"])
+    def record_turn(self, phone, message_id, inbound, outbound, observation, state, stage, summary, timings=None):
+        now = datetime.now(timezone.utc).isoformat()
+        active_id = state.get("active_search_id") if isinstance(state, dict) else None
+        previous_id = active_search_id(state.get("previous", {})) if isinstance(state, dict) else None
+        searches = state.get("searches", {}) if isinstance(state, dict) else {}
+        if active_id:
+            if previous_id and previous_id != active_id:
+                self.close_search(previous_id, now)
+            current_search_state = searches.get(active_id, {}) if isinstance(searches, dict) else {}
+            self.save_search(phone, active_id, current_search_state, now)
+        session_state = {"active_search_id": active_id} if active_id else {}
+        legacy_searches = dict(state.get("legacy_searches", {})) if isinstance(state, dict) and isinstance(state.get("legacy_searches", {}), dict) else {}
+        legacy_searches.pop(active_id, None)
+        if not legacy_searches and isinstance(searches, dict):
+            # Preserve only legacy searches in the phone session. The active search
+            # is canonical in conversation_searches and is not duplicated here.
+            legacy_searches = {search_id: search_state for search_id, search_state in searches.items() if search_id != active_id}
+        if legacy_searches:
+            session_state["legacy_searches"] = legacy_searches
+        session = {"phone": phone, "stage": stage, "state": session_state, "summary": summary, "updated_at": now}
+        started_at = time.monotonic()
+        response = requests.post(f"{self.url}/rest/v1/conversation_sessions?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=session, timeout=10)
+        response.raise_for_status()
+        if timings is not None:
+            timings["session_write_ms"] = round((time.monotonic() - started_at) * 1000)
+        messages = [
+            {"phone": phone, "search_id": active_id, "message_key": f"in:{message_id}", "direction": "inbound", "content": inbound, "extraction": observation},
+            {"phone": phone, "search_id": active_id, "message_key": f"out:{message_id}", "direction": "outbound", "content": outbound, "extraction": None},
+        ]
+        started_at = time.monotonic()
+        response = requests.post(f"{self.url}/rest/v1/conversation_messages?on_conflict=message_key", headers={**self.headers, "Prefer": "resolution=ignore-duplicates,return=minimal"}, json=messages, timeout=10)
+        response.raise_for_status()
+        if timings is not None:
+            timings["messages_write_ms"] = round((time.monotonic() - started_at) * 1000)
 
-    def test_effective_sale_operation_creates_new_search_and_preserves_purchase(self):
-        class Memory:
-            def record_turn(self, *args): self.call=args
-        memory=Memory()
-        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":3}}}}}
-        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
-        effective=app.with_explicit_operation(observation,"Quiero vender mi departamento")
-        _, criteria, stage, summary=app.progressive_reply(previous,effective,"fallback","Quiero vender mi departamento")
-        with patch.object(app,"get_conversation_memory_store",return_value=memory):
-            app.persist_conversation_turn("519","wamid-sale","Quiero vender mi departamento","respuesta",effective,criteria,stage,summary,previous)
-        state=memory.call[5]
-        active=state["active_search_id"]
-        self.assertNotEqual(active,"buy")
-        self.assertEqual(state["searches"]["buy"]["criteria"]["operation"],"compra")
-        self.assertEqual(state["searches"][active]["criteria"]["operation"],"venta")
+    def record_observation(self, phone, message_id, inbound, outbound, observation):
+        self.record_turn(phone, message_id, inbound, outbound, observation, {}, "observation", "Observación IA almacenada; no controla el flujo productivo.")
 
-    def test_rental_to_sale_creates_new_search_with_clean_criteria(self):
-        previous={"state":{"active_search_id":"rent","searches":{"rent":{"criteria":{"operation":"alquiler","districts":["Miraflores"],"bedrooms":2}}}}}
-        observation=app.with_explicit_operation({"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False},"Quiero vender mi departamento")
-        state, criteria=app.search_state_for_turn(previous,observation,"Quiero vender mi departamento")
-        active=state["active_search_id"]
-        self.assertNotEqual(active,"rent")
-        self.assertEqual(criteria,{})
-        self.assertEqual(state["searches"]["rent"]["criteria"]["operation"],"alquiler")
 
-    def test_explicit_operation_is_shared_by_reply_and_persisted_search_selection(self):
-        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
-        effective=app.with_explicit_operation(observation,"Quiero vender mi departamento")
-        self.assertEqual(effective["slot_updates"]["operation"],"venta")
-        self.assertNotIn("operation",observation["slot_updates"])
+def get_lead_store():
+    supabase_url, supabase_key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    if supabase_url and supabase_key:
+        return SupabaseLeadStore(supabase_url, supabase_key)
+    return LeadStore(os.getenv("LEADS_DB_PATH", "leads.db"))
 
-    def test_progressive_controller_updates_criteria_without_losing_previous(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
-        observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":None,"property_type":None,"preferences":["balcón"]},"handoff":False}
-        _, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
-        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["budget_max"],220000); self.assertEqual(criteria["bedrooms"],3)
 
-    def test_empty_extractor_values_preserve_all_existing_criteria(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"currency":"USD","bedrooms":2,"property_type":"departamento","preferences":["balcón","estacionamiento"]}}}
-        observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":"","bedrooms":None,"property_type":"","preferences":[]},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Continuemos")
-        self.assertEqual(criteria,previous["state"]["criteria"])
+def get_conversation_memory_store():
+    supabase_url, supabase_key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    return ConversationMemoryStore(supabase_url, supabase_key) if supabase_url and supabase_key else None
 
-    def test_empty_district_array_does_not_clear_lince_when_bedrooms_change(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Lince"]}}}
-        observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":3,"property_type":None,"preferences":[]},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Con 3 dormitorios")
-        self.assertEqual(criteria,{"operation":"compra","districts":["Lince"],"bedrooms":3})
 
-    def test_non_empty_slot_updates_and_explicit_remove_remain_effective(self):
-        previous={"state":{"criteria":{"districts":["Lince"],"preferences":["balcón","estacionamiento"]}}}
-        update={"intent":"change_criteria","slot_updates":{"districts":["Surco"]},"criteria_actions":[],"handoff":False}
-        _, updated, _, _ = app.progressive_reply(previous, update, "fallback", "Ahora en Surco")
-        self.assertEqual(updated["districts"],["Surco"])
-        remove={"intent":"change_criteria","slot_updates":{"districts":[]},"criteria_actions":[{"action":"REMOVE","field":"preferences","values":["balcón"]}],"handoff":False}
-        _, removed, _, _ = app.progressive_reply({"state":{"criteria":updated}}, remove, "fallback", "Ya no necesito balcón")
-        self.assertEqual(removed["preferences"],["estacionamiento"])
+@app.route("/", methods=["GET"])
+def home():
+    return '<html lang="es"><head><title>Arenz | Servicios Inmobiliarios</title></head><body><h1>Arenz</h1><h2>Servicios Inmobiliarios</h2><p>Arenz brinda orientación y atención inmobiliaria.</p><p><a href="/privacy">Política de Privacidad</a></p><p>© 2026 Arenz</p></body></html>', 200
 
-    def test_scalar_update_actions_unpack_one_value_without_changing_multivalue_actions(self):
-        prior={"budget_max":200000,"currency":"PEN","bedrooms":2,"property_type":"casa","districts":["Lince"],"preferences":["balcón","cocina independiente"]}
-        updated=app.apply_criteria_actions(prior,[
-            {"action":"UPDATE","field":"budget_max","values":[250000]},
-            {"action":"UPDATE","field":"currency","values":["USD"]},
-            {"action":"UPDATE","field":"bedrooms","values":[3]},
-            {"action":"UPDATE","field":"property_type","values":["departamento"]},
-            {"action":"UPDATE","field":"districts","values":["Surco","Barranco"]},
-            {"action":"UPDATE","field":"preferences","values":["estacionamiento","vista"]},
-        ])
-        self.assertEqual(updated["budget_max"],250000)
-        self.assertEqual(updated["currency"],"USD")
-        self.assertEqual(updated["bedrooms"],3)
-        self.assertEqual(updated["property_type"],"departamento")
-        self.assertEqual(updated["districts"],["Surco","Barranco"])
-        self.assertEqual(updated["preferences"],["estacionamiento","vista"])
 
-    def test_parking_required_actions_preserve_incremental_criteria(self):
-        prior={"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["cocina independiente"]}
-        observation={"intent":"change_criteria","criteria_change":True,"slot_updates":{"bedrooms":2,"parking_required":False,"preferences":[]},"criteria_actions":[{"action":"UPDATE","field":"bedrooms","values":[2]},{"action":"UPDATE","field":"parking_required","values":[False]}],"handoff":False}
-        _, criteria, _, _=app.progressive_reply({"state":{"criteria":prior}},observation,"fallback","Prefiero 2 dormitorios y sin estacionamiento.")
-        self.assertEqual(criteria,{**prior,"bedrooms":2,"parking_required":False})
+@app.route("/privacy", methods=["GET"])
+def privacy():
+    return '<html><head><title>Política de Privacidad - ARENZ</title></head><body><h1>Política de Privacidad de ARENZ</h1><p>ARENZ utiliza WhatsApp para atender consultas inmobiliarias.</p><p>Los datos se usan únicamente para atender consultas y mejorar la atención.</p><p>ARENZ no vende ni comercializa información personal.</p><p>Los usuarios pueden solicitar eliminación de datos contactando a ARENZ.</p><p>Última actualización: agosto de 2026.</p></body></html>', 200
 
-    def test_parking_prompt_contract_covers_required_and_not_required_expressions(self):
-        instructions=app.build_observation_payload(None,"consulta")["instructions"]
-        for expression in ("con estacionamiento", "con cochera", "necesito estacionamiento", "necesito cochera", "sin estacionamiento", "sin cochera", "no necesito estacionamiento", "no necesito cochera"):
-            self.assertIn(expression,instructions)
-        self.assertIn("parking_required",instructions)
 
-    def test_parking_required_validation_and_actions_accept_only_boolean_scalars(self):
-        self.assertEqual(app.validated_slot_updates({"parking_required":True}),{"parking_required":True})
-        self.assertEqual(app.validated_slot_updates({"parking_required":False}),{"parking_required":False})
-        self.assertEqual(app.validated_slot_updates({"parking_required":"false"}),{})
-        self.assertEqual(app.apply_criteria_actions({},[{"action":"UPDATE","field":"parking_required","values":[False]}]),{"parking_required":False})
-        self.assertEqual(app.apply_criteria_actions({"parking_required":True},[{"action":"UPDATE","field":"parking_required","values":[]}]),{"parking_required":True})
+@app.route("/data-deletion", methods=["GET"])
+def data_deletion():
+    return '<html><head><title>Eliminación de Datos - ARENZ</title></head><body><h1>Solicitud de eliminación de datos</h1><p>Comunícate con ARENZ indicando tu nombre y número de WhatsApp.</p><p>Correo de contacto: arenz2026@gmail.com</p></body></html>', 200
 
-    def test_parking_required_filters_only_when_true(self):
-        base={"operation":"compra","district":"Surco","currency":"USD","property_type":"departamento","price_amount":200000}
-        with_parking={**base,"parking_spaces":1}
-        without_parking={**base,"parking_spaces":0}
-        common={"operation":"compra","districts":["Surco"],"currency":"USD","property_type":"departamento","budget_max":250000}
-        self.assertTrue(app.property_matches_criteria(with_parking,{**common,"parking_required":True}))
-        self.assertFalse(app.property_matches_criteria(without_parking,{**common,"parking_required":True}))
-        self.assertTrue(app.property_matches_criteria(with_parking,{**common,"parking_required":False}))
-        self.assertTrue(app.property_matches_criteria(without_parking,{**common,"parking_required":False}))
-        self.assertTrue(app.property_matches_criteria(without_parking,common))
-        self.assertNotIn("parking_required",app.conversation_state({"state":{"criteria":common}}))
-        self.assertIsNone(app.conversation_state({"state":{"criteria":common}}).get("parking_required"))
 
-    def test_property_type_canonicalizes_apartment_alias_before_merge_and_persistence(self):
-        for raw in ("departamento", "apartamento", "Apartamento", " DEPARTAMENTO "):
-            self.assertEqual(app.validated_slot_updates({"property_type":raw}),{"property_type":"departamento"})
-        prior={"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":2,"parking_required":False,"preferences":["cocina independiente"]}
-        updated=app.apply_criteria_actions(prior,[{"action":"UPDATE","field":"property_type","values":["apartamento"]}])
-        self.assertEqual(updated,{**prior,"property_type":"departamento"})
+@app.route("/health", methods=["GET"])
+def health():
+    try:
+        store = get_lead_store()
+        if isinstance(store, LeadStore): store._connect().close()
+        db_ok = True
+    except (sqlite3.Error, requests.RequestException): db_ok = False
+    ok = all((VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID, APP_SECRET)) and db_ok
+    return jsonify({"status": "ok" if ok else "degraded"}), 200 if ok else 503
 
-    def test_property_type_inventory_match_uses_canonical_value(self):
-        criteria={"operation":"compra","districts":["Miraflores"],"currency":"USD","property_type":"departamento","budget_max":180000}
-        canonical={"operation":"compra","district":"Miraflores","currency":"USD","property_type":"departamento","price_amount":180000,"parking_spaces":0}
-        self.assertTrue(app.property_matches_criteria(canonical,criteria))
-        self.assertTrue(app.property_matches_criteria({**canonical,"property_type":"apartamento"},criteria))
 
-    def test_invalid_scalar_update_lists_do_not_coerce_or_replace_existing_values(self):
-        prior={"budget_max":200000,"currency":"USD","bedrooms":2,"property_type":"departamento"}
-        updated=app.apply_criteria_actions(prior,[
-            {"action":"UPDATE","field":"budget_max","values":[]},
-            {"action":"UPDATE","field":"currency","values":["USD","PEN"]},
-            {"action":"UPDATE","field":"bedrooms","values":[2,3]},
-            {"action":"UPDATE","field":"property_type","values":[]},
-        ])
-        self.assertEqual(updated,prior)
+def generate_reply(sender, text):
+    """Existing deterministic qualification flow, retained as fallback."""
+    text = text.lower().strip()
+    session = user_sessions.get(sender, {"step":"start", "intent":None, "district":None, "budget":None, "bedrooms":None})
+    if session["step"] == "start":
+        session["step"] = "intent"; user_sessions[sender] = session
+        return "Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor" if any(w in text for w in ("hola", "buenos días", "buenas tardes", "buenas noches")) else "Hola 👋 Soy ARENZ AI. Dime si deseas comprar, alquilar, vender o hablar con un asesor."
+    if session["step"] == "intent":
+        for intent, words in (("compra",("1","compr")), ("alquiler",("2","alquil")), ("venta",("3","vend"))):
+            if any(w in text for w in words):
+                session.update(intent=intent, step="district"); user_sessions[sender] = session
+                return "Perfecto. ¿En qué distrito o zona estás interesado?"
+        if any(w in text for w in ("4","asesor","humano")):
+            session.update(intent="asesor", step="done"); user_sessions[sender] = session
+            return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo."
+        return "Indica una opción: 1 Comprar, 2 Alquilar, 3 Vender o 4 Hablar con un asesor."
+    if session["step"] == "district":
+        session.update(district=text, step="budget"); user_sessions[sender] = session; return "¿Cuál es tu presupuesto aproximado?"
+    if session["step"] == "budget":
+        session.update(budget=text, step="bedrooms"); user_sessions[sender] = session; return "¿Cuántos dormitorios necesitas?"
+    if session["step"] == "bedrooms":
+        session.update(bedrooms=text, step="summary"); user_sessions[sender] = session
+        return f"Tengo estos datos:\nOperación: {session['intent']}\nZona: {session['district']}\nPresupuesto: {session['budget']}\nDormitorios: {session['bedrooms']}\n\n¿La información es correcta? Responde Sí o No."
+    if session["step"] == "summary":
+        if text in ("sí","si"):
+            session["step"]="done"; user_sessions[sender]=session; return "Excelente ✅. Un asesor de ARENZ podrá continuar contigo."
+        if "no" in text:
+            session["step"]="intent"; user_sessions[sender]=session; return "De acuerdo. ¿Deseas comprar, alquilar o vender una propiedad?"
+        return "Por favor responde Sí o No."
+    return "Tu solicitud ya fue registrada. Si deseas iniciar una nueva búsqueda, escribe NUEVA BÚSQUEDA."
 
-    def test_preference_update_uses_natural_reply_and_never_reasks_known_preference(self):
-        previous={"stage":"qualified","state":{"criteria":{"operation":"compra","districts":["Jesús María"],"budget_max":500000,"currency":"PEN","bedrooms":3,"property_type":"departamento"},"recent_turns":[{"direction":"assistant","content":"¿Te interesa alguna preferencia?"}]}}
-        observation={"intent":"change_criteria","slot_updates":{"preferences":["estacionamiento"]},"handoff":False,"assistant_reply":"Perfecto, añado estacionamiento a tu búsqueda en Jesús María. ¿Te interesa balcón u otra preferencia?"}
-        reply, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
-        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["preferences"],["estacionamiento"]); self.assertIn("inventario verificado",reply)
 
-    def test_regression_new_search_creates_empty_active_search_and_keeps_history(self):
-        previous={"state":{"active_search_id":"old","searches":{"old":{"criteria":{"operation":"alquiler","districts":["Miraflores"],"budget_max":3000,"currency":"PEN","preferences":["amoblado"]}}}}}
-        reply, criteria, stage, _ = app.progressive_reply(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "fallback", "NUEVA BÚSQUEDA")
-        state, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{}}, "NUEVA BÚSQUEDA")
-        self.assertEqual((criteria,stage),({},"qualification")); self.assertIn("Nueva búsqueda",reply); self.assertIn("old",state["searches"]); self.assertNotEqual(state["active_search_id"],"old")
+def generate_ai_reply(sender, text, fallback):
+    if not OPENAI_API_KEY: return fallback
+    payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":"Eres ARENZ AI, asistente inmobiliario en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
+    try:
+        response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}, json=payload, timeout=15)
+        response.raise_for_status()
+        return response.json().get("output_text", "").strip() or fallback
+    except requests.HTTPError as error:
+        logger.warning("AI provider rejected request: status=%s; using deterministic fallback", error.response.status_code if error.response is not None else "unknown")
+        return fallback
+    except (requests.RequestException, ValueError, AttributeError):
+        logger.warning("AI provider unavailable; using deterministic fallback")
+        return fallback
 
-    def test_regression_new_search_resets_even_when_observation_is_unavailable(self):
-        previous={"state":{"criteria":{"operation":"alquiler","districts":["Miraflores"],"budget_max":3000,"currency":"PEN"}}}
-        reply, criteria, stage, _ = app.progressive_reply(previous, None, "fallback", "nueva busqueda")
-        self.assertEqual((criteria,stage),({},"qualification")); self.assertIn("Nueva búsqueda",reply)
 
-    def test_regression_persisted_state_contains_active_search_and_history(self):
-        class Memory:
-            def __init__(self): self.call=None
-            def record_turn(self, *args): self.call=args
-        memory=Memory()
-        previous={"state":{"active_search_id":"old","searches":{"old":{"criteria":{"operation":"alquiler","districts":["Miraflores"]}}}}}
-        observation={"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}
-        with patch.object(app,"get_conversation_memory_store",return_value=memory):
-            app.persist_conversation_turn("519","wamid-new","NUEVA BÚSQUEDA","Nueva búsqueda iniciada.",observation,{},"qualification","reset",previous)
-        state=memory.call[5]
-        self.assertIn("old",state["searches"]); self.assertIn(state["active_search_id"],state["searches"]); self.assertNotEqual(state["active_search_id"],"old"); self.assertEqual(state["searches"][state["active_search_id"]]["criteria"],{})
+def response_output_text(response_body):
+    """Read text from either supported Responses API representation."""
+    output_text = response_body.get("output_text", "")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+    for output in response_body.get("output", []):
+        for content in output.get("content", []):
+            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
+                return content["text"]
+    return ""
 
-    def test_regression_operation_switch_isolated_by_search_id(self):
-        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":2,"preferences":["balcón"]}}}}}
-        observation={"intent":"property_search","slot_updates":{"operation":"venta","districts":["San Miguel"],"bedrooms":3},"criteria_actions":[],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Quiero vender mi departamento en San Miguel")
-        state, _ = app.search_state_for_turn(previous, observation, "Quiero vender mi departamento en San Miguel")
-        self.assertEqual(criteria["operation"],"venta"); self.assertEqual(criteria["districts"],["San Miguel"]); self.assertNotIn("preferences",criteria); self.assertIn("buy",state["searches"]); self.assertNotEqual(state["active_search_id"],"buy")
 
-    def test_regression_remove_preference_does_not_reappear(self):
-        previous={"state":{"criteria":{"operation":"compra","preferences":["estacionamiento","balcón","mascotas"]}}}
-        observation={"intent":"change_criteria","criteria_change":True,"slot_updates":{},"criteria_actions":[{"action":"REMOVE","field":"preferences","values":["estacionamiento","mascotas"]}],"handoff":False}
-        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Ya no necesito estacionamiento ni mascotas")
-        self.assertEqual(criteria["preferences"],["balcón"])
+def normalized_json_text(output_text):
+    """Accept JSON text or a harmless Markdown JSON fence without logging content."""
+    text = output_text.strip()
+    if text.startswith("```json") and text.endswith("```"):
+        return text[7:-3].strip()
+    return text
 
-    def test_regression_inventory_gate_blocks_specific_property_claims(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
-        observation={"intent":"property_search","slot_updates":{},"criteria_actions":[],"handoff":False,"assistant_reply":"La opción recomendada cuenta con balcón y cochera."}
-        reply, _, stage, _ = app.progressive_reply(previous, observation, "fallback")
-        self.assertEqual(stage,"qualified"); self.assertIn("inventario verificado",reply); self.assertNotIn("recomendada",reply)
 
-    def test_recent_turns_are_preserved_bounded_for_next_turn(self):
-        previous={"state":{"recent_turns":[{"direction":"user","content":"uno"},{"direction":"assistant","content":"dos"},{"direction":"user","content":"tres"},{"direction":"assistant","content":"cuatro"}]}}
-        self.assertEqual(len(app.recent_conversation_turns(previous)),4)
-        self.assertEqual(app.recent_conversation_turns(previous)[-1]["content"],"cuatro")
+def structured_output_metadata(output_text):
+    """Return safe diagnostics without retaining model or user content."""
+    text = output_text if isinstance(output_text, str) else ""
+    stripped = text.strip()
+    initial_type = "fence" if stripped.startswith("```") else "brace" if stripped.startswith("{") else "other"
+    normalized = normalized_json_text(text)
+    residual_present = False
+    if normalized.startswith("{"):
+        try:
+            _, end = json.JSONDecoder().raw_decode(normalized)
+            residual_present = bool(normalized[end:].strip())
+        except json.JSONDecodeError:
+            pass
+    return len(text), initial_type, residual_present
 
-    def test_assistant_reply_is_used_for_partial_search_and_fallback_remains_safe(self):
-        observation={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Perfecto, te ayudo a comprar. ¿Qué tipo de inmueble buscas?"}
-        reply, criteria, stage, _ = app.progressive_reply(None, observation, "fallback")
-        self.assertEqual((criteria["operation"],stage),("compra","qualification")); self.assertIn("tipo de inmueble",reply)
-        unavailable={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Tenemos disponible un departamento."}
-        self.assertEqual(app.progressive_reply(None, unavailable, "fallback")[0],"¿Qué tipo de inmueble buscas?")
 
-    def test_general_question_and_handoff_do_not_reset_conversation(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
-        question={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Claro, puedo ayudarte con esa consulta."}
-        reply, criteria, stage, _ = app.progressive_reply(previous, question, "fallback")
-        self.assertEqual(stage,"conversation"); self.assertEqual(criteria,previous["state"]["criteria"]); self.assertEqual(reply,question["assistant_reply"])
-        handoff={"intent":"human_handoff","slot_updates":{},"handoff":True}
-        _, _, stage, _ = app.progressive_reply(previous, handoff, "fallback")
-        self.assertEqual(stage,"handoff")
+def parse_structured_json(output_text):
+    """Parse exactly one JSON object, allowing only trailing whitespace."""
+    normalized = normalized_json_text(output_text)
+    if not normalized.startswith("{"):
+        raise json.JSONDecodeError("expected JSON object", normalized, 0)
+    observation, end = json.JSONDecoder().raw_decode(normalized)
+    if normalized[end:].strip():
+        raise ValueError("json_residual")
+    return observation
 
-    def test_progressive_controller_uses_deterministic_fallback_when_observation_fails(self):
-        reply, criteria, stage, _ = app.progressive_reply({"state":{"criteria":{"operation":"compra"}}}, None, "fallback seguro")
-        self.assertEqual((reply,criteria,stage),("fallback seguro",{"operation":"compra"},"fallback"))
 
-    def test_memory_session_reconstructs_criteria_after_restart(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
-        self.assertEqual(app.conversation_state(previous)["bedrooms"],3)
+def response_usage_metadata(response_body, started_at):
+    """Return safe, content-free telemetry for a completed Responses API call."""
+    usage = response_body.get("usage") if isinstance(response_body, dict) else None
+    details = usage.get("output_tokens_details") if isinstance(usage, dict) else None
+    return {
+        "model": response_body.get("model") if isinstance(response_body, dict) and isinstance(response_body.get("model"), str) else "unknown",
+        "usage_available": isinstance(usage, dict),
+        "output_tokens": usage.get("output_tokens") if isinstance(usage, dict) else None,
+        "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details, dict) else None,
+        "total_tokens": usage.get("total_tokens") if isinstance(usage, dict) else None,
+        "latency_ms": round((time.monotonic() - started_at) * 1000),
+    }
 
-if __name__ == "__main__": unittest.main()
 
+def recent_conversation_turns(previous, limit=4):
+    """Return a small durable dialogue window, without internal observation data."""
+    state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    turns = state.get("recent_turns", []) if isinstance(state, dict) else []
+    clean = []
+    for turn in turns if isinstance(turns, list) else []:
+        if not isinstance(turn, dict):
+            continue
+        direction, content = turn.get("direction"), turn.get("content")
+        if direction in ("user", "assistant") and isinstance(content, str) and content.strip():
+            clean.append({"direction": direction, "content": content.strip()[:280]})
+    if not clean and isinstance(state, dict):
+        for direction, key in (("user", "last_user_message"), ("assistant", "last_assistant_message")):
+            content = state.get(key)
+            if isinstance(content, str) and content.strip():
+                clean.append({"direction": direction, "content": content.strip()[:280]})
+    return clean[-limit:]
+
+
+def build_observation_payload(previous, text):
+    """Build a bounded request from durable criteria and recent dialogue."""
+    context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
+    return {
+        "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, pero nunca afirmar disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
+        "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
+    }
+
+
+def observe_conversation(sender, text, deterministic_reply, timings=None, previous=None, previous_loaded=False):
+    """Extract structured signals only; never controls the user-facing reply."""
+    if not OPENAI_API_KEY:
+        return None
+    memory = get_conversation_memory_store()
+    if not previous_loaded and memory:
+        try:
+            previous = memory.load_session(sender)
+        except requests.RequestException:
+            logger.warning("Conversation memory unavailable during observation")
+    context_started_at = time.monotonic()
+    payload = build_observation_payload(previous, text)
+    if timings is not None:
+        timings["context_ms"] = round((time.monotonic() - context_started_at) * 1000)
+    started_at = time.monotonic()
+    try:
+        response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
+        response.raise_for_status()
+        response_body = response.json()
+        telemetry = response_usage_metadata(response_body, started_at)
+        if timings is not None:
+            timings["openai_ms"] = telemetry["latency_ms"]
+        logger.info("Conversation observation telemetry: model=%s usage_available=%s output_tokens=%s reasoning_tokens=%s total_tokens=%s latency_ms=%s", telemetry["model"], telemetry["usage_available"], telemetry["output_tokens"], telemetry["reasoning_tokens"], telemetry["total_tokens"], telemetry["latency_ms"])
+        output_text = response_output_text(response_body)
+        if not output_text:
+            outputs = response_body.get("output", [])
+            content_types = []
+            refusal_present = False
+            if isinstance(outputs, list):
+                for output in outputs:
+                    for content in output.get("content", []) if isinstance(output, dict) else []:
+                        content_type = content.get("type", "unknown") if isinstance(content, dict) else "unknown"
+                        content_types.append(content_type)
+                        refusal_present = refusal_present or content_type == "refusal"
+            incomplete = response_body.get("incomplete_details", {})
+            logger.warning("Conversation observation empty output: output_present=%s content_types=%s refusal_present=%s status=%s incomplete_reason=%s", isinstance(outputs, list), ",".join(sorted(set(content_types))) or "none", refusal_present, response_body.get("status", "unknown"), incomplete.get("reason", "none") if isinstance(incomplete, dict) else "none")
+            raise ValueError("empty_output")
+        observation = parse_structured_json(output_text)
+        required = {"intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply"}
+        if not isinstance(observation, dict) or not required.issubset(observation) or not isinstance(observation["slot_updates"], dict):
+            raise ValueError("invalid_contract")
+        logger.info("Conversation observation: intent=%s next_action=%s slots=%s handoff=%s latency_ms=%s", observation["intent"], observation["next_action"], sum(value is not None and value != [] for value in observation["slot_updates"].values()), observation["handoff"], telemetry["latency_ms"])
+        return observation
+    except requests.HTTPError as error:
+        details = {}
+        try:
+            details = error.response.json().get("error", {}) if error.response is not None else {}
+        except ValueError:
+            pass
+        logger.warning("Conversation observation unavailable: status=%s code=%s type=%s", error.response.status_code if error.response is not None else "unknown", details.get("code", "unknown"), details.get("type", "unknown"))
+    except json.JSONDecodeError:
+        output_length, initial_type, residual_present = structured_output_metadata(output_text)
+        logger.warning("Conversation observation unavailable: reason=invalid_json output_length=%s initial_type=%s residual_present=%s", output_length, initial_type, residual_present)
+    except ValueError as error:
+        output_length, initial_type, residual_present = structured_output_metadata(output_text)
+        logger.warning("Conversation observation unavailable: reason=%s output_length=%s initial_type=%s residual_present=%s", str(error), output_length, initial_type, residual_present)
+    except requests.RequestException as error:
+        logger.warning("Conversation observation unavailable: reason=request_failed error_type=%s latency_ms=%s", type(error).__name__, round((time.monotonic() - started_at) * 1000))
+    except (KeyError, TypeError, AttributeError) as error:
+        logger.warning("Conversation observation unavailable: reason=response_shape_error error_type=%s", type(error).__name__)
+    return None
+
+
+def persist_conversation_observation(sender, message_id, inbound, outbound, observation):
+    memory = get_conversation_memory_store()
+    if not memory:
+        return
+    try:
+        memory.record_observation(sender, message_id, inbound, outbound, observation)
+    except requests.RequestException:
+        logger.warning("Conversation observation persistence unavailable")
+
+
+ALLOWED_OPERATIONS = {"compra", "alquiler", "venta"}
+OPERATION_ALIASES = {"comprar": "compra", "alquilar": "alquiler", "vender": "venta"}
+ALLOWED_CURRENCIES = {"USD", "PEN"}
+INVENTORY_RULES_VERSION = "p1-v1"
+INVENTORY_MAX_RESULTS = 3
+INVENTORY_VERIFICATION_DAYS = 7
+
+
+def explicit_operation_from_text(text):
+    """Recognize only explicit purchase/rental/sale requests without touching other slots."""
+    normalized = " ".join((text or "").casefold().split())
+    wants_purchase = bool(re.search(r"\b(?:quiero|busco|deseo)\s+comprar\b|\bcomprar\b|\bcompra\b", normalized))
+    wants_rental = bool(re.search(r"\b(?:quiero|busco|deseo)\s+alquilar\b|\balquilar\b|\balquiler\b", normalized))
+    wants_sale = bool(re.search(r"\b(?:quiero|deseo)\s+vender\b|\bvender\s+mi\s+(?:departamento|inmueble)\b|\bventa\b", normalized))
+    matches = [operation for operation, matched in (("compra", wants_purchase), ("alquiler", wants_rental), ("venta", wants_sale)) if matched]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def with_explicit_operation(observation, text):
+    """Overlay a deterministic explicit operation while preserving extractor output."""
+    operation = explicit_operation_from_text(text)
+    if not operation:
+        return observation
+    result = dict(observation) if isinstance(observation, dict) else {"intent": "change_criteria", "handoff": False}
+    slots = dict(result.get("slot_updates", {}))
+    slots["operation"] = operation
+    result["slot_updates"] = slots
+    return result
+
+
+def validated_slot_updates(slot_updates):
+    """Accept only non-empty, bounded criteria from the structured AI contract."""
+    if not isinstance(slot_updates, dict):
+        return {}
+    clean = {}
+    operation = slot_updates.get("operation")
+    if isinstance(operation, str):
+        operation = OPERATION_ALIASES.get(operation.lower(), operation.lower())
+        if operation in ALLOWED_OPERATIONS:
+            clean["operation"] = operation
+    districts = slot_updates.get("districts")
+    if isinstance(districts, list):
+        districts = [value.strip().title() for value in districts if isinstance(value, str) and 1 <= len(value.strip()) <= 60][:3]
+        if districts:
+            clean["districts"] = districts
+    budget = slot_updates.get("budget_max")
+    if isinstance(budget, (int, float)) and 1000 <= budget <= 10000000:
+        clean["budget_max"] = int(budget)
+    currency = slot_updates.get("currency")
+    if isinstance(currency, str) and currency.upper() in ALLOWED_CURRENCIES:
+        clean["currency"] = currency.upper()
+    bedrooms = slot_updates.get("bedrooms")
+    if isinstance(bedrooms, int) and 0 <= bedrooms <= 20:
+        clean["bedrooms"] = bedrooms
+    property_type = slot_updates.get("property_type")
+    if isinstance(property_type, str) and 1 <= len(property_type.strip()) <= 40:
+        clean["property_type"] = property_type.strip().lower()
+    parking_required = slot_updates.get("parking_required")
+    if isinstance(parking_required, bool):
+        clean["parking_required"] = parking_required
+    preferences = slot_updates.get("preferences")
+    if isinstance(preferences, list):
+        preferences = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
+        if preferences:
+            clean["preferences"] = preferences
+    return clean
+
+
+def conversation_state(previous):
+    state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    searches = state.get("searches", {}) if isinstance(state, dict) else {}
+    active = state.get("active_search_id") if isinstance(state, dict) else None
+    if isinstance(searches, dict) and active in searches and isinstance(searches[active], dict):
+        criteria = searches[active].get("criteria", {})
+    else:
+        criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
+    return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences") if criteria.get(key) not in (None, [], "")}
+
+
+def active_search_id(previous):
+    state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    active = state.get("active_search_id") if isinstance(state, dict) else None
+    return active if isinstance(active, str) else None
+
+
+def is_new_search_request(text):
+    normalized = " ".join((text or "").casefold().split())
+    return normalized in {"nueva búsqueda", "nueva busqueda", "nueva búsqueda.", "nueva busqueda."}
+
+
+def sanitize_new_search_observation(observation, user_text=None):
+    """Treat an explicit NEW SEARCH command as context control, never criteria."""
+    if not is_new_search_request(user_text) or not isinstance(observation, dict):
+        return observation
+    sanitized = dict(observation)
+    sanitized["slot_updates"] = {}
+    sanitized["criteria_actions"] = []
+    sanitized["criteria_change"] = False
+    return sanitized
+
+
+def search_state_for_turn(previous, observation, user_text=None):
+    """Return a backward-compatible multi-search state and its active criteria."""
+    old_state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    searches = dict(old_state.get("searches", {})) if isinstance(old_state.get("searches"), dict) else {}
+    active = old_state.get("active_search_id") if isinstance(old_state, dict) else None
+    if not searches and conversation_state(previous):
+        active = active or "legacy"
+        searches[active] = {"criteria": conversation_state(previous)}
+    slots = validated_slot_updates(observation.get("slot_updates")) if isinstance(observation, dict) else {}
+    requested_operation = slots.get("operation")
+    starts_new = is_new_search_request(user_text) or (isinstance(observation, dict) and observation.get("intent") == "new_search")
+    current = searches.get(active, {}).get("criteria", {}) if active else {}
+    if requested_operation and current.get("operation") and requested_operation != current.get("operation"):
+        starts_new = True
+    create_search = starts_new or (active not in searches and bool(requested_operation))
+    if create_search:
+        active = str(uuid.uuid4())
+        searches[active] = {"criteria": {}}
+    if active not in searches:
+        return {"active_search_id": None, "searches": searches}, {}
+    return {"active_search_id": active, "searches": searches}, searches[active]["criteria"]
+
+
+def apply_criteria_actions(criteria, actions):
+    """Apply explicit mutations so removed values cannot reappear from stale state."""
+    result = dict(criteria)
+    scalar_update_fields = {"budget_max", "currency", "bedrooms", "property_type", "parking_required"}
+    for action in actions if isinstance(actions, list) else []:
+        if not isinstance(action, dict):
+            continue
+        kind, field, values = action.get("action"), action.get("field"), action.get("values")
+        if kind not in {"ADD", "UPDATE", "REMOVE"} or field not in {"districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences"}:
+            continue
+        value_for_validation = values
+        if kind == "UPDATE" and field in scalar_update_fields and isinstance(values, list) and len(values) == 1:
+            value_for_validation = values[0]
+        cleaned = validated_slot_updates({field: value_for_validation}).get(field)
+        if kind == "REMOVE":
+            if field in {"districts", "preferences"} and isinstance(values, list) and values:
+                result[field] = [item for item in result.get(field, []) if item not in (cleaned or [])]
+                if not result[field]: result.pop(field, None)
+            else:
+                result.pop(field, None)
+        elif kind == "ADD" and field in {"districts", "preferences"}:
+            result[field] = list(dict.fromkeys(result.get(field, []) + (cleaned or [])))
+        elif cleaned not in (None, [], ""):
+            result[field] = cleaned
+    return result
+
+
+def usable_assistant_reply(observation):
+    reply = observation.get("assistant_reply") if isinstance(observation, dict) else None
+    if not isinstance(reply, str):
+        return None
+    reply = reply.strip()
+    if not reply or len(reply) > 280:
+        return None
+    prohibited = ("tenemos disponible", "encontré", "encontre", "hay disponibilidad", "opción recomendada", "opcion recomendada", "la recomendada", "revisando disponibilidad", "cuenta con", "te mostraré las opciones", "te mostrare las opciones")
+    return None if any(term in reply.lower() for term in prohibited) else reply
+
+
+def inventory_ready(criteria):
+    """Only run a concrete inventory search after the P0 qualification is complete."""
+    required = ("operation", "property_type", "districts", "budget_max", "currency", "bedrooms")
+    return (
+        isinstance(criteria, dict)
+        and criteria.get("operation") in {"compra", "alquiler"}
+        and all(criteria.get(key) not in (None, [], "") for key in required)
+    )
+
+
+def public_property_snapshot(property_row, media_rows):
+    """Allowlist the only property fields that may reach a prospect."""
+    approved_media = [
+        {"media_type": row["media_type"], "media_url": row["media_url"]}
+        for row in media_rows if row.get("approved_for_client") is True
+    ]
+    return {
+        "public_reference": property_row["public_reference"],
+        "operation": property_row["operation"],
+        "property_type": property_row["property_type"],
+        "district": property_row["district"],
+        "zone": property_row.get("zone"),
+        "public_location_reference": property_row.get("public_location_reference"),
+        "price_amount": property_row["price_amount"],
+        "currency": property_row["currency"],
+        "bedrooms": property_row.get("bedrooms"),
+        "bathrooms": property_row.get("bathrooms"),
+        "area_m2": property_row.get("area_m2"),
+        "parking_spaces": property_row.get("parking_spaces"),
+        "features": property_row.get("features") or [],
+        "public_description": property_row.get("public_description"),
+        "availability_confirmed_at": property_row["availability_confirmed_at"],
+        "media": approved_media,
+    }
+
+
+def property_is_eligible(property_row, now=None):
+    """The P1 eligibility rule is deterministic and independent of model output."""
+    now = now or datetime.now(timezone.utc)
+    required = ("public_reference", "operation", "property_type", "district", "price_amount", "currency", "approved_at", "availability_confirmed_at")
+    if property_row.get("lifecycle_state") != "active_confirmed" or any(property_row.get(field) in (None, "") for field in required):
+        return False
+    try:
+        verified_at = datetime.fromisoformat(property_row["availability_confirmed_at"].replace("Z", "+00:00"))
+        verified_at = verified_at if verified_at.tzinfo else verified_at.replace(tzinfo=timezone.utc)
+        return verified_at >= now - timedelta(days=INVENTORY_VERIFICATION_DAYS)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def property_matches_criteria(property_row, criteria):
+    """P1 hard filters; preferences are intentionally only a small deterministic rank."""
+    districts = {district.casefold() for district in criteria.get("districts", []) if isinstance(district, str)}
+    if property_row.get("operation") != criteria.get("operation"):
+        return False
+    if property_row.get("district", "").casefold() not in districts:
+        return False
+    if property_row.get("currency") != criteria.get("currency"):
+        return False
+    if property_row.get("property_type") != criteria.get("property_type"):
+        return False
+    if criteria.get("parking_required") is True and not property_row.get("parking_spaces"):
+        return False
+    try:
+        return float(property_row["price_amount"]) <= float(criteria["budget_max"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def property_match_rank(property_row, criteria):
+    score = 0
+    if property_row.get("bedrooms") == criteria.get("bedrooms"):
+        score += 4
+    elif isinstance(property_row.get("bedrooms"), int) and property_row["bedrooms"] > criteria.get("bedrooms", 0):
+        score += 2
+    if property_row.get("parking_spaces"):
+        score += 1
+    requested = set(criteria.get("preferences") or [])
+    score += len(requested.intersection(set(property_row.get("features") or [])))
+    return score
+
+
+class InventoryStore:
+    """Small REST adapter for canonical inventory; it never exposes internal fields."""
+    property_fields = "property_id,public_reference,operation,property_type,district,zone,public_location_reference,price_amount,currency,bedrooms,bathrooms,area_m2,parking_spaces,features,public_description,lifecycle_state,availability_confirmed_at,approved_at"
+
+    def __init__(self, url, key):
+        self.url = url.rstrip("/")
+        self.headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+
+    def find_matches(self, criteria, now=None):
+        now = now or datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=INVENTORY_VERIFICATION_DAYS)
+        params = {
+            "select": self.property_fields,
+            "operation": f"eq.{criteria['operation']}",
+            "lifecycle_state": "eq.active_confirmed",
+            "approved_at": "not.is.null",
+            "availability_confirmed_at": f"gte.{cutoff.isoformat()}",
+            "currency": f"eq.{criteria['currency']}",
+            "price_amount": f"lte.{criteria['budget_max']}",
+            "property_type": f"eq.{criteria['property_type']}",
+            "district": "in.(" + ",".join(criteria["districts"]) + ")",
+        }
+        response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers, params=params, timeout=10)
+        response.raise_for_status()
+        candidates = [row for row in response.json() if property_is_eligible(row, now) and property_matches_criteria(row, criteria)]
+        candidates.sort(key=lambda row: (-property_match_rank(row, criteria), float(row["price_amount"]), row["public_reference"]))
+        candidates = candidates[:INVENTORY_MAX_RESULTS]
+        media_by_property = self._approved_media([row["property_id"] for row in candidates])
+        return [{"property": row, "public": public_property_snapshot(row, media_by_property.get(row["property_id"], []))} for row in candidates], cutoff
+
+    def _approved_media(self, property_ids):
+        if not property_ids:
+            return {}
+        response = requests.get(
+            f"{self.url}/rest/v1/inventory_property_media",
+            headers=self.headers,
+            params={"select": "property_id,media_type,media_url,approved_for_client,display_order", "property_id": "in.(" + ",".join(property_ids) + ")", "approved_for_client": "eq.true", "order": "display_order.asc"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        grouped = {}
+        for row in response.json():
+            grouped.setdefault(row["property_id"], []).append(row)
+        return grouped
+
+    def record_query(self, search_id, message_id, criteria, cutoff, matches):
+        payload = {"search_id": search_id, "request_message_id": message_id, "criteria_snapshot": criteria, "eligibility_cutoff_at": cutoff.isoformat(), "rules_version": INVENTORY_RULES_VERSION, "result_status": "executed" if matches else "no_eligible", "eligible_count": len(matches)}
+        response = requests.post(f"{self.url}/rest/v1/inventory_query_log", headers={**self.headers, "Prefer": "return=representation"}, json=payload, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            raise RuntimeError("Inventory query log was not created")
+        query_id = rows[0]["query_id"]
+        if matches:
+            result_rows = [{"query_id": query_id, "property_id": item["property"]["property_id"], "rank_position": index, "presented_to_client": True, "eligibility_snapshot": {"rules_version": INVENTORY_RULES_VERSION, "eligible": True}, "public_snapshot": item["public"]} for index, item in enumerate(matches, start=1)]
+            result = requests.post(f"{self.url}/rest/v1/inventory_query_results", headers={**self.headers, "Prefer": "return=minimal"}, json=result_rows, timeout=10)
+            result.raise_for_status()
+
+
+def get_inventory_store():
+    supabase_url, supabase_key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    return InventoryStore(supabase_url, supabase_key) if supabase_url and supabase_key else None
+
+
+def inventory_reply(matches):
+    if not matches:
+        return "No encontré opciones verificadas que coincidan exactamente con tus criterios en este momento. Puedo ampliar distrito, presupuesto o derivar tu solicitud a un asesor."
+    lines = ["Encontré opciones verificadas que coinciden con tus criterios:"]
+    for item in matches:
+        public = item["public"]
+        details = [f"Ref. {public['public_reference']}", public["property_type"].capitalize(), public["district"], f"{public['currency']} {public['price_amount']}", f"{public['bedrooms']} dormitorios"]
+        if public.get("parking_spaces"):
+            details.append(f"{public['parking_spaces']} estacionamiento(s)")
+        lines.append(" · ".join(details) + ".")
+        if public["media"]:
+            first_media = public["media"][0]
+            lines.append(f"{first_media['media_type'].capitalize()}: {first_media['media_url']}")
+    return "\n".join(lines)
+
+
+def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
+    """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
+    observation = with_explicit_operation(observation, user_text)
+    observation = sanitize_new_search_observation(observation, user_text)
+    if not observation:
+        if is_new_search_request(user_text):
+            return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
+        return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
+    if prior_criteria is None:
+        _, prior_criteria = search_state_for_turn(previous, observation, user_text)
+    criteria = apply_criteria_actions(prior_criteria, observation.get("criteria_actions"))
+    slots = validated_slot_updates(observation.get("slot_updates"))
+    if observation.get("criteria_change") and "preferences" in slots and not observation.get("criteria_actions"):
+        criteria["preferences"] = list(dict.fromkeys(criteria.get("preferences", []) + slots.pop("preferences")))
+    criteria.update(slots)
+    intent = observation.get("intent")
+    if observation.get("handoff") or intent == "human_handoff":
+        return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."
+    natural_reply = usable_assistant_reply(observation)
+    if intent == "general_question":
+        if inventory_matches is not None and inventory_ready(criteria):
+            return inventory_reply(inventory_matches), criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
+        if natural_reply:
+            return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
+        return "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?", criteria, "conversation", "Consulta libre; criterios conservados."
+    missing = [("operation", "¿Deseas comprar, alquilar o vender?"), ("property_type", "¿Qué tipo de inmueble buscas?"), ("districts", "¿En qué distrito o zona estás interesado?"), ("budget_max", "¿Cuál es tu presupuesto máximo aproximado?"), ("currency", "¿Tu presupuesto es en USD o PEN?"), ("bedrooms", "¿Cuántos dormitorios necesitas?")]
+    for key, question in missing:
+        if criteria.get(key) in (None, [], ""):
+            if (is_new_search_request(user_text) or intent == "new_search") and key == "operation":
+                return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", criteria, "qualification", "Nueva búsqueda creada con criterios vacíos."
+            if natural_reply:
+                return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
+            return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
+    if inventory_matches is not None and inventory_ready(criteria):
+        return inventory_reply(inventory_matches), criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
+    return "Tengo registrados tus criterios. Aún no cuento con inventario verificado conectado para mostrarte propiedades reales; puedo derivar tu solicitud a un asesor.", criteria, "qualified", "Criterios completos; inventario no conectado, sin afirmaciones sobre propiedades."
+
+
+def persist_conversation_turn(sender, message_id, inbound, outbound, observation, criteria, stage, summary, previous=None, timings=None, search_state=None):
+    memory = get_conversation_memory_store()
+    if not memory:
+        return
+    observation = sanitize_new_search_observation(observation, inbound)
+    turns = recent_conversation_turns(previous) + [{"direction": "user", "content": inbound}, {"direction": "assistant", "content": outbound}]
+    search_state = search_state or search_state_for_turn(previous, observation, inbound)[0]
+    active_id = search_state.get("active_search_id")
+    if active_id:
+        search_state["searches"][active_id]["criteria"] = criteria
+        search_state["searches"][active_id]["recent_turns"] = turns[-4:]
+    prior_state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    legacy_searches = prior_state.get("legacy_searches", prior_state.get("searches", {})) if isinstance(prior_state, dict) else {}
+    # Legacy/local mode retains its existing durable adapter. Supabase mode must
+    # use commit_consistent_turn below, rather than hiding a persistence error.
+    memory.record_turn(sender, message_id, inbound, outbound, observation, {**search_state, "legacy_searches": legacy_searches, "previous": previous or {}}, stage, summary, timings)
+    return active_id
+
+
+def _profile_payload(phone, criteria, inbound, outbound, stage):
+    status = "pendiente_asesor" if stage == "handoff" else "en_calificacion"
+    return {"phone": phone, "intent": criteria.get("operation"), "district": ", ".join(criteria.get("districts", [])) or None,
+            "budget": f"{criteria.get('currency')} {criteria.get('budget_max')}" if criteria.get("currency") and criteria.get("budget_max") is not None else None,
+            "bedrooms": str(criteria["bedrooms"]) if criteria.get("bedrooms") is not None else None,
+            "conversation": {"last_user_message": inbound, "last_assistant_message": outbound}, "status": status,
+            "next_action": "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"}
+
+
+def _inventory_trace(criteria, matches, cutoff):
+    operation = criteria.get("operation")
+    if operation == "venta": state = "skipped_sale"
+    elif not inventory_ready(criteria): state = "skipped_incomplete"
+    else: state = "executed" if matches else "no_eligible"
+    return {"criteria_snapshot": criteria, "eligibility_cutoff_at": (cutoff or datetime.now(timezone.utc)).isoformat(),
+            "rules_version": "p1", "result_status": state, "eligible_count": len(matches or [])}
+
+
+def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, outbound, observation, criteria, stage, summary, previous, search_state, inventory_matches=None, inventory_cutoff=None):
+    """Prepare data only; the database RPC commits every durable consequence together."""
+    observation = sanitize_new_search_observation(observation, inbound)
+    active_id = search_state.get("active_search_id")
+    searches = search_state.get("searches", {})
+    current = searches.get(active_id, {}) if active_id else {}
+    previous_id = active_search_id(previous or {})
+    prior_state = (previous or {}).get("state", {}) if isinstance(previous, dict) else {}
+    legacy = prior_state.get("legacy_searches", prior_state.get("searches", {})) if isinstance(prior_state, dict) else {}
+    session_state = {"active_search_id": active_id} if active_id else {}
+    if isinstance(legacy, dict) and legacy:
+        session_state["legacy_searches"] = legacy
+    payload = {"p_message_id": message_id, "p_claim_token": claim_token,
+               "p_profile": _profile_payload(sender, criteria, inbound, outbound, stage),
+               "p_session": {"phone": sender, "stage": stage, "state": session_state, "summary": summary},
+               "p_search": {"search_id": active_id, "phone": sender, "operation": criteria.get("operation"), "state": {**current, "criteria": criteria, "recent_turns": (recent_conversation_turns(previous) + [{"direction":"user","content":inbound},{"direction":"assistant","content":outbound}])[-4:]}},
+               "p_previous_search_id": previous_id if previous_id != active_id else None,
+               "p_inbound": {"message_key": f"in:{message_id}", "phone": sender, "content": inbound, "extraction": observation},
+               "p_outbound": {"message_key": f"out:{message_id}", "phone": sender, "content": outbound},
+               "p_inventory_log": _inventory_trace(criteria, inventory_matches, inventory_cutoff),
+               "p_inventory_results": []}
+    if inventory_matches:
+        payload["p_inventory_results"] = [{"property_id": item["property_id"], "rank_position": index, "presented_to_client": True,
+                                            "eligibility_snapshot": item.get("eligibility_snapshot", {}), "public_snapshot": item.get("public", {})}
+                                           for index, item in enumerate(inventory_matches, 1)]
+    return memory.commit_work(payload)
+
+
+def send_whatsapp_message(to, message):
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID: raise RuntimeError("WhatsApp credentials are not configured")
+    response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages", headers={"Authorization":f"Bearer {WHATSAPP_TOKEN}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        try:
+            details = response.json().get("error", {})
+        except ValueError:
+            details = {}
+        logger.error("Graph API rejected reply: status=%s code=%s type=%s message=%s", response.status_code, details.get("code"), details.get("type"), details.get("message"))
+        raise error
+    logger.info("WhatsApp reply accepted by Graph API")
+    return response
+
+
+def valid_meta_signature(raw_body, signature):
+    if not APP_SECRET or not signature or not signature.startswith("sha256="): return False
+    expected = "sha256=" + hmac.new(APP_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@app.route("/webhook", methods=["GET"])
+def verify_webhook():
+    if not VERIFY_TOKEN: return "Webhook not configured", 503
+    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.challenge") and hmac.compare_digest(request.args.get("hub.verify_token") or "", VERIFY_TOKEN): return request.args["hub.challenge"], 200
+    return "Verification failed", 403
+
+
+def iter_incoming_messages(data):
+    if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account": return []
+    return [message for entry in data.get("entry", []) for change in entry.get("changes", []) for message in change.get("value", {}).get("messages", []) if message.get("type") == "text" and message.get("from") and message.get("text", {}).get("body")]
+
+
+@app.route("/webhook", methods=["POST"])
+def receive_webhook():
+    webhook_started_at = time.monotonic()
+    raw = request.get_data(cache=True)
+    if not valid_meta_signature(raw, request.headers.get("X-Hub-Signature-256", "")):
+        logger.warning("Rejected webhook with invalid signature"); return jsonify({"status":"invalid_signature"}), 401
+    messages = iter_incoming_messages(request.get_json(silent=True))
+    if not messages: return jsonify({"status":"ignored"}), 200
+    try:
+        processed = 0
+        for message in messages:
+            timings = {}
+            started_at = time.monotonic()
+            memory = get_conversation_memory_store()
+            message_id = message.get("id")
+            claim_token = None
+            if memory:
+                outcome, claim_token = memory.claim_work(message_id)
+                if outcome not in ("claimed", "reclaimed"):
+                    continue
+            elif not get_lead_store().claim_message(message_id):
+                continue
+            timings["dedupe_ms"] = round((time.monotonic() - started_at) * 1000)
+            sender, text = message["from"], message["text"]["body"]
+            fallback = generate_reply(sender, text)
+            started_at = time.monotonic()
+            try:
+                previous = memory.load_session(sender) if memory else None
+            except requests.RequestException:
+                previous = None
+                logger.warning("Conversation memory unavailable; using in-process fallback")
+            timings["session_read_ms"] = round((time.monotonic() - started_at) * 1000)
+            observation = observe_conversation(sender, text, fallback, timings, previous, True)
+            # One effective observation governs reply, search selection, and persistence.
+            # This prevents an explicit operation from updating the prior search only in
+            # the response layer while persistence still sees the unnormalized input.
+            effective_observation = with_explicit_operation(observation, text)
+            turn_state, turn_prior_criteria = search_state_for_turn(previous, effective_observation, text)
+            reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria)
+            inventory_store = get_inventory_store()
+            inventory_matches, inventory_cutoff = None, None
+            if inventory_store and inventory_ready(criteria):
+                inventory_matches, inventory_cutoff = inventory_store.find_matches(criteria)
+                reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
+            started_at = time.monotonic()
+            if memory:
+                # All mandatory internal state commits before attempting Meta.
+                commit_consistent_turn(memory, claim_token, sender, message_id, text, reply, effective_observation, criteria, stage, summary, previous, turn_state, inventory_matches, inventory_cutoff)
+            else:
+                persist_conversation_turn(sender, message_id, text, reply, effective_observation, criteria, stage, summary, previous, timings, turn_state)
+                profile_session = {**user_sessions.get(sender, {})}
+                if criteria:
+                    profile_session.update({"intent": criteria.get("operation"), "district": ", ".join(criteria.get("districts", [])) or None, "budget": f"{criteria.get('currency')} {criteria.get('budget_max')}" if criteria.get("currency") and criteria.get("budget_max") else None, "bedrooms": str(criteria["bedrooms"]) if criteria.get("bedrooms") is not None else None})
+                get_lead_store().upsert_lead(sender, profile_session, text, reply)
+            timings["internal_commit_ms"] = round((time.monotonic() - started_at) * 1000)
+            started_at = time.monotonic()
+            try:
+                send_whatsapp_message(sender, reply)
+                if memory: memory.record_delivery(message_id, "sent")
+            except requests.RequestException as error:
+                # Internal commit remains processed. Never retry Meta automatically.
+                if memory:
+                    code = f"meta_http_{getattr(error.response, 'status_code', None)}" if getattr(error, "response", None) is not None else "meta_transport"
+                    memory.record_delivery(message_id, "failed", code)
+                logger.warning("WhatsApp delivery failed after internal commit: category=%s", type(error).__name__)
+            timings["graph_ms"] = round((time.monotonic() - started_at) * 1000)
+            timings["total_ms"] = round((time.monotonic() - webhook_started_at) * 1000)
+            logger.info("Webhook timing: dedupe_ms=%s session_read_ms=%s context_ms=%s openai_ms=%s session_write_ms=%s messages_write_ms=%s lead_write_ms=%s graph_ms=%s total_ms=%s", timings.get("dedupe_ms"), timings.get("session_read_ms"), timings.get("context_ms"), timings.get("openai_ms"), timings.get("session_write_ms"), timings.get("messages_write_ms"), timings.get("lead_write_ms"), timings.get("graph_ms"), timings.get("total_ms"))
+            processed += 1
+        return jsonify({"status":"received" if processed else "duplicate", "processed":processed}), 200
+    except (requests.RequestException, RuntimeError, sqlite3.Error):
+        if 'memory' in locals() and memory and claim_token:
+            memory.fail_work(message.get("id"), claim_token, "internal_commit")
+        logger.exception("Webhook processing failed"); return jsonify({"status":"error"}), 500
+
+
+if __name__ == "__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
 
