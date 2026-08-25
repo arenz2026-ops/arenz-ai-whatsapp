@@ -696,8 +696,12 @@ def receive_webhook():
                 logger.warning("Conversation memory unavailable; using in-process fallback")
             timings["session_read_ms"] = round((time.monotonic() - started_at) * 1000)
             observation = observe_conversation(sender, text, fallback, timings, previous, True)
-            reply, criteria, stage, summary = progressive_reply(previous, observation, fallback, text)
-            persist_conversation_turn(sender, message.get("id"), text, reply, observation, criteria, stage, summary, previous, timings)
+            # One effective observation governs reply, search selection, and persistence.
+            # This prevents an explicit operation from updating the prior search only in
+            # the response layer while persistence still sees the unnormalized input.
+            effective_observation = with_explicit_operation(observation, text)
+            reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text)
+            persist_conversation_turn(sender, message.get("id"), text, reply, effective_observation, criteria, stage, summary, previous, timings)
             started_at = time.monotonic()
             profile_session = {**user_sessions.get(sender, {})}
             if criteria:
