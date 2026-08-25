@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 import time
-import unicodedata
+import uuid
 from datetime import datetime, timezone
 
 import requests
@@ -26,16 +26,16 @@ user_sessions = {}
 OBSERVATION_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
-        "intent": {"type": "string", "enum": ["property_search", "general_question", "change_criteria", "human_handoff", "greeting", "confirmation", "unknown"]},
-        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "bathrooms": {"type": ["integer", "null"]}, "parking": {"type": ["boolean", "null"]}, "area_min": {"type": ["number", "null"]}, "area_max": {"type": ["number", "null"]}, "property_type": {"type": ["string", "null"]}, "property_condition": {"type": ["string", "null"]}, "floor_min": {"type": ["integer", "null"]}, "floor_max": {"type": ["integer", "null"]}, "pets_allowed": {"type": ["boolean", "null"]}, "furnished": {"type": ["boolean", "null"]}, "delivery_timing": {"type": ["string", "null"]}, "max_age_years": {"type": ["integer", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}, "preference_removals": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "bathrooms", "parking", "area_min", "area_max", "property_type", "property_condition", "floor_min", "floor_max", "pets_allowed", "furnished", "delivery_timing", "max_age_years", "preferences", "preference_removals"]},
+        "intent": {"type": "string", "enum": ["property_search", "new_search", "general_question", "change_criteria", "human_handoff", "greeting", "confirmation", "unknown"]},
+        "slot_updates": {"type": "object", "additionalProperties": False, "properties": {"operation": {"type": ["string", "null"]}, "districts": {"type": "array", "items": {"type": "string"}}, "budget_max": {"type": ["number", "null"]}, "currency": {"type": ["string", "null"]}, "bedrooms": {"type": ["integer", "null"]}, "property_type": {"type": ["string", "null"]}, "preferences": {"type": "array", "items": {"type": "string"}}}, "required": ["operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"]},
         "criteria_change": {"type": "boolean"},
+        "criteria_actions": {"type": "array", "items": {"type": "object", "additionalProperties": False, "properties": {"action": {"type": "string", "enum": ["ADD", "UPDATE", "REMOVE"]}, "field": {"type": "string", "enum": ["districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"]}, "values": {"type": "array", "items": {"type": ["string", "number", "integer"]}}}, "required": ["action", "field", "values"]}},
         "user_question": {"type": ["string", "null"]},
         "next_action": {"type": "string", "enum": ["reply", "ask_clarification", "confirm", "search_inventory", "handoff"]},
         "handoff": {"type": "boolean"},
-        "assistant_reply": {"type": "string"},
-        "criteria_removals": {"type": "array", "items": {"type": "string", "enum": ["operation", "districts", "budget_max", "currency", "bedrooms", "bathrooms", "parking", "area_min", "area_max", "property_type", "property_condition", "floor_min", "floor_max", "pets_allowed", "furnished", "delivery_timing", "max_age_years", "preferences"]}}
+        "assistant_reply": {"type": "string"}
     },
-    "required": ["intent", "slot_updates", "criteria_change", "user_question", "next_action", "handoff", "assistant_reply", "criteria_removals"]
+    "required": ["intent", "slot_updates", "criteria_change", "criteria_actions", "user_question", "next_action", "handoff", "assistant_reply"]
 }
 
 
@@ -105,12 +105,14 @@ class SupabaseLeadStore:
     def upsert_lead(self, phone, session, inbound, reply):
         status = "pendiente_asesor" if session.get("step") == "done" else "en_calificacion"
         next_action = "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"
-        payload = {"phone": phone, "intent": session.get("intent") or "consulta inmobiliaria", "district": session.get("district"), "budget": session.get("budget"), "bedrooms": session.get("bedrooms"), "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action}
-        response = requests.post(f"{self.url}/rest/v1/leads", headers={**self.headers, "Prefer": "return=minimal"}, json=payload, timeout=10)
+        existing = self.get_lead(phone) or {}
+        incoming = {"intent": session.get("intent"), "district": session.get("district"), "budget": session.get("budget"), "bedrooms": session.get("bedrooms")}
+        payload = {"phone": phone, **{field: value if value not in (None, "") else existing.get(field) for field, value in incoming.items()}, "conversation": {"last_user_message": inbound, "last_assistant_message": reply}, "status": status, "next_action": next_action, "updated_at": datetime.now(timezone.utc).isoformat()}
+        response = requests.post(f"{self.url}/rest/v1/lead_profiles?on_conflict=phone", headers={**self.headers, "Prefer": "resolution=merge-duplicates,return=minimal"}, json=payload, timeout=10)
         response.raise_for_status()
 
     def get_lead(self, phone):
-        response = requests.get(f"{self.url}/rest/v1/leads", headers=self.headers, params={"phone": f"eq.{phone}", "select": "*"}, timeout=10)
+        response = requests.get(f"{self.url}/rest/v1/lead_profiles", headers=self.headers, params={"phone": f"eq.{phone}", "select": "*"}, timeout=10)
         response.raise_for_status()
         rows = response.json()
         return rows[0] if rows else None
@@ -317,10 +319,10 @@ def recent_conversation_turns(previous, limit=4):
 
 def build_observation_payload(previous, text):
     """Build a bounded request from durable criteria and recent dialogue."""
-    context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
+    context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
     return {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. assistant_reply es la respuesta normal para todos los intents no handoff: natural, útil y máximo 180 caracteres. Los slot_updates son cambios acumulativos: incluye solo requisitos nuevos o sustituidos; no repitas ni borres criterios previos. preferences agrega preferencias; preference_removals elimina solo esas preferencias. criteria_removals elimina únicamente los slots solicitados explícitamente. Usa bathrooms para baños y parking para estacionamiento. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, pero nunca afirmar disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
@@ -402,9 +404,6 @@ def persist_conversation_observation(sender, message_id, inbound, outbound, obse
 ALLOWED_OPERATIONS = {"compra", "alquiler", "venta"}
 OPERATION_ALIASES = {"comprar": "compra", "alquilar": "alquiler", "vender": "venta"}
 ALLOWED_CURRENCIES = {"USD", "PEN"}
-CRITERIA_KEYS = ("operation", "districts", "budget_max", "currency", "bedrooms", "bathrooms", "parking", "area_min", "area_max", "property_type", "property_condition", "floor_min", "floor_max", "pets_allowed", "furnished", "delivery_timing", "max_age_years", "preferences")
-REMOVABLE_CRITERIA = set(CRITERIA_KEYS)
-PARKING_PREFERENCE_ALIASES = {"estacionamiento", "cochera", "garaje"}
 
 
 def validated_slot_updates(slot_updates):
@@ -429,74 +428,78 @@ def validated_slot_updates(slot_updates):
     bedrooms = slot_updates.get("bedrooms")
     if isinstance(bedrooms, int) and 0 <= bedrooms <= 20:
         clean["bedrooms"] = bedrooms
-    bathrooms = slot_updates.get("bathrooms")
-    if isinstance(bathrooms, int) and 0 <= bathrooms <= 20:
-        clean["bathrooms"] = bathrooms
-    parking = slot_updates.get("parking")
-    if isinstance(parking, bool):
-        clean["parking"] = parking
-    for key in ("area_min", "area_max"):
-        value = slot_updates.get(key)
-        if isinstance(value, (int, float)) and 1 <= value <= 100000:
-            clean[key] = int(value)
     property_type = slot_updates.get("property_type")
     if isinstance(property_type, str) and 1 <= len(property_type.strip()) <= 40:
         clean["property_type"] = property_type.strip().lower()
-    property_condition = slot_updates.get("property_condition")
-    if isinstance(property_condition, str) and 1 <= len(property_condition.strip()) <= 40:
-        clean["property_condition"] = property_condition.strip().lower()
-    for key in ("floor_min", "floor_max", "max_age_years"):
-        value = slot_updates.get(key)
-        if isinstance(value, int) and 0 <= value <= 200:
-            clean[key] = value
-    for key in ("pets_allowed", "furnished"):
-        value = slot_updates.get(key)
-        if isinstance(value, bool):
-            clean[key] = value
-    delivery_timing = slot_updates.get("delivery_timing")
-    if isinstance(delivery_timing, str) and 1 <= len(delivery_timing.strip()) <= 60:
-        clean["delivery_timing"] = delivery_timing.strip().lower()
     preferences = slot_updates.get("preferences")
     if isinstance(preferences, list):
         clean["preferences"] = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
-    preference_removals = slot_updates.get("preference_removals")
-    if isinstance(preference_removals, list):
-        clean["preference_removals"] = [value.strip().lower() for value in preference_removals if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
     return clean
 
 
 def conversation_state(previous):
     state = previous.get("state", {}) if isinstance(previous, dict) else {}
-    criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
-    return {key: criteria.get(key) for key in CRITERIA_KEYS if criteria.get(key) not in (None, [], "")}
+    searches = state.get("searches", {}) if isinstance(state, dict) else {}
+    active = state.get("active_search_id") if isinstance(state, dict) else None
+    if isinstance(searches, dict) and active in searches and isinstance(searches[active], dict):
+        criteria = searches[active].get("criteria", {})
+    else:
+        criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
+    return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "preferences") if criteria.get(key) not in (None, [], "")}
 
 
-def merge_criteria(previous, slot_updates, criteria_removals=None):
-    """Merge durable criteria; only explicit removals can delete existing values."""
-    criteria = conversation_state(previous)
-    removals = criteria_removals if isinstance(criteria_removals, list) else []
-    for key in removals:
-        if key in REMOVABLE_CRITERIA:
-            criteria.pop(key, None)
-    updates = validated_slot_updates(slot_updates)
-    removed_preferences = set(updates.pop("preference_removals", []))
-    if removed_preferences & PARKING_PREFERENCE_ALIASES:
-        criteria.pop("parking", None)
-    if "parking" in removals:
-        removed_preferences.update(PARKING_PREFERENCE_ALIASES)
-    if removed_preferences:
-        criteria["preferences"] = [value for value in criteria.get("preferences", []) if value not in removed_preferences]
-        if not criteria["preferences"]:
-            criteria.pop("preferences", None)
-    additions = updates.pop("preferences", [])
-    if set(additions) & PARKING_PREFERENCE_ALIASES:
-        updates.setdefault("parking", True)
-        additions = [value for value in additions if value not in PARKING_PREFERENCE_ALIASES]
-    if additions:
-        existing = criteria.get("preferences", [])
-        criteria["preferences"] = list(dict.fromkeys(existing + additions))[:10]
-    criteria.update(updates)
-    return criteria
+def active_search_id(previous):
+    state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    active = state.get("active_search_id") if isinstance(state, dict) else None
+    return active if isinstance(active, str) else None
+
+
+def is_new_search_request(text):
+    normalized = " ".join((text or "").casefold().split())
+    return normalized in {"nueva búsqueda", "nueva busqueda", "nueva búsqueda.", "nueva busqueda."}
+
+
+def search_state_for_turn(previous, observation, user_text=None):
+    """Return a backward-compatible multi-search state and its active criteria."""
+    old_state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    searches = dict(old_state.get("searches", {})) if isinstance(old_state.get("searches"), dict) else {}
+    active = old_state.get("active_search_id") if isinstance(old_state, dict) else None
+    if not searches and conversation_state(previous):
+        active = active or "legacy"
+        searches[active] = {"criteria": conversation_state(previous)}
+    slots = validated_slot_updates(observation.get("slot_updates")) if isinstance(observation, dict) else {}
+    requested_operation = slots.get("operation")
+    starts_new = is_new_search_request(user_text) or (isinstance(observation, dict) and observation.get("intent") == "new_search")
+    current = searches.get(active, {}).get("criteria", {}) if active else {}
+    if requested_operation and current.get("operation") and requested_operation != current.get("operation"):
+        starts_new = True
+    if starts_new or active not in searches:
+        active = str(uuid.uuid4())
+        searches[active] = {"criteria": {}}
+    return {"active_search_id": active, "searches": searches}, searches[active]["criteria"]
+
+
+def apply_criteria_actions(criteria, actions):
+    """Apply explicit mutations so removed values cannot reappear from stale state."""
+    result = dict(criteria)
+    for action in actions if isinstance(actions, list) else []:
+        if not isinstance(action, dict):
+            continue
+        kind, field, values = action.get("action"), action.get("field"), action.get("values")
+        if kind not in {"ADD", "UPDATE", "REMOVE"} or field not in {"districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"}:
+            continue
+        cleaned = validated_slot_updates({field: values}).get(field)
+        if kind == "REMOVE":
+            if field in {"districts", "preferences"} and isinstance(values, list) and values:
+                result[field] = [item for item in result.get(field, []) if item not in (cleaned or [])]
+                if not result[field]: result.pop(field, None)
+            else:
+                result.pop(field, None)
+        elif kind == "ADD" and field in {"districts", "preferences"}:
+            result[field] = list(dict.fromkeys(result.get(field, []) + (cleaned or [])))
+        elif cleaned not in (None, [], ""):
+            result[field] = cleaned
+    return result
 
 
 def usable_assistant_reply(observation):
@@ -506,95 +509,26 @@ def usable_assistant_reply(observation):
     reply = reply.strip()
     if not reply or len(reply) > 280:
         return None
-    prohibited = ("tenemos disponible", "encontré disponible", "hay disponibilidad")
+    prohibited = ("tenemos disponible", "encontré", "encontre", "hay disponibilidad", "opción recomendada", "opcion recomendada", "la recomendada", "revisando disponibilidad", "cuenta con", "te mostraré las opciones", "te mostrare las opciones")
     return None if any(term in reply.lower() for term in prohibited) else reply
 
 
-def normalized_user_text(text):
-    """Normalize user text only for bounded intent checks."""
-    if not isinstance(text, str):
-        return ""
-    return "".join(char for char in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(char) != "Mn")
-
-
-def is_criteria_recap_request(text):
-    """Recognize explicit requests to restate the active property search."""
-    normalized = normalized_user_text(text)
-    phrases = (
-        "resumen", "resume mi busqueda", "resume la busqueda", "recapitula",
-        "mis criterios", "que criterios", "mis requisitos", "que requisitos",
-        "mi busqueda actual", "que busco", "mis filtros",
-    )
-    return any(phrase in normalized for phrase in phrases)
-
-
-def criteria_recap(criteria):
-    """Render only active durable criteria; never infer missing search details."""
-    if not criteria:
-        return "Aún no tengo criterios confirmados para resumir."
-    operation = {"compra": "comprar", "alquiler": "alquilar", "venta": "vender"}.get(criteria.get("operation"), criteria.get("operation"))
-    property_type = criteria.get("property_type")
-    parts = []
-    if operation and property_type:
-        parts.append(f"{operation} {property_type}")
-    elif operation:
-        parts.append(operation)
-    elif property_type:
-        parts.append(property_type)
-    if criteria.get("districts"):
-        parts.append("en " + ", ".join(criteria["districts"]))
-    if criteria.get("budget_max") and criteria.get("currency"):
-        currency = "US$" if criteria["currency"] == "USD" else "S/"
-        parts.append(f"hasta {currency}{criteria['budget_max']:,}")
-    if criteria.get("bedrooms") is not None:
-        parts.append(f"{criteria['bedrooms']} {'dormitorio' if criteria['bedrooms'] == 1 else 'dormitorios'}")
-    if criteria.get("bathrooms") is not None:
-        parts.append(f"{criteria['bathrooms']} {'baño' if criteria['bathrooms'] == 1 else 'baños'}")
-    if criteria.get("parking") is True:
-        parts.append("con estacionamiento")
-    elif criteria.get("parking") is False:
-        parts.append("sin estacionamiento")
-    if criteria.get("preferences"):
-        parts.append("preferencias: " + ", ".join(criteria["preferences"]))
-    area_min, area_max = criteria.get("area_min"), criteria.get("area_max")
-    if area_min and area_max:
-        parts.append(f"{area_min}–{area_max} m²")
-    elif area_min:
-        parts.append(f"desde {area_min} m²")
-    elif area_max:
-        parts.append(f"hasta {area_max} m²")
-    if criteria.get("property_condition"):
-        parts.append(f"estado {criteria['property_condition']}")
-    if criteria.get("floor_min") is not None:
-        parts.append(f"piso ≥{criteria['floor_min']}")
-    if criteria.get("floor_max") is not None:
-        parts.append(f"piso ≤{criteria['floor_max']}")
-    if criteria.get("pets_allowed") is True:
-        parts.append("acepta mascotas")
-    elif criteria.get("pets_allowed") is False:
-        parts.append("no acepta mascotas")
-    if criteria.get("furnished") is True:
-        parts.append("amoblado")
-    elif criteria.get("furnished") is False:
-        parts.append("sin amoblar")
-    if criteria.get("delivery_timing"):
-        parts.append(f"entrega {criteria['delivery_timing']}")
-    if criteria.get("max_age_years") is not None:
-        parts.append(f"antigüedad ≤{criteria['max_age_years']} años")
-    return "Resumen de tu búsqueda: " + "; ".join(parts) + "."
-
-
-def progressive_reply(previous, observation, fallback, inbound=None):
+def progressive_reply(previous, observation, fallback, user_text=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     if not observation:
+        if is_new_search_request(user_text):
+            return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
         return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
-    criteria = merge_criteria(previous, observation.get("slot_updates"), observation.get("criteria_removals"))
+    _, prior_criteria = search_state_for_turn(previous, observation, user_text)
+    criteria = apply_criteria_actions(prior_criteria, observation.get("criteria_actions"))
+    slots = validated_slot_updates(observation.get("slot_updates"))
+    if observation.get("criteria_change") and "preferences" in slots and not observation.get("criteria_actions"):
+        criteria["preferences"] = list(dict.fromkeys(criteria.get("preferences", []) + slots.pop("preferences")))
+    criteria.update(slots)
     intent = observation.get("intent")
     if observation.get("handoff") or intent == "human_handoff":
         return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."
     natural_reply = usable_assistant_reply(observation)
-    if is_criteria_recap_request(inbound):
-        return criteria_recap(criteria), criteria, "conversation", "Resumen construido desde criterios durables."
     if intent == "general_question":
         if natural_reply:
             return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
@@ -602,13 +536,12 @@ def progressive_reply(previous, observation, fallback, inbound=None):
     missing = [("operation", "¿Deseas comprar, alquilar o vender?"), ("property_type", "¿Qué tipo de inmueble buscas?"), ("districts", "¿En qué distrito o zona estás interesado?"), ("budget_max", "¿Cuál es tu presupuesto máximo aproximado?"), ("currency", "¿Tu presupuesto es en USD o PEN?"), ("bedrooms", "¿Cuántos dormitorios necesitas?")]
     for key, question in missing:
         if criteria.get(key) in (None, [], ""):
+            if (is_new_search_request(user_text) or intent == "new_search") and key == "operation":
+                return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", criteria, "qualification", "Nueva búsqueda creada con criterios vacíos."
             if natural_reply:
                 return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
-    if natural_reply:
-        return natural_reply, criteria, "qualified", "Criterios completos; respuesta IA validada."
-    district = ", ".join(criteria["districts"])
-    return f"Entendido: {criteria['operation']} de {criteria['property_type']} en {district}, hasta {criteria['currency']} {criteria['budget_max']:,} y {criteria['bedrooms']} dormitorios. ¿Deseas añadir alguna preferencia, como balcón o estacionamiento?", criteria, "qualified", "Criterios básicos completos; sin derivación automática."
+    return "Tengo registrados tus criterios. Aún no cuento con inventario verificado conectado para mostrarte propiedades reales; puedo derivar tu solicitud a un asesor.", criteria, "qualified", "Criterios completos; inventario no conectado, sin afirmaciones sobre propiedades."
 
 
 def persist_conversation_turn(sender, message_id, inbound, outbound, observation, criteria, stage, summary, previous=None, timings=None):
@@ -617,7 +550,9 @@ def persist_conversation_turn(sender, message_id, inbound, outbound, observation
         return
     try:
         turns = recent_conversation_turns(previous) + [{"direction": "user", "content": inbound}, {"direction": "assistant", "content": outbound}]
-        memory.record_turn(sender, message_id, inbound, outbound, observation, {"criteria": criteria, "recent_turns": turns[-4:]}, stage, summary, timings)
+        search_state, _ = search_state_for_turn(previous, observation, inbound)
+        search_state["searches"][search_state["active_search_id"]]["criteria"] = criteria
+        memory.record_turn(sender, message_id, inbound, outbound, observation, {**search_state, "criteria": criteria, "recent_turns": turns[-4:]}, stage, summary, timings)
     except requests.RequestException:
         logger.warning("Conversation memory persistence unavailable")
 
@@ -686,7 +621,10 @@ def receive_webhook():
             reply, criteria, stage, summary = progressive_reply(previous, observation, fallback, text)
             persist_conversation_turn(sender, message.get("id"), text, reply, observation, criteria, stage, summary, previous, timings)
             started_at = time.monotonic()
-            store.upsert_lead(sender, user_sessions.get(sender, {}), text, reply)
+            profile_session = {**user_sessions.get(sender, {})}
+            if criteria:
+                profile_session.update({"intent": criteria.get("operation"), "district": ", ".join(criteria.get("districts", [])) or None, "budget": f"{criteria.get('currency')} {criteria.get('budget_max')}" if criteria.get("currency") and criteria.get("budget_max") else None, "bedrooms": str(criteria["bedrooms"]) if criteria.get("bedrooms") is not None else None})
+            store.upsert_lead(sender, profile_session, text, reply)
             timings["lead_write_ms"] = round((time.monotonic() - started_at) * 1000)
             started_at = time.monotonic()
             send_whatsapp_message(sender, reply)
