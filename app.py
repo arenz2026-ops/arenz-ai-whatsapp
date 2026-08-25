@@ -601,13 +601,17 @@ def search_state_for_turn(previous, observation, user_text=None):
 def apply_criteria_actions(criteria, actions):
     """Apply explicit mutations so removed values cannot reappear from stale state."""
     result = dict(criteria)
+    scalar_update_fields = {"budget_max", "currency", "bedrooms", "property_type"}
     for action in actions if isinstance(actions, list) else []:
         if not isinstance(action, dict):
             continue
         kind, field, values = action.get("action"), action.get("field"), action.get("values")
         if kind not in {"ADD", "UPDATE", "REMOVE"} or field not in {"districts", "budget_max", "currency", "bedrooms", "property_type", "preferences"}:
             continue
-        cleaned = validated_slot_updates({field: values}).get(field)
+        value_for_validation = values
+        if kind == "UPDATE" and field in scalar_update_fields and isinstance(values, list) and len(values) == 1:
+            value_for_validation = values[0]
+        cleaned = validated_slot_updates({field: value_for_validation}).get(field)
         if kind == "REMOVE":
             if field in {"districts", "preferences"} and isinstance(values, list) and values:
                 result[field] = [item for item in result.get(field, []) if item not in (cleaned or [])]
@@ -1006,4 +1010,5 @@ def receive_webhook():
 
 
 if __name__ == "__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+
 
