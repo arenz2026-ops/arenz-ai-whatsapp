@@ -372,6 +372,19 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("parking_required",app.conversation_state({"state":{"criteria":common}}))
         self.assertIsNone(app.conversation_state({"state":{"criteria":common}}).get("parking_required"))
 
+    def test_property_type_canonicalizes_apartment_alias_before_merge_and_persistence(self):
+        for raw in ("departamento", "apartamento", "Apartamento", " DEPARTAMENTO "):
+            self.assertEqual(app.validated_slot_updates({"property_type":raw}),{"property_type":"departamento"})
+        prior={"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":2,"parking_required":False,"preferences":["cocina independiente"]}
+        updated=app.apply_criteria_actions(prior,[{"action":"UPDATE","field":"property_type","values":["apartamento"]}])
+        self.assertEqual(updated,{**prior,"property_type":"departamento"})
+
+    def test_property_type_inventory_match_uses_canonical_value(self):
+        criteria={"operation":"compra","districts":["Miraflores"],"currency":"USD","property_type":"departamento","budget_max":180000}
+        canonical={"operation":"compra","district":"Miraflores","currency":"USD","property_type":"departamento","price_amount":180000,"parking_spaces":0}
+        self.assertTrue(app.property_matches_criteria(canonical,criteria))
+        self.assertTrue(app.property_matches_criteria({**canonical,"property_type":"apartamento"},criteria))
+
     def test_invalid_scalar_update_lists_do_not_coerce_or_replace_existing_values(self):
         prior={"budget_max":200000,"currency":"USD","bedrooms":2,"property_type":"departamento"}
         updated=app.apply_criteria_actions(prior,[
