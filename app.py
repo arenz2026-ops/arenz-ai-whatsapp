@@ -396,7 +396,7 @@ def build_observation_payload(previous, text):
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
     return {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. property_type debe usar solo valores canónicos: departamento es el valor para departamento y apartamento; nunca devuelvas apartamento. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, pero nunca afirmar disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. property_type debe usar solo valores canónicos: departamento es el valor para departamento y apartamento; nunca devuelvas apartamento. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, exclusivamente sobre búsqueda inmobiliaria, criterios, aclaraciones, compra, alquiler, venta o derivación a un asesor. No introduzcas humor, temas generales, recomendaciones no inmobiliarias ni contenido accesorio; nunca afirmes disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
@@ -636,15 +636,29 @@ def apply_criteria_actions(criteria, actions):
     return result
 
 
-def usable_assistant_reply(observation):
+def assistant_reply_is_real_estate_scoped(reply):
+    """Accept only concise reply segments tied to the supported real-estate flow."""
+    domain_terms = ("inmueble", "inmobiliaria", "propiedad", "departamento", "apartamento", "casa", "compra", "comprar", "alquiler", "alquilar", "venta", "vender", "búsqueda", "busqueda", "buscar", "criterio", "distrito", "zona", "presupuesto", "precio", "usd", "pen", "dormitorio", "estacionamiento", "cochera", "asesor", "inventario", "moneda")
+    generic_acknowledgements = ("claro", "perfecto", "de acuerdo", "gracias", "claro, puedo ayudarte con esa consulta", "puedo ayudarte")
+    neutral_clarifications = ("qué deseas consultar", "que deseas consultar", "en qué puedo ayudarte", "en que puedo ayudarte")
+    segments = [segment.strip().casefold() for segment in re.split(r"[.!?]+", reply) if segment.strip()]
+    return bool(segments) and all(
+        any(term in segment for term in domain_terms)
+        or segment.strip("¿¡ ") in generic_acknowledgements
+        or any(question in segment for question in neutral_clarifications)
+        for segment in segments
+    )
+
+
+def usable_assistant_reply(observation, route):
     reply = observation.get("assistant_reply") if isinstance(observation, dict) else None
-    if not isinstance(reply, str):
+    if route not in {"conversation", "qualification"} or not isinstance(reply, str):
         return None
     reply = reply.strip()
     if not reply or len(reply) > 280:
         return None
     prohibited = ("tenemos disponible", "encontré", "encontre", "hay disponibilidad", "opción recomendada", "opcion recomendada", "la recomendada", "revisando disponibilidad", "cuenta con", "te mostraré las opciones", "te mostrare las opciones")
-    return None if any(term in reply.lower() for term in prohibited) else reply
+    return None if any(term in reply.lower() for term in prohibited) or not assistant_reply_is_real_estate_scoped(reply) else reply
 
 
 def inventory_ready(criteria):
@@ -827,8 +841,8 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     intent = observation.get("intent")
     if observation.get("handoff") or intent == "human_handoff":
         return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."
-    natural_reply = usable_assistant_reply(observation)
     if intent == "general_question":
+        natural_reply = usable_assistant_reply(observation, "conversation")
         if inventory_matches is not None and inventory_ready(criteria):
             return inventory_reply(inventory_matches), criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
         if natural_reply:
@@ -839,6 +853,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         if criteria.get(key) in (None, [], ""):
             if (is_new_search_request(user_text) or intent == "new_search") and key == "operation":
                 return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", criteria, "qualification", "Nueva búsqueda creada con criterios vacíos."
+            natural_reply = usable_assistant_reply(observation, "qualification")
             if natural_reply:
                 return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."

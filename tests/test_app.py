@@ -44,7 +44,7 @@ class AppTests(unittest.TestCase):
     def test_observation_payload_is_compact_and_preserves_durable_context(self):
         previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"recent_turns":[{"direction":"user","content":"Busco en Surco"},{"direction":"assistant","content":"Perfecto, anotado."}]}}
         payload=app.build_observation_payload(previous,"consulta actual")
-        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("criteria_actions",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("Busco en Surco",payload["input"]); self.assertIn("consulta actual",payload["input"])
+        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("criteria_actions",payload["instructions"]); self.assertIn("exclusivamente sobre búsqueda inmobiliaria",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("Busco en Surco",payload["input"]); self.assertIn("consulta actual",payload["input"])
         for forbidden in ("last_observation","no enviar","Respuesta determinista"):
             self.assertNotIn(forbidden,payload["input"])
     def test_structured_observation_reads_output_content_format(self):
@@ -454,6 +454,21 @@ class AppTests(unittest.TestCase):
         self.assertEqual((criteria["operation"],stage),("compra","qualification")); self.assertIn("tipo de inmueble",reply)
         unavailable={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Tenemos disponible un departamento."}
         self.assertEqual(app.progressive_reply(None, unavailable, "fallback")[0],"¿Qué tipo de inmueble buscas?")
+
+    def test_assistant_reply_domain_guard_uses_safe_fallbacks(self):
+        partial={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False}
+        for reply in ("Busco departamentos en Surco. Humor y beneficios, por ejemplo.", "El clima está agradable hoy."):
+            with self.subTest(reply=reply):
+                self.assertEqual(app.progressive_reply(None, {**partial,"assistant_reply":reply}, "fallback")[0], "¿Qué tipo de inmueble buscas?")
+        question={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Claro, puedo ayudarte con tu búsqueda inmobiliaria. ¿Qué deseas consultar?"}
+        self.assertEqual(app.progressive_reply(None, question, "fallback")[0], question["assistant_reply"])
+        accessory={**question,"assistant_reply":"Puedo ayudarte con tu búsqueda. También puedo contar un chiste."}
+        self.assertEqual(app.progressive_reply(None, accessory, "fallback")[0], "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?")
+
+    def test_complete_search_with_empty_inventory_keeps_deterministic_reply(self):
+        observation={"intent":"property_search","slot_updates":{"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":2,"property_type":"departamento","preferences":[]},"handoff":False,"assistant_reply":"Busco un departamento. Humor y beneficios."}
+        reply, _, stage, _ = app.progressive_reply(None, observation, "fallback", inventory_matches=[])
+        self.assertEqual(stage,"qualified"); self.assertEqual(reply, app.inventory_reply([]))
 
     def test_general_question_and_handoff_do_not_reset_conversation(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
