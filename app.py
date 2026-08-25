@@ -396,7 +396,7 @@ def build_observation_payload(previous, text):
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
     return {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. property_type debe usar solo valores canónicos: departamento es el valor para departamento y apartamento; nunca devuelvas apartamento. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, pero nunca afirmar disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, pero nunca afirmar disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
@@ -478,7 +478,6 @@ def persist_conversation_observation(sender, message_id, inbound, outbound, obse
 ALLOWED_OPERATIONS = {"compra", "alquiler", "venta"}
 OPERATION_ALIASES = {"comprar": "compra", "alquilar": "alquiler", "vender": "venta"}
 ALLOWED_CURRENCIES = {"USD", "PEN"}
-PROPERTY_TYPE_ALIASES = {"apartamento": "departamento"}
 INVENTORY_RULES_VERSION = "p1-v1"
 INVENTORY_MAX_RESULTS = 3
 INVENTORY_VERIFICATION_DAYS = 7
@@ -508,13 +507,6 @@ def with_explicit_operation(observation, text):
     return result
 
 
-def canonical_property_type(value):
-    if not isinstance(value, str):
-        return None
-    normalized = value.strip().lower()
-    return PROPERTY_TYPE_ALIASES.get(normalized, normalized)
-
-
 def validated_slot_updates(slot_updates):
     """Accept only non-empty, bounded criteria from the structured AI contract."""
     if not isinstance(slot_updates, dict):
@@ -539,9 +531,9 @@ def validated_slot_updates(slot_updates):
     bedrooms = slot_updates.get("bedrooms")
     if isinstance(bedrooms, int) and 0 <= bedrooms <= 20:
         clean["bedrooms"] = bedrooms
-    property_type = canonical_property_type(slot_updates.get("property_type"))
-    if isinstance(property_type, str) and 1 <= len(property_type) <= 40:
-        clean["property_type"] = property_type
+    property_type = slot_updates.get("property_type")
+    if isinstance(property_type, str) and 1 <= len(property_type.strip()) <= 40:
+        clean["property_type"] = property_type.strip().lower()
     parking_required = slot_updates.get("parking_required")
     if isinstance(parking_required, bool):
         clean["parking_required"] = parking_required
@@ -706,7 +698,7 @@ def property_matches_criteria(property_row, criteria):
         return False
     if property_row.get("currency") != criteria.get("currency"):
         return False
-    if canonical_property_type(property_row.get("property_type")) != criteria.get("property_type"):
+    if property_row.get("property_type") != criteria.get("property_type"):
         return False
     if criteria.get("parking_required") is True and not property_row.get("parking_spaces"):
         return False
@@ -1023,5 +1015,4 @@ def receive_webhook():
 
 
 if __name__ == "__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
-
 
