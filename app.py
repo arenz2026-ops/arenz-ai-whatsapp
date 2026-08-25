@@ -528,6 +528,17 @@ def is_new_search_request(text):
     return normalized in {"nueva búsqueda", "nueva busqueda", "nueva búsqueda.", "nueva busqueda."}
 
 
+def sanitize_new_search_observation(observation, user_text=None):
+    """Treat an explicit NEW SEARCH command as context control, never criteria."""
+    if not is_new_search_request(user_text) or not isinstance(observation, dict):
+        return observation
+    sanitized = dict(observation)
+    sanitized["slot_updates"] = {}
+    sanitized["criteria_actions"] = []
+    sanitized["criteria_change"] = False
+    return sanitized
+
+
 def search_state_for_turn(previous, observation, user_text=None):
     """Return a backward-compatible multi-search state and its active criteria."""
     old_state = previous.get("state", {}) if isinstance(previous, dict) else {}
@@ -588,6 +599,7 @@ def usable_assistant_reply(observation):
 def progressive_reply(previous, observation, fallback, user_text=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     observation = with_explicit_operation(observation, user_text)
+    observation = sanitize_new_search_observation(observation, user_text)
     if not observation:
         if is_new_search_request(user_text):
             return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
@@ -622,6 +634,7 @@ def persist_conversation_turn(sender, message_id, inbound, outbound, observation
     if not memory:
         return
     try:
+        observation = sanitize_new_search_observation(observation, inbound)
         turns = recent_conversation_turns(previous) + [{"direction": "user", "content": inbound}, {"direction": "assistant", "content": outbound}]
         search_state, _ = search_state_for_turn(previous, observation, inbound)
         active_id = search_state.get("active_search_id")
@@ -720,3 +733,4 @@ def receive_webhook():
 
 
 if __name__ == "__main__": app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+
