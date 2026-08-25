@@ -185,6 +185,98 @@ class AppTests(unittest.TestCase):
         _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Continuemos con la búsqueda")
         self.assertEqual(criteria["operation"],"alquiler")
 
+    def test_initial_purchase_creates_one_search_id_and_followup_reuses_it(self):
+        observation={"intent":"property_search","slot_updates":{"operation":"compra"},"criteria_actions":[],"handoff":False}
+        first, _ = app.search_state_for_turn(None, observation, "Quiero comprar")
+        previous={"state":first}
+        second, _ = app.search_state_for_turn(previous, {"intent":"change_criteria","slot_updates":{"districts":["Lince"]},"criteria_actions":[],"handoff":False}, "en Lince")
+        self.assertIsNotNone(first["active_search_id"])
+        self.assertEqual(first["active_search_id"],second["active_search_id"])
+
+    def test_new_search_keeps_previous_search_and_starts_empty(self):
+        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"bedrooms":2}}}}}
+        state, criteria = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
+        self.assertIn("buy",state["searches"]); self.assertNotEqual(state["active_search_id"],"buy"); self.assertEqual(criteria,{})
+
+    def test_new_search_separates_purchase_lince_from_rental_miraflores(self):
+        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"bedrooms":2}}}}}
+        reset, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
+        rental={"intent":"property_search","slot_updates":{"operation":"alquiler","districts":["Miraflores"]},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply({"state":reset}, rental, "fallback", "Quiero alquilar en Miraflores")
+        self.assertEqual(criteria,{"operation":"alquiler","districts":["Miraflores"]})
+        self.assertEqual(previous["state"]["searches"]["buy"]["criteria"]["districts"],["Lince"])
+
+    def test_explicit_sale_creates_independent_search(self):
+        previous={"state":{"active_search_id":"rent","searches":{"rent":{"criteria":{"operation":"alquiler","districts":["Miraflores"]}}}}}
+        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
+        state, _ = app.search_state_for_turn(previous, app.with_explicit_operation(observation,"Quiero vender mi departamento"), "Quiero vender mi departamento")
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Quiero vender mi departamento")
+        self.assertEqual(app.explicit_operation_from_text("Quiero vender mi departamento"),"venta")
+        self.assertNotEqual(state["active_search_id"],"rent"); self.assertEqual(criteria["operation"],"venta")
+
+    def test_memory_load_reconstructs_active_search_after_restart(self):
+        session=Mock(); session.raise_for_status.return_value=None; session.json.return_value=[{"stage":"qualification","summary":"active","state":{"active_search_id":"11111111-1111-1111-1111-111111111111"}}]
+        search=Mock(); search.raise_for_status.return_value=None; search.json.return_value=[{"search_id":"11111111-1111-1111-1111-111111111111","state":{"criteria":{"operation":"compra","districts":["Lince"]}},"status":"active"}]
+        with patch.object(app.requests,"get",side_effect=[session,search]):
+            restored=app.ConversationMemoryStore("https://project.supabase.co","key").load_session("519")
+        self.assertEqual(restored["state"]["active_search_id"],"11111111-1111-1111-1111-111111111111")
+        self.assertEqual(app.conversation_state(restored),{"operation":"compra","districts":["Lince"]})
+
+    def test_new_turn_is_persisted_with_active_search_id_and_closes_previous(self):
+        response=Mock(); response.raise_for_status.return_value=None
+        state={"active_search_id":"22222222-2222-2222-2222-222222222222","searches":{"22222222-2222-2222-2222-222222222222":{"criteria":{"operation":"alquiler"}}},"previous":{"state":{"active_search_id":"11111111-1111-1111-1111-111111111111"}}}
+        with patch.object(app.requests,"post",return_value=response) as post, patch.object(app.requests,"patch",return_value=response) as close:
+            app.ConversationMemoryStore("https://project.supabase.co","key").record_turn("519","wamid-search","hola","respuesta",{},state,"qualification","summary")
+        self.assertEqual(close.call_count,1); self.assertIn("conversation_searches",close.call_args.args[0])
+        self.assertIn("conversation_searches?on_conflict=search_id",post.call_args_list[0].args[0])
+        messages=post.call_args_list[-1].kwargs["json"]
+        self.assertTrue(all(message["search_id"]=="22222222-2222-2222-2222-222222222222" for message in messages))
+
+    def test_new_search_command_persists_empty_criteria_without_operation_or_bedrooms(self):
+        class Memory:
+            def record_turn(self, *args): self.call=args
+        memory=Memory()
+        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","bedrooms":3,"districts":["Lince"]}}}}}
+        with patch.object(app,"get_conversation_memory_store",return_value=memory):
+            app.persist_conversation_turn("519","wamid-reset","NUEVA BÚSQUEDA","Nueva búsqueda iniciada.",None,{},"qualification","reset",previous)
+        state=memory.call[5]
+        active=state["active_search_id"]
+        self.assertNotEqual(active,"buy")
+        self.assertEqual(state["searches"][active]["criteria"],{})
+        self.assertNotIn("operation",state["searches"][active]["criteria"])
+        self.assertNotIn("bedrooms",state["searches"][active]["criteria"])
+
+    def test_effective_sale_operation_creates_new_search_and_preserves_purchase(self):
+        class Memory:
+            def record_turn(self, *args): self.call=args
+        memory=Memory()
+        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":3}}}}}
+        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
+        effective=app.with_explicit_operation(observation,"Quiero vender mi departamento")
+        _, criteria, stage, summary=app.progressive_reply(previous,effective,"fallback","Quiero vender mi departamento")
+        with patch.object(app,"get_conversation_memory_store",return_value=memory):
+            app.persist_conversation_turn("519","wamid-sale","Quiero vender mi departamento","respuesta",effective,criteria,stage,summary,previous)
+        state=memory.call[5]
+        active=state["active_search_id"]
+        self.assertNotEqual(active,"buy")
+        self.assertEqual(state["searches"]["buy"]["criteria"]["operation"],"compra")
+        self.assertEqual(state["searches"][active]["criteria"]["operation"],"venta")
+
+    def test_rental_to_sale_creates_new_search_with_clean_criteria(self):
+        previous={"state":{"active_search_id":"rent","searches":{"rent":{"criteria":{"operation":"alquiler","districts":["Miraflores"],"bedrooms":2}}}}}
+        observation=app.with_explicit_operation({"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False},"Quiero vender mi departamento")
+        state, criteria=app.search_state_for_turn(previous,observation,"Quiero vender mi departamento")
+        active=state["active_search_id"]
+        self.assertNotEqual(active,"rent")
+        self.assertEqual(criteria,{})
+        self.assertEqual(state["searches"]["rent"]["criteria"]["operation"],"alquiler")
+
+    def test_explicit_operation_is_shared_by_reply_and_persisted_search_selection(self):
+        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
+        effective=app.with_explicit_operation(observation,"Quiero vender mi departamento")
+        self.assertEqual(effective["slot_updates"]["operation"],"venta")
+        self.assertNotIn("operation",observation["slot_updates"])
+
     def test_progressive_controller_updates_criteria_without_losing_previous(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
         observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":None,"property_type":None,"preferences":["balcón"]},"handoff":False}
