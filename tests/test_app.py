@@ -302,6 +302,27 @@ class AppTests(unittest.TestCase):
         _, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
         self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["budget_max"],220000); self.assertEqual(criteria["bedrooms"],3)
 
+    def test_empty_extractor_values_preserve_all_existing_criteria(self):
+        previous={"state":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"currency":"USD","bedrooms":2,"property_type":"departamento","preferences":["balcón","estacionamiento"]}}}
+        observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":"","bedrooms":None,"property_type":"","preferences":[]},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Continuemos")
+        self.assertEqual(criteria,previous["state"]["criteria"])
+
+    def test_empty_district_array_does_not_clear_lince_when_bedrooms_change(self):
+        previous={"state":{"criteria":{"operation":"compra","districts":["Lince"]}}}
+        observation={"intent":"change_criteria","slot_updates":{"operation":None,"districts":[],"budget_max":None,"currency":None,"bedrooms":3,"property_type":None,"preferences":[]},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Con 3 dormitorios")
+        self.assertEqual(criteria,{"operation":"compra","districts":["Lince"],"bedrooms":3})
+
+    def test_non_empty_slot_updates_and_explicit_remove_remain_effective(self):
+        previous={"state":{"criteria":{"districts":["Lince"],"preferences":["balcón","estacionamiento"]}}}
+        update={"intent":"change_criteria","slot_updates":{"districts":["Surco"]},"criteria_actions":[],"handoff":False}
+        _, updated, _, _ = app.progressive_reply(previous, update, "fallback", "Ahora en Surco")
+        self.assertEqual(updated["districts"],["Surco"])
+        remove={"intent":"change_criteria","slot_updates":{"districts":[]},"criteria_actions":[{"action":"REMOVE","field":"preferences","values":["balcón"]}],"handoff":False}
+        _, removed, _, _ = app.progressive_reply({"state":{"criteria":updated}}, remove, "fallback", "Ya no necesito balcón")
+        self.assertEqual(removed["preferences"],["estacionamiento"])
+
     def test_preference_update_uses_natural_reply_and_never_reasks_known_preference(self):
         previous={"stage":"qualified","state":{"criteria":{"operation":"compra","districts":["Jesús María"],"budget_max":500000,"currency":"PEN","bedrooms":3,"property_type":"departamento"},"recent_turns":[{"direction":"assistant","content":"¿Te interesa alguna preferencia?"}]}}
         observation={"intent":"change_criteria","slot_updates":{"preferences":["estacionamiento"]},"handoff":False,"assistant_reply":"Perfecto, añado estacionamiento a tu búsqueda en Jesús María. ¿Te interesa balcón u otra preferencia?"}
