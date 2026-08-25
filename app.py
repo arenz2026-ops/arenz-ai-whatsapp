@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -406,6 +407,28 @@ OPERATION_ALIASES = {"comprar": "compra", "alquilar": "alquiler", "vender": "ven
 ALLOWED_CURRENCIES = {"USD", "PEN"}
 
 
+def explicit_operation_from_text(text):
+    """Recognize only explicit purchase/rental requests without touching other slots."""
+    normalized = " ".join((text or "").casefold().split())
+    wants_purchase = bool(re.search(r"\b(?:quiero|busco|deseo)\s+comprar\b|\bcomprar\b|\bcompra\b", normalized))
+    wants_rental = bool(re.search(r"\b(?:quiero|busco|deseo)\s+alquilar\b|\balquilar\b|\balquiler\b", normalized))
+    if wants_purchase == wants_rental:
+        return None
+    return "compra" if wants_purchase else "alquiler"
+
+
+def with_explicit_operation(observation, text):
+    """Overlay a deterministic explicit operation while preserving extractor output."""
+    operation = explicit_operation_from_text(text)
+    if not operation:
+        return observation
+    result = dict(observation) if isinstance(observation, dict) else {"intent": "change_criteria", "handoff": False}
+    slots = dict(result.get("slot_updates", {}))
+    slots["operation"] = operation
+    result["slot_updates"] = slots
+    return result
+
+
 def validated_slot_updates(slot_updates):
     """Accept only bounded, typed criteria from the structured AI contract."""
     if not isinstance(slot_updates, dict):
@@ -515,6 +538,7 @@ def usable_assistant_reply(observation):
 
 def progressive_reply(previous, observation, fallback, user_text=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
+    observation = with_explicit_operation(observation, user_text)
     if not observation:
         if is_new_search_request(user_text):
             return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
