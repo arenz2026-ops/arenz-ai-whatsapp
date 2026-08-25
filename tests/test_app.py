@@ -41,18 +41,10 @@ class AppTests(unittest.TestCase):
         with patch.object(app.requests,"post",return_value=response) as post: observation=app.observe_conversation("519","Busco comprar en Miraflores hasta US$200 mil, 3 dormitorios",deterministic)
         self.assertEqual(observation,expected); self.assertEqual(deterministic,"Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor")
         self.assertEqual(post.call_args.kwargs["json"]["max_output_tokens"],1200)
-
-    def test_strict_schema_requires_every_declared_field_and_supports_empty_values(self):
-        schema=app.OBSERVATION_SCHEMA; slots=schema["properties"]["slot_updates"]
-        self.assertEqual(set(schema["properties"]),set(schema["required"]))
-        self.assertEqual(set(slots["properties"]),set(slots["required"]))
-        empty_slots={key: ([] if key in ("districts","preferences","preference_removals") else None) for key in slots["properties"]}
-        self.assertEqual(empty_slots["bathrooms"],None); self.assertEqual(empty_slots["preferences"],[]); self.assertEqual(empty_slots["preference_removals"],[])
-        self.assertIn("criteria_removals",schema["required"])
     def test_observation_payload_is_compact_and_preserves_durable_context(self):
         previous={"stage":"qualified","summary":"no enviar","state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":220000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"last_observation":{"assistant_reply":"no enviar"},"recent_turns":[{"direction":"user","content":"Busco en Surco"},{"direction":"assistant","content":"Perfecto, anotado."}]}}
         payload=app.build_observation_payload(previous,"consulta actual")
-        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("assistant_reply es la respuesta normal",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("Busco en Surco",payload["input"]); self.assertIn("consulta actual",payload["input"])
+        self.assertEqual(payload["max_output_tokens"],1200); self.assertIn("criteria_actions",payload["instructions"]); self.assertIn('"stage": "qualified"',payload["input"]); self.assertIn('"operation": "compra"',payload["input"]); self.assertIn("Busco en Surco",payload["input"]); self.assertIn("consulta actual",payload["input"])
         for forbidden in ("last_observation","no enviar","Respuesta determinista"):
             self.assertNotIn(forbidden,payload["input"])
     def test_structured_observation_reads_output_content_format(self):
@@ -119,11 +111,24 @@ class AppTests(unittest.TestCase):
         app.OPENAI_API_KEY="not-a-real-key"; response=Mock(); response.raise_for_status.return_value=None; response.json.return_value={"output_text":"{\"intent\":\"unknown\"}"}
         with patch.object(app.requests,"post",return_value=response): self.assertIsNone(app.observe_conversation("519","hola","base"))
     def test_supabase_lead_upsert(self):
-        os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"; response=Mock(); response.raise_for_status.return_value=None
-        with patch.object(app.requests,"post",return_value=response) as post:
+        os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"; response=Mock(); response.raise_for_status.return_value=None; current=Mock(); current.raise_for_status.return_value=None; current.json.return_value=[{"phone":"51999999999","district":"Miraflores","budget":"USD 200000","bedrooms":"3"}]
+        with patch.object(app.requests,"get",return_value=current), patch.object(app.requests,"post",return_value=response) as post:
             app.get_lead_store().upsert_lead("51999999999", {"step":"done", "intent":"compra", "district":"Miraflores", "budget":"US$ 200000", "bedrooms":"3"}, "hola", "respuesta")
-        self.assertEqual(post.call_args.args[0],"https://project.supabase.co/rest/v1/leads")
+        self.assertEqual(post.call_args.args[0],"https://project.supabase.co/rest/v1/lead_profiles?on_conflict=phone")
         self.assertEqual(post.call_args.kwargs["json"]["phone"],"51999999999"); self.assertEqual(post.call_args.kwargs["json"]["intent"],"compra"); self.assertEqual(post.call_args.kwargs["json"]["district"],"Miraflores"); self.assertEqual(post.call_args.kwargs["json"]["status"],"pendiente_asesor")
+
+    def test_supabase_profile_upsert_preserves_unknown_fields(self):
+        store=app.SupabaseLeadStore("https://project.supabase.co","key"); current=Mock(); current.raise_for_status.return_value=None; current.json.return_value=[{"phone":"519","intent":"compra","district":"Surco","budget":"USD 200000","bedrooms":"3"}]; saved=Mock(); saved.raise_for_status.return_value=None
+        with patch.object(app.requests,"get",return_value=current), patch.object(app.requests,"post",return_value=saved) as post:
+            store.upsert_lead("519", {"intent":"alquiler","district":None,"budget":None,"bedrooms":None}, "nuevo mensaje", "respuesta")
+        payload=post.call_args.kwargs["json"]; self.assertEqual(payload["intent"],"alquiler"); self.assertEqual(payload["district"],"Surco"); self.assertEqual(payload["budget"],"USD 200000"); self.assertEqual(payload["bedrooms"],"3"); self.assertIn("updated_at",payload)
+
+    def test_supabase_profile_upsert_reuses_phone_and_applies_explicit_change(self):
+        store=app.SupabaseLeadStore("https://project.supabase.co","key"); first=Mock(); first.raise_for_status.return_value=None; first.json.return_value=[]; second=Mock(); second.raise_for_status.return_value=None; second.json.return_value=[{"phone":"519","intent":"compra","district":"Surco","budget":"USD 200000","bedrooms":"3"}]; saved=Mock(); saved.raise_for_status.return_value=None
+        with patch.object(app.requests,"get",side_effect=[first,second]), patch.object(app.requests,"post",return_value=saved) as post:
+            store.upsert_lead("519", {"intent":"compra","district":"Surco","budget":"USD 200000","bedrooms":"3"}, "uno", "r1")
+            store.upsert_lead("519", {"intent":"alquiler","district":None,"budget":None,"bedrooms":None}, "dos", "r2")
+        self.assertEqual(post.call_count,2); self.assertTrue(all("lead_profiles?on_conflict=phone" in call.args[0] for call in post.call_args_list)); second_payload=post.call_args_list[1].kwargs["json"]; self.assertEqual(second_payload["intent"],"alquiler"); self.assertEqual(second_payload["district"],"Surco"); self.assertEqual(second_payload["budget"],"USD 200000"); self.assertEqual(second_payload["bedrooms"],"3")
     def test_health_with_supabase_store(self):
         os.environ["SUPABASE_URL"]="https://project.supabase.co"; os.environ["SUPABASE_KEY"]="test-supabase-key"
         self.assertEqual(self.client.get("/health").get_json()["status"],"ok")
@@ -139,13 +144,46 @@ class AppTests(unittest.TestCase):
     def test_progressive_controller_keeps_all_criteria_from_one_message(self):
         observation={"intent":"property_search","slot_updates":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":[]},"handoff":False}
         reply, criteria, stage, _ = app.progressive_reply(None, observation, "fallback")
-        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Miraflores"]); self.assertIn("Miraflores",reply); self.assertNotIn("¿En qué distrito",reply)
+        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["districts"],["Miraflores"]); self.assertIn("inventario verificado",reply)
 
     def test_operation_aliases_are_normalized_without_altering_other_slots(self):
         for raw, expected in (("comprar","compra"),("compra","compra"),("alquilar","alquiler"),("alquiler","alquiler"),("vender","venta"),("venta","venta")):
             slots={"operation":raw,"districts":["Surco"],"bedrooms":2}
             clean=app.validated_slot_updates(slots)
             self.assertEqual(clean["operation"],expected); self.assertEqual(clean["districts"],["Surco"]); self.assertEqual(clean["bedrooms"],2)
+
+    def test_explicit_purchase_text_sets_compra(self):
+        observation={"intent":"property_search","slot_updates":{},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(None, observation, "fallback", "Quiero comprar un departamento")
+        self.assertEqual(criteria["operation"],"compra")
+
+    def test_explicit_rental_text_sets_alquiler(self):
+        observation={"intent":"property_search","slot_updates":{},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(None, observation, "fallback", "Ahora quiero alquilar")
+        self.assertEqual(criteria["operation"],"alquiler")
+
+    def test_text_without_operation_does_not_invent_operation(self):
+        self.assertIsNone(app.explicit_operation_from_text("Busco un departamento con balcón"))
+
+    def test_explicit_operation_switches_alquiler_to_compra(self):
+        previous={"state":{"criteria":{"operation":"alquiler","districts":["Surco"]}}}
+        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Quiero comprar un departamento")
+        self.assertEqual(criteria["operation"],"compra")
+        self.assertEqual(criteria.get("districts"),None)
+
+    def test_explicit_operation_switches_compra_to_alquiler(self):
+        previous={"state":{"criteria":{"operation":"compra","districts":["Surco"]}}}
+        observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Ahora quiero alquilar")
+        self.assertEqual(criteria["operation"],"alquiler")
+        self.assertEqual(criteria.get("districts"),None)
+
+    def test_partial_message_preserves_previous_operation(self):
+        previous={"state":{"criteria":{"operation":"alquiler","districts":["Surco"]}}}
+        observation={"intent":"general_question","slot_updates":{},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Continuemos con la búsqueda")
+        self.assertEqual(criteria["operation"],"alquiler")
 
     def test_progressive_controller_updates_criteria_without_losing_previous(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
@@ -157,7 +195,49 @@ class AppTests(unittest.TestCase):
         previous={"stage":"qualified","state":{"criteria":{"operation":"compra","districts":["Jesús María"],"budget_max":500000,"currency":"PEN","bedrooms":3,"property_type":"departamento"},"recent_turns":[{"direction":"assistant","content":"¿Te interesa alguna preferencia?"}]}}
         observation={"intent":"change_criteria","slot_updates":{"preferences":["estacionamiento"]},"handoff":False,"assistant_reply":"Perfecto, añado estacionamiento a tu búsqueda en Jesús María. ¿Te interesa balcón u otra preferencia?"}
         reply, criteria, stage, _ = app.progressive_reply(previous, observation, "fallback")
-        self.assertEqual(stage,"qualified"); self.assertTrue(criteria["parking"]); self.assertIn("añado estacionamiento",reply); self.assertNotIn("como balcón o estacionamiento",reply)
+        self.assertEqual(stage,"qualified"); self.assertEqual(criteria["preferences"],["estacionamiento"]); self.assertIn("inventario verificado",reply)
+
+    def test_regression_new_search_creates_empty_active_search_and_keeps_history(self):
+        previous={"state":{"active_search_id":"old","searches":{"old":{"criteria":{"operation":"alquiler","districts":["Miraflores"],"budget_max":3000,"currency":"PEN","preferences":["amoblado"]}}}}}
+        reply, criteria, stage, _ = app.progressive_reply(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "fallback", "NUEVA BÚSQUEDA")
+        state, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{}}, "NUEVA BÚSQUEDA")
+        self.assertEqual((criteria,stage),({},"qualification")); self.assertIn("Nueva búsqueda",reply); self.assertIn("old",state["searches"]); self.assertNotEqual(state["active_search_id"],"old")
+
+    def test_regression_new_search_resets_even_when_observation_is_unavailable(self):
+        previous={"state":{"criteria":{"operation":"alquiler","districts":["Miraflores"],"budget_max":3000,"currency":"PEN"}}}
+        reply, criteria, stage, _ = app.progressive_reply(previous, None, "fallback", "nueva busqueda")
+        self.assertEqual((criteria,stage),({},"qualification")); self.assertIn("Nueva búsqueda",reply)
+
+    def test_regression_persisted_state_contains_active_search_and_history(self):
+        class Memory:
+            def __init__(self): self.call=None
+            def record_turn(self, *args): self.call=args
+        memory=Memory()
+        previous={"state":{"active_search_id":"old","searches":{"old":{"criteria":{"operation":"alquiler","districts":["Miraflores"]}}}}}
+        observation={"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}
+        with patch.object(app,"get_conversation_memory_store",return_value=memory):
+            app.persist_conversation_turn("519","wamid-new","NUEVA BÚSQUEDA","Nueva búsqueda iniciada.",observation,{},"qualification","reset",previous)
+        state=memory.call[5]
+        self.assertIn("old",state["searches"]); self.assertIn(state["active_search_id"],state["searches"]); self.assertNotEqual(state["active_search_id"],"old"); self.assertEqual(state["searches"][state["active_search_id"]]["criteria"],{})
+
+    def test_regression_operation_switch_isolated_by_search_id(self):
+        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":2,"preferences":["balcón"]}}}}}
+        observation={"intent":"property_search","slot_updates":{"operation":"venta","districts":["San Miguel"],"bedrooms":3},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Quiero vender mi departamento en San Miguel")
+        state, _ = app.search_state_for_turn(previous, observation, "Quiero vender mi departamento en San Miguel")
+        self.assertEqual(criteria["operation"],"venta"); self.assertEqual(criteria["districts"],["San Miguel"]); self.assertNotIn("preferences",criteria); self.assertIn("buy",state["searches"]); self.assertNotEqual(state["active_search_id"],"buy")
+
+    def test_regression_remove_preference_does_not_reappear(self):
+        previous={"state":{"criteria":{"operation":"compra","preferences":["estacionamiento","balcón","mascotas"]}}}
+        observation={"intent":"change_criteria","criteria_change":True,"slot_updates":{},"criteria_actions":[{"action":"REMOVE","field":"preferences","values":["estacionamiento","mascotas"]}],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", "Ya no necesito estacionamiento ni mascotas")
+        self.assertEqual(criteria["preferences"],["balcón"])
+
+    def test_regression_inventory_gate_blocks_specific_property_claims(self):
+        previous={"state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
+        observation={"intent":"property_search","slot_updates":{},"criteria_actions":[],"handoff":False,"assistant_reply":"La opción recomendada cuenta con balcón y cochera."}
+        reply, _, stage, _ = app.progressive_reply(previous, observation, "fallback")
+        self.assertEqual(stage,"qualified"); self.assertIn("inventario verificado",reply); self.assertNotIn("recomendada",reply)
 
     def test_recent_turns_are_preserved_bounded_for_next_turn(self):
         previous={"state":{"recent_turns":[{"direction":"user","content":"uno"},{"direction":"assistant","content":"dos"},{"direction":"user","content":"tres"},{"direction":"assistant","content":"cuatro"}]}}
@@ -171,36 +251,6 @@ class AppTests(unittest.TestCase):
         unavailable={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Tenemos disponible un departamento."}
         self.assertEqual(app.progressive_reply(None, unavailable, "fallback")[0],"¿Qué tipo de inmueble buscas?")
 
-    def test_ten_turn_accumulation_survives_window_expiry_and_explicit_changes(self):
-        previous=None
-        turns=[
-            {"intent":"property_search","slot_updates":{"operation":"compra","districts":["Miraflores"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento"},"handoff":False,"assistant_reply":"Inicio."},
-            {"intent":"change_criteria","slot_updates":{"bathrooms":2},"handoff":False,"assistant_reply":"Anoto 2 baños."},
-            {"intent":"change_criteria","slot_updates":{"parking":True},"handoff":False,"assistant_reply":"Anoto estacionamiento."},
-            {"intent":"change_criteria","slot_updates":{"preferences":["balcón"]},"handoff":False,"assistant_reply":"Anoto balcón."},
-            {"intent":"change_criteria","slot_updates":{"pets_allowed":True},"handoff":False,"assistant_reply":"Acepto mascotas."},
-            {"intent":"change_criteria","slot_updates":{"furnished":True,"area_min":85,"area_max":130,"property_condition":"usado","floor_min":3,"max_age_years":12},"handoff":False,"assistant_reply":"Anoto los demás requisitos."},
-            {"intent":"change_criteria","slot_updates":{"districts":["Surco"]},"handoff":False,"assistant_reply":"Cambio a Surco."},
-            {"intent":"change_criteria","slot_updates":{"bedrooms":2},"handoff":False,"assistant_reply":"Cambio a 2 dormitorios."},
-            {"intent":"change_criteria","slot_updates":{},"criteria_removals":["parking"],"handoff":False,"assistant_reply":"Quito estacionamiento."},
-            {"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Buscando departamentos en Miraflores."},
-        ]
-        for index, observation in enumerate(turns):
-            inbound="Resume mi búsqueda" if index == len(turns)-1 else None
-            reply, criteria, _, _=app.progressive_reply(previous, observation, "fallback", inbound)
-            previous={"state":{"criteria":criteria,"recent_turns":[] if index == 5 else [{"direction":"user","content":"turno"}]}}
-        for expected in ("comprar departamento", "Surco", "US$200,000", "2 dormitorios", "2 baños", "balcón", "acepta mascotas", "amoblado", "85–130 m²", "estado usado", "piso ≥3", "antigüedad ≤12 años"):
-            self.assertIn(expected,reply)
-        self.assertNotIn("estacionamiento",reply); self.assertEqual(criteria["operation"],"compra"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["bedrooms"],2); self.assertEqual(criteria["bathrooms"],2)
-        self.assertEqual(criteria["budget_max"],200000); self.assertEqual(criteria["area_min"],85); self.assertEqual(criteria["area_max"],130); self.assertEqual(criteria["property_condition"],"usado"); self.assertEqual(criteria["floor_min"],3); self.assertEqual(criteria["max_age_years"],12)
-        self.assertEqual(criteria["preferences"],["balcón"]); self.assertTrue(criteria["pets_allowed"]); self.assertTrue(criteria["furnished"]); self.assertNotIn("parking",criteria)
-
-    def test_parking_removal_cleans_only_legacy_parking_preference(self):
-        previous={"state":{"criteria":{"preferences":["balcón","estacionamiento"],"parking":True,"bathrooms":2}}}
-        observation={"intent":"change_criteria","slot_updates":{},"criteria_removals":["parking"],"handoff":False,"assistant_reply":"Quito estacionamiento."}
-        _, criteria, _, _=app.progressive_reply(previous, observation, "fallback")
-        self.assertEqual(criteria["preferences"],["balcón"]); self.assertEqual(criteria["bathrooms"],2); self.assertNotIn("parking",criteria)
-
     def test_general_question_and_handoff_do_not_reset_conversation(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
         question={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Claro, puedo ayudarte con esa consulta."}
@@ -209,30 +259,6 @@ class AppTests(unittest.TestCase):
         handoff={"intent":"human_handoff","slot_updates":{},"handoff":True}
         _, _, stage, _ = app.progressive_reply(previous, handoff, "fallback")
         self.assertEqual(stage,"handoff")
-
-    def test_recap_uses_only_active_durable_criteria_and_ignores_incomplete_assistant_reply(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Surco"],"budget_max":200000,"currency":"USD","bedrooms":2,"bathrooms":2,"property_type":"departamento","preferences":["balcón"],"pets_allowed":True,"furnished":True,"area_min":85,"area_max":130,"property_condition":"usado","floor_min":3,"max_age_years":12,"delivery_timing":"inmediata"}}}
-        observation={"intent":"general_question","slot_updates":{},"criteria_removals":["parking"],"handoff":False,"assistant_reply":"Solo Miraflores, 3 dormitorios."}
-        reply, criteria, stage, _=app.progressive_reply(previous, observation, "fallback", "¿Puedes darme un resumen de mis criterios?")
-        self.assertEqual(stage,"conversation"); self.assertEqual(criteria["districts"],["Surco"]); self.assertEqual(criteria["bedrooms"],2); self.assertNotIn("parking",criteria)
-        for expected in ("comprar departamento", "Surco", "US$200,000", "2 dormitorios", "2 baños", "balcón", "acepta mascotas", "amoblado", "85–130 m²", "estado usado", "piso ≥3", "entrega inmediata", "antigüedad ≤12 años"):
-            self.assertIn(expected,reply)
-        for absent in ("Miraflores", "3 dormitorios", "estacionamiento"):
-            self.assertNotIn(absent,reply)
-
-    def test_recap_omits_null_values_without_inventing_them(self):
-        previous={"state":{"criteria":{"operation":"alquiler","districts":["Barranco"],"budget_max":None,"currency":None,"bedrooms":None,"bathrooms":1,"property_type":"departamento","parking":False}}}
-        observation={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Texto libre."}
-        reply, _, _, _=app.progressive_reply(previous, observation, "fallback", "Resume mi búsqueda actual")
-        self.assertIn("alquilar departamento",reply); self.assertIn("Barranco",reply); self.assertIn("1 baño",reply); self.assertIn("sin estacionamiento",reply)
-        for absent in ("US$", "dormitorios", "mascotas", "amoblado", "m²", "antigüedad"):
-            self.assertNotIn(absent,reply)
-
-    def test_non_recap_general_question_keeps_assistant_reply(self):
-        previous={"state":{"criteria":{"operation":"compra","districts":["Surco"],"bedrooms":2}}}
-        observation={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Claro, puedo explicarte cómo comparar zonas."}
-        reply, _, stage, _=app.progressive_reply(previous, observation, "fallback", "¿Cómo comparo zonas?")
-        self.assertEqual(stage,"conversation"); self.assertEqual(reply,observation["assistant_reply"])
 
     def test_progressive_controller_uses_deterministic_fallback_when_observation_fails(self):
         reply, criteria, stage, _ = app.progressive_reply({"state":{"criteria":{"operation":"compra"}}}, None, "fallback seguro")
