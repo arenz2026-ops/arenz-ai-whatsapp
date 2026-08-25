@@ -323,6 +323,33 @@ class AppTests(unittest.TestCase):
         _, removed, _, _ = app.progressive_reply({"state":{"criteria":updated}}, remove, "fallback", "Ya no necesito balcón")
         self.assertEqual(removed["preferences"],["estacionamiento"])
 
+    def test_scalar_update_actions_unpack_one_value_without_changing_multivalue_actions(self):
+        prior={"budget_max":200000,"currency":"PEN","bedrooms":2,"property_type":"casa","districts":["Lince"],"preferences":["balcón","cocina independiente"]}
+        updated=app.apply_criteria_actions(prior,[
+            {"action":"UPDATE","field":"budget_max","values":[250000]},
+            {"action":"UPDATE","field":"currency","values":["USD"]},
+            {"action":"UPDATE","field":"bedrooms","values":[3]},
+            {"action":"UPDATE","field":"property_type","values":["departamento"]},
+            {"action":"UPDATE","field":"districts","values":["Surco","Barranco"]},
+            {"action":"UPDATE","field":"preferences","values":["estacionamiento","vista"]},
+        ])
+        self.assertEqual(updated["budget_max"],250000)
+        self.assertEqual(updated["currency"],"USD")
+        self.assertEqual(updated["bedrooms"],3)
+        self.assertEqual(updated["property_type"],"departamento")
+        self.assertEqual(updated["districts"],["Surco","Barranco"])
+        self.assertEqual(updated["preferences"],["estacionamiento","vista"])
+
+    def test_invalid_scalar_update_lists_do_not_coerce_or_replace_existing_values(self):
+        prior={"budget_max":200000,"currency":"USD","bedrooms":2,"property_type":"departamento"}
+        updated=app.apply_criteria_actions(prior,[
+            {"action":"UPDATE","field":"budget_max","values":[]},
+            {"action":"UPDATE","field":"currency","values":["USD","PEN"]},
+            {"action":"UPDATE","field":"bedrooms","values":[2,3]},
+            {"action":"UPDATE","field":"property_type","values":[]},
+        ])
+        self.assertEqual(updated,prior)
+
     def test_preference_update_uses_natural_reply_and_never_reasks_known_preference(self):
         previous={"stage":"qualified","state":{"criteria":{"operation":"compra","districts":["Jesús María"],"budget_max":500000,"currency":"PEN","bedrooms":3,"property_type":"departamento"},"recent_turns":[{"direction":"assistant","content":"¿Te interesa alguna preferencia?"}]}}
         observation={"intent":"change_criteria","slot_updates":{"preferences":["estacionamiento"]},"handoff":False,"assistant_reply":"Perfecto, añado estacionamiento a tu búsqueda en Jesús María. ¿Te interesa balcón u otra preferencia?"}
@@ -401,4 +428,5 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.conversation_state(previous)["bedrooms"],3)
 
 if __name__ == "__main__": unittest.main()
+
 
