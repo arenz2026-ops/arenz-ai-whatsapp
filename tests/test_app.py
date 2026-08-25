@@ -198,6 +198,25 @@ class AppTests(unittest.TestCase):
         state, criteria = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
         self.assertIn("buy",state["searches"]); self.assertNotEqual(state["active_search_id"],"buy"); self.assertEqual(criteria,{})
 
+    def test_explicit_new_search_discards_stale_extractor_criteria(self):
+        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]}}}}}
+        inherited={"intent":"new_search","slot_updates":{"operation":"compra","districts":["Lince"],"budget_max":200000,"currency":"USD","bedrooms":3,"property_type":"departamento","preferences":["balcón"]},"criteria_actions":[{"action":"UPDATE","field":"districts","values":["Lince"]}],"criteria_change":True,"handoff":False}
+        _, criteria, _, _ = app.progressive_reply(previous, inherited, "fallback", "NUEVA BÚSQUEDA")
+        self.assertEqual(criteria,{})
+        state, _ = app.search_state_for_turn(previous, app.sanitize_new_search_observation(inherited, "NUEVA BÚSQUEDA"), "NUEVA BÚSQUEDA")
+        active=state["active_search_id"]
+        self.assertNotEqual(active,"buy")
+        self.assertEqual(state["searches"]["buy"]["criteria"]["operation"],"compra")
+        self.assertEqual(state["searches"][active]["criteria"],{})
+
+    def test_first_criteria_after_explicit_new_search_populates_only_new_search(self):
+        previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":3}}}}}
+        reset, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
+        observation={"intent":"property_search","slot_updates":{"operation":"alquiler","districts":["Surco"]},"criteria_actions":[],"handoff":False}
+        _, criteria, _, _ = app.progressive_reply({"state":reset}, observation, "fallback", "Quiero alquilar en Surco")
+        self.assertEqual(criteria,{"operation":"alquiler","districts":["Surco"]})
+        self.assertEqual(previous["state"]["searches"]["buy"]["criteria"],{"operation":"compra","districts":["Lince"],"bedrooms":3})
+
     def test_new_search_separates_purchase_lince_from_rental_miraflores(self):
         previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"bedrooms":2}}}}}
         reset, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
@@ -361,3 +380,4 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.conversation_state(previous)["bedrooms"],3)
 
 if __name__ == "__main__": unittest.main()
+
