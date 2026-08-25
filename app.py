@@ -476,7 +476,7 @@ def with_explicit_operation(observation, text):
 
 
 def validated_slot_updates(slot_updates):
-    """Accept only bounded, typed criteria from the structured AI contract."""
+    """Accept only non-empty, bounded criteria from the structured AI contract."""
     if not isinstance(slot_updates, dict):
         return {}
     clean = {}
@@ -487,7 +487,9 @@ def validated_slot_updates(slot_updates):
             clean["operation"] = operation
     districts = slot_updates.get("districts")
     if isinstance(districts, list):
-        clean["districts"] = [value.strip().title() for value in districts if isinstance(value, str) and 1 <= len(value.strip()) <= 60][:3]
+        districts = [value.strip().title() for value in districts if isinstance(value, str) and 1 <= len(value.strip()) <= 60][:3]
+        if districts:
+            clean["districts"] = districts
     budget = slot_updates.get("budget_max")
     if isinstance(budget, (int, float)) and 1000 <= budget <= 10000000:
         clean["budget_max"] = int(budget)
@@ -502,7 +504,9 @@ def validated_slot_updates(slot_updates):
         clean["property_type"] = property_type.strip().lower()
     preferences = slot_updates.get("preferences")
     if isinstance(preferences, list):
-        clean["preferences"] = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
+        preferences = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
+        if preferences:
+            clean["preferences"] = preferences
     return clean
 
 
