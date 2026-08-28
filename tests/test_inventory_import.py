@@ -40,6 +40,20 @@ class NormalizationTests(unittest.TestCase):
         record, errors = importer.normalize_record(demo(property_type="Apartamento"))
         self.assertEqual((record["property_type"], errors), ("departamento", []))
 
+    def test_a_listing_for_sale_becomes_the_compra_side_of_the_search(self):
+        """Portals say 'venta'; inventory.operation is the client's side of the deal."""
+        record, errors = importer.normalize_record(demo(operation="Venta"))
+        self.assertEqual((record["operation"], errors), ("compra", []))
+        self.assertEqual(importer.validate_record(record), [])
+
+    def test_a_rental_listing_stays_alquiler(self):
+        record, _ = importer.normalize_record(demo(operation="Alquiler"))
+        self.assertEqual(record["operation"], "alquiler")
+
+    def test_an_unmappable_operation_is_still_rejected(self):
+        record, _ = importer.normalize_record(demo(operation="permuta"))
+        self.assertTrue(any("operation" in e for e in importer.validate_record(record)))
+
     def test_currency_and_operation_are_case_normalized(self):
         record, _ = importer.normalize_record(demo(operation="Compra", currency="usd"))
         self.assertEqual((record["operation"], record["currency"]), ("compra", "USD"))
@@ -75,8 +89,15 @@ class ValidationTests(unittest.TestCase):
     def test_unsupported_currency_is_rejected(self):
         self.assertTrue(any("currency" in error for error in self.check(currency="EUR")))
 
-    def test_sale_operation_is_rejected_because_inventory_never_serves_it(self):
-        self.assertTrue(any("operation" in error for error in self.check(operation="venta")))
+    def test_a_seller_search_never_reaches_inventory(self):
+        """The 'venta' that must not reach inventory is the client's, not the listing's.
+
+        A listing marked 'venta' is stock for a 'compra' search and is normalized as
+        such; a client who wants to SELL is stopped upstream, by inventory_ready.
+        """
+        self.assertFalse(app.inventory_ready({"operation": "venta", "property_type": "departamento",
+                                              "districts": ["Surco"], "budget_max": 1, "currency": "USD",
+                                              "bedrooms": 2}))
 
     def test_unknown_lifecycle_state_is_rejected(self):
         self.assertTrue(any("lifecycle_state" in error for error in self.check(lifecycle_state="publicado")))

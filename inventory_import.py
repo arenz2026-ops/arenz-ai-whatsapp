@@ -21,6 +21,11 @@ from app import (ALLOWED_CURRENCIES, INVENTORY_VERIFICATION_DAYS, canonical_prop
 
 REQUIRED_FIELDS = ("public_reference", "operation", "property_type", "district", "price_amount", "currency")
 ALLOWED_OPERATIONS = ("compra", "alquiler")
+# Portals describe the listing ("venta"); inventory.operation describes what the
+# client is doing, so a property for sale is what a "compra" search matches. Every
+# listing from every portal needs this, and getting it wrong makes the property
+# invisible rather than loudly wrong.
+SOURCE_OPERATION_ALIASES = {"venta": "compra", "vender": "compra", "comprar": "compra", "alquilar": "alquiler"}
 LIFECYCLE_STATES = ("draft", "pending_verification", "active_confirmed", "reserved", "sold_rented", "inactive")
 VISIBLE_STATE = "active_confirmed"
 TEXT_FIELDS = ("public_reference", "operation", "property_type", "district", "zone", "public_location_reference",
@@ -99,7 +104,8 @@ def normalize_record(raw):
         except (ValueError, TypeError, json.JSONDecodeError):
             errors.append("features: expected a list or a ';'-separated text")
     if "operation" in record:
-        record["operation"] = record["operation"].casefold()
+        operation = record["operation"].casefold()
+        record["operation"] = SOURCE_OPERATION_ALIASES.get(operation, operation)
     if "currency" in raw and str(raw["currency"]).strip():
         record["currency"] = str(raw["currency"]).strip().upper()
     if "property_type" in record:
