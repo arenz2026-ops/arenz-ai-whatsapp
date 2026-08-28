@@ -165,7 +165,10 @@ class ConversationMemoryStore:
 
     def commit_work(self, payload):
         """Invoke the single database transaction; never fall back to REST writes."""
-        rows = self.rpc("commit_webhook_message", payload)
+        # A handoff must land in the same transaction as the turn that promised it,
+        # so the escalation variant replaces the call rather than adding a write.
+        name = "commit_webhook_message_with_handoff" if payload.get("p_handoff") else "commit_webhook_message"
+        rows = self.rpc(name, payload)
         return rows
 
     def fail_work(self, message_id, claim_token, stage):
@@ -823,6 +826,81 @@ def inventory_reply(matches):
     return "\n".join(lines)
 
 
+PRESENTED_REFERENCE_PATTERN = re.compile(r"\bref\.?\s*([a-z0-9][a-z0-9-]{1,23})\b", re.IGNORECASE)
+CALLBACK_REQUEST_PATTERN = re.compile(r"\bll[aá]mame\b|\bll[aá]menme\b|\bque me llamen\b|\bprefiero (?:una )?llamada\b|\bcont[aá]ct(?:enme|ame) por tel[eé]fono\b")
+VISIT_REQUEST_PATTERN = re.compile(r"\bvisita\b|\bvisitar\b|\bver (?:la|el) (?:propiedad|departamento|casa)\b")
+PROPERTY_INTEREST_PATTERN = re.compile(r"\bme interesa\b|\bm[aá]s informaci[oó]n\b|\bquiero informaci[oó]n\b")
+ADVISOR_REQUEST_PATTERN = re.compile(r"\basesor\b|\bhablar con (?:un|una) (?:persona|humano|humana)\b|\bagente humano\b")
+REFERENCED_HANDOFF_TYPES = {"visit", "property_interest"}
+
+
+def presented_property_references(previous, inventory_matches=None):
+    """Only references ARENZ actually showed the client may back a handoff."""
+    references = {item["public"]["public_reference"] for item in (inventory_matches or [])
+                  if isinstance(item.get("public"), dict) and item["public"].get("public_reference")}
+    for turn in recent_conversation_turns(previous):
+        if turn.get("direction") == "assistant":
+            references.update(PRESENTED_REFERENCE_PATTERN.findall(turn.get("content") or ""))
+    return references
+
+
+def mentioned_property_reference(text, presented):
+    """Never fabricate a reference: match only what was previously presented."""
+    normalized = " ".join((text or "").casefold().split())
+    for reference in sorted(presented, key=len, reverse=True):
+        if re.search(rf"(?<![a-z0-9]){re.escape(reference.casefold())}(?![a-z0-9])", normalized):
+            return reference
+    return None
+
+
+def handoff_request_type(text, reference):
+    """Deterministic escalation types. Visit and interest need a real reference."""
+    normalized = " ".join((text or "").casefold().split())
+    if CALLBACK_REQUEST_PATTERN.search(normalized):
+        return "callback"
+    if reference and VISIT_REQUEST_PATTERN.search(normalized):
+        return "visit"
+    if reference and PROPERTY_INTEREST_PATTERN.search(normalized):
+        return "property_interest"
+    if ADVISOR_REQUEST_PATTERN.search(normalized):
+        return "advisor"
+    return None
+
+
+def detected_handoff(previous, observation, user_text, inventory_matches=None):
+    """Resolve one escalation per turn, or None to continue the qualification."""
+    reference = mentioned_property_reference(user_text, presented_property_references(previous, inventory_matches))
+    request_type = handoff_request_type(user_text, reference)
+    if not request_type and isinstance(observation, dict) and (observation.get("handoff") or observation.get("intent") == "human_handoff"):
+        request_type = "advisor"
+    if not request_type:
+        return None
+    return {"request_type": request_type, "property_reference": reference if request_type in REFERENCED_HANDOFF_TYPES else None}
+
+
+def handoff_reply(handoff):
+    request_type, reference = handoff["request_type"], handoff["property_reference"]
+    if request_type == "callback":
+        return ("Perfecto. Registré tu solicitud de llamada; un asesor de ARENZ te contactará por teléfono.",
+                "Solicitud de llamada registrada con consentimiento explícito.")
+    if request_type == "visit":
+        return (f"Perfecto. Registré tu solicitud de visita para la referencia {reference}; un asesor de ARENZ coordinará contigo.",
+                f"Solicitud de visita registrada para la referencia {reference}.")
+    if request_type == "property_interest":
+        return (f"Perfecto. Registré tu interés en la referencia {reference}; un asesor de ARENZ continuará contigo.",
+                f"Interés registrado en la referencia {reference}.")
+    return ("Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.",
+            "Solicitud de asesor registrada.")
+
+
+def _handoff_payload(phone, handoff, search_id, criteria):
+    """Shape the row exactly as the handoff_requests constraints require."""
+    consent = handoff["request_type"] == "callback"
+    return {"phone": phone, "search_id": search_id, "request_type": handoff["request_type"],
+            "criteria_snapshot": criteria or {}, "property_reference": handoff["property_reference"],
+            "contact_preference": "phone_call" if consent else None, "callback_consent": consent}
+
+
 def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     observation = with_explicit_operation(observation, user_text)
@@ -839,8 +917,10 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         criteria["preferences"] = list(dict.fromkeys(criteria.get("preferences", []) + slots.pop("preferences")))
     criteria.update(slots)
     intent = observation.get("intent")
-    if observation.get("handoff") or intent == "human_handoff":
-        return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.", criteria, "handoff", "Solicitud de asesor registrada."
+    handoff = detected_handoff(previous, observation, user_text, inventory_matches)
+    if handoff:
+        reply, summary = handoff_reply(handoff)
+        return reply, criteria, "handoff", summary
     if intent == "general_question":
         natural_reply = usable_assistant_reply(observation, "conversation")
         if inventory_matches is not None and inventory_ready(criteria):
@@ -924,6 +1004,11 @@ def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, out
         payload["p_inventory_results"] = [{"property_id": item["property_id"], "rank_position": index, "presented_to_client": True,
                                             "eligibility_snapshot": item.get("eligibility_snapshot", {}), "public_snapshot": item.get("public", {})}
                                            for index, item in enumerate(inventory_matches, 1)]
+    # The escalation is recomputed from the same deterministic inputs that chose the
+    # reply, so the promise made to the client and the routed request cannot diverge.
+    handoff = detected_handoff(previous, observation, inbound, inventory_matches) if stage == "handoff" else None
+    if handoff:
+        payload["p_handoff"] = _handoff_payload(sender, handoff, active_id, criteria)
     return memory.commit_work(payload)
 
 

@@ -7,6 +7,8 @@ os.environ.setdefault("PHONE_NUMBER_ID", "123456")
 os.environ.setdefault("APP_SECRET", "test-app-secret")
 import app
 
+SEARCH_ID = "11111111-2222-3333-4444-555555555555"
+
 class AppTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory(); os.environ["LEADS_DB_PATH"] = os.path.join(self.tempdir.name, "leads.db"); os.environ.pop("SUPABASE_URL", None); os.environ.pop("SUPABASE_KEY", None)
@@ -486,6 +488,83 @@ class AppTests(unittest.TestCase):
     def test_memory_session_reconstructs_criteria_after_restart(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
         self.assertEqual(app.conversation_state(previous)["bedrooms"],3)
+
+    # --- P3-A: commercial handoff -------------------------------------------------
+    def _commit_handoff(self, inbound, previous=None, observation=None, criteria=None, inventory_matches=None):
+        """Drive the real reply and commit paths and capture the RPC payload."""
+        observation = observation if observation is not None else {"intent":"property_search","slot_updates":{},"handoff":False}
+        criteria = criteria if criteria is not None else {"operation":"compra"}
+        reply, turn_criteria, stage, summary = app.progressive_reply(previous, observation, "fallback", inbound, criteria, inventory_matches)
+        memory = Mock(); memory.commit_work.return_value = []
+        app.commit_consistent_turn(memory, "claim-1", "51999999999", "wamid-h1", inbound, reply, observation,
+                                   turn_criteria, stage, summary, previous, {"active_search_id": SEARCH_ID, "searches": {SEARCH_ID: {}}}, inventory_matches)
+        return reply, stage, memory.commit_work.call_args.args[0]
+
+    def test_advisor_handoff_is_committed_in_the_same_transaction(self):
+        reply, stage, payload = self._commit_handoff("Quiero hablar con un asesor")
+        self.assertEqual(stage,"handoff")
+        handoff = payload["p_handoff"]
+        self.assertEqual(handoff["request_type"],"advisor")
+        self.assertEqual(handoff["phone"],"51999999999")
+        self.assertEqual(handoff["search_id"],SEARCH_ID)
+        self.assertFalse(handoff["callback_consent"]); self.assertIsNone(handoff["contact_preference"]); self.assertIsNone(handoff["property_reference"])
+        self.assertEqual(handoff["criteria_snapshot"],{"operation":"compra"})
+
+    def test_callback_handoff_records_explicit_consent(self):
+        reply, stage, payload = self._commit_handoff("Prefiero una llamada, llámame por favor")
+        handoff = payload["p_handoff"]
+        self.assertEqual(handoff["request_type"],"callback")
+        self.assertTrue(handoff["callback_consent"]); self.assertEqual(handoff["contact_preference"],"phone_call")
+        self.assertIn("llamada", reply)
+
+    def test_visit_handoff_requires_a_reference_arenz_presented(self):
+        previous={"state":{"recent_turns":[{"direction":"assistant","content":"Ref. ARZ-001 · Departamento · Surco."}]}}
+        _, stage, payload = self._commit_handoff("Quiero agendar una visita a la ARZ-001", previous)
+        self.assertEqual(stage,"handoff")
+        self.assertEqual(payload["p_handoff"]["request_type"],"visit")
+        self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-001")
+
+    def test_visit_without_reference_keeps_qualifying_instead_of_escalating(self):
+        reply, stage, payload = self._commit_handoff("Quiero visitar un departamento en Surco")
+        self.assertNotEqual(stage,"handoff"); self.assertNotIn("p_handoff", payload)
+
+    def test_property_interest_uses_reference_from_the_current_inventory_reply(self):
+        matches=[{"property_id":"a1","public":{"public_reference":"ARZ-777"}}]
+        _, stage, payload = self._commit_handoff("Me interesa la ARZ-777", None, None, None, matches)
+        self.assertEqual(payload["p_handoff"]["request_type"],"property_interest")
+        self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-777")
+
+    def test_reference_never_presented_is_not_attached(self):
+        reply, stage, payload = self._commit_handoff("Me interesa la ARZ-999")
+        self.assertNotEqual(stage,"handoff"); self.assertNotIn("p_handoff", payload)
+
+    def test_ordinary_turn_commits_without_a_handoff(self):
+        _, stage, payload = self._commit_handoff("Busco en Miraflores")
+        self.assertNotIn("p_handoff", payload)
+
+    def test_reply_and_persisted_request_type_cannot_diverge(self):
+        previous={"state":{"recent_turns":[{"direction":"assistant","content":"Ref. ARZ-001 · Departamento · Surco."}]}}
+        reply, _, payload = self._commit_handoff("Quiero visitar la ARZ-001", previous)
+        self.assertIn("ARZ-001", reply); self.assertIn("visita", reply)
+        self.assertEqual(payload["p_handoff"]["property_reference"], "ARZ-001")
+
+    def test_commit_work_routes_handoff_turns_to_the_transactional_rpc(self):
+        store = app.ConversationMemoryStore("https://project.supabase.co","key")
+        response = Mock(); response.raise_for_status.return_value=None; response.json.return_value=[]
+        with patch.object(app.requests,"post",return_value=response) as post:
+            store.commit_work({"p_message_id":"wamid-h1"})
+            store.commit_work({"p_message_id":"wamid-h2","p_handoff":{"request_type":"advisor"}})
+        self.assertTrue(post.call_args_list[0].args[0].endswith("/rpc/commit_webhook_message"))
+        self.assertTrue(post.call_args_list[1].args[0].endswith("/rpc/commit_webhook_message_with_handoff"))
+
+    def test_replayed_message_is_never_escalated_twice(self):
+        store = app.ConversationMemoryStore("https://project.supabase.co","key")
+        response = Mock(); response.raise_for_status.return_value=None
+        response.json.return_value=[{"outcome":"duplicate","claim_token":None}]
+        with patch.object(app.requests,"post",return_value=response):
+            outcome, _ = store.claim_work("wamid-h1")
+        self.assertEqual(outcome,"duplicate")
+
 
 if __name__ == "__main__": unittest.main()
 
