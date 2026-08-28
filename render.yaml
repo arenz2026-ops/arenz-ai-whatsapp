@@ -1,6 +1,9 @@
 services:
   - type: web
-    name: arenz-ai-whatsapp
+    # Canonical service: this is the host Meta's webhook points at. The former
+    # 'arenz-ai-whatsapp' was a second service running the same code with an
+    # incomplete environment; it is being retired.
+    name: arenz-ai-whatsapp-prod
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
