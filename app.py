@@ -22,6 +22,9 @@ APP_SECRET = os.getenv("APP_SECRET", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 GRAPH_API_VERSION = "v26.0"
+# Render injects RENDER_GIT_COMMIT. Without it a deploy can only be assumed, never
+# verified, so /health reports the short SHA it is actually running.
+SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
 user_sessions = {}
 
 OBSERVATION_SCHEMA = {
@@ -264,7 +267,7 @@ def health():
         db_ok = True
     except (sqlite3.Error, requests.RequestException): db_ok = False
     ok = all((VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID, APP_SECRET)) and db_ok
-    return jsonify({"status": "ok" if ok else "degraded"}), 200 if ok else 503
+    return jsonify({"status": "ok" if ok else "degraded", "commit": SERVICE_COMMIT or "unknown"}), 200 if ok else 503
 
 
 def generate_reply(sender, text):

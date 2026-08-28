@@ -21,6 +21,11 @@ class AppTests(unittest.TestCase):
         response=self.client.get("/webhook?hub.mode=subscribe&hub.verify_token=test-verify-token&hub.challenge=ok")
         self.assertEqual((response.status_code,response.get_data(as_text=True)),(200,"ok")); self.assertEqual(self.client.get("/webhook?hub.mode=subscribe&hub.verify_token=bad&hub.challenge=ok").status_code,403)
     def test_health(self): self.assertEqual(self.client.get("/health").get_json()["status"],"ok")
+    def test_health_reports_the_running_commit(self):
+        with patch.object(app,"SERVICE_COMMIT","abc1234"):
+            self.assertEqual(self.client.get("/health").get_json()["commit"],"abc1234")
+        with patch.object(app,"SERVICE_COMMIT",""):
+            self.assertEqual(self.client.get("/health").get_json()["commit"],"unknown")
     def test_invalid_signature(self): self.assertEqual(self.client.post("/webhook",json={}).status_code,401)
     def test_post_graph_mock_and_lead(self):
         payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-1","from":"51999999999","type":"text","text":{"body":"hola"}}]}}]}]}; raw,headers=self.signed(payload); response=Mock(); response.raise_for_status.return_value=None
