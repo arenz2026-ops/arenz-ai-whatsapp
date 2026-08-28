@@ -1004,8 +1004,11 @@ def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, out
                "p_inventory_log": _inventory_trace(criteria, inventory_matches, inventory_cutoff),
                "p_inventory_results": []}
     if inventory_matches:
-        payload["p_inventory_results"] = [{"property_id": item["property_id"], "rank_position": index, "presented_to_client": True,
-                                            "eligibility_snapshot": item.get("eligibility_snapshot", {}), "public_snapshot": item.get("public", {})}
+        # find_matches yields {"property": row, "public": snapshot}; reading a flat
+        # property_id here raised KeyError on the first real listing, and KeyError is
+        # not caught by the webhook, so the turn died with the claim still pending.
+        payload["p_inventory_results"] = [{"property_id": item["property"]["property_id"], "rank_position": index, "presented_to_client": True,
+                                            "eligibility_snapshot": {"rules_version": INVENTORY_RULES_VERSION, "eligible": True}, "public_snapshot": item.get("public", {})}
                                            for index, item in enumerate(inventory_matches, 1)]
     # The escalation is recomputed from the same deterministic inputs that chose the
     # reply, so the promise made to the client and the routed request cannot diverge.

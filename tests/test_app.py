@@ -9,6 +9,19 @@ import app
 
 SEARCH_ID = "11111111-2222-3333-4444-555555555555"
 
+INVENTORY_ROW = {"property_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","public_reference":"ARZ-001","operation":"compra",
+                 "property_type":"departamento","district":"Surco","zone":None,"public_location_reference":None,
+                 "price_amount":200000,"currency":"USD","bedrooms":2,"bathrooms":2,"area_m2":80,"parking_spaces":1,
+                 "features":[],"public_description":None,"lifecycle_state":"active_confirmed",
+                 "availability_confirmed_at":"2026-08-27T00:00:00+00:00","approved_at":"2026-08-01T00:00:00+00:00"}
+
+
+def inventory_match(reference="ARZ-001", property_id=None):
+    """Build a match shaped exactly as InventoryStore.find_matches returns one."""
+    row = {**INVENTORY_ROW, "public_reference": reference}
+    if property_id: row["property_id"] = property_id
+    return {"property": row, "public": app.public_property_snapshot(row, [])}
+
 class AppTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory(); os.environ["LEADS_DB_PATH"] = os.path.join(self.tempdir.name, "leads.db"); os.environ.pop("SUPABASE_URL", None); os.environ.pop("SUPABASE_KEY", None)
@@ -534,7 +547,7 @@ class AppTests(unittest.TestCase):
         self.assertNotEqual(stage,"handoff"); self.assertNotIn("p_handoff", payload)
 
     def test_property_interest_uses_reference_from_the_current_inventory_reply(self):
-        matches=[{"property_id":"a1","public":{"public_reference":"ARZ-777"}}]
+        matches=[inventory_match("ARZ-777")]
         _, stage, payload = self._commit_handoff("Me interesa la ARZ-777", None, None, None, matches)
         self.assertEqual(payload["p_handoff"]["request_type"],"property_interest")
         self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-777")
@@ -569,6 +582,49 @@ class AppTests(unittest.TestCase):
         with patch.object(app.requests,"post",return_value=response):
             outcome, _ = store.claim_work("wamid-h1")
         self.assertEqual(outcome,"duplicate")
+
+
+    # --- inventory results reach the transactional commit intact ---------------
+    def test_inventory_results_use_the_shape_find_matches_actually_returns(self):
+        """Regression: a flat item["property_id"] raised KeyError on the first listing."""
+        matches=[inventory_match()]
+        criteria={"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":2,"property_type":"departamento"}
+        memory=Mock(); memory.commit_work.return_value=[]
+        app.commit_consistent_turn(memory,"tok","51999999999","wamid-inv","hola",app.inventory_reply(matches),
+                                   {"intent":"property_search","slot_updates":{},"handoff":False},
+                                   criteria,"qualified","resumen",None,
+                                   {"active_search_id":SEARCH_ID,"searches":{SEARCH_ID:{}}},matches)
+        results=memory.commit_work.call_args.args[0]["p_inventory_results"]
+        self.assertEqual(len(results),1)
+        self.assertEqual(results[0]["property_id"],INVENTORY_ROW["property_id"])
+        self.assertEqual(results[0]["rank_position"],1)
+        self.assertTrue(results[0]["presented_to_client"])
+        self.assertEqual(results[0]["public_snapshot"]["public_reference"],"ARZ-001")
+        self.assertEqual(results[0]["eligibility_snapshot"],{"rules_version":app.INVENTORY_RULES_VERSION,"eligible":True})
+
+    def test_matches_from_find_matches_flow_into_the_commit_without_reshaping(self):
+        """Tie producer to consumer: whatever find_matches yields must commit."""
+        store=app.InventoryStore("https://project.supabase.co","key")
+        response=Mock(); response.raise_for_status.return_value=None
+        response.json.side_effect=[[INVENTORY_ROW],[]]
+        criteria={"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":2,"property_type":"departamento"}
+        with patch.object(app.requests,"get",return_value=response):
+            matches,_=store.find_matches(criteria,now=app.datetime(2026,8,28,tzinfo=app.timezone.utc))
+        self.assertEqual(len(matches),1)
+        memory=Mock(); memory.commit_work.return_value=[]
+        app.commit_consistent_turn(memory,"tok","51999999999","wamid-inv2","hola",app.inventory_reply(matches),
+                                   {"intent":"property_search","slot_updates":{},"handoff":False},
+                                   criteria,"qualified","resumen",None,
+                                   {"active_search_id":SEARCH_ID,"searches":{SEARCH_ID:{}}},matches)
+        results=memory.commit_work.call_args.args[0]["p_inventory_results"]
+        self.assertEqual(results[0]["property_id"],INVENTORY_ROW["property_id"])
+
+    def test_interest_in_a_presented_listing_escalates_with_that_reference(self):
+        previous={"state":{"recent_turns":[{"direction":"assistant","content":app.inventory_reply([inventory_match()])}]}}
+        _, stage, payload = self._commit_handoff("Me interesa la ARZ-001", previous)
+        self.assertEqual(stage,"handoff")
+        self.assertEqual(payload["p_handoff"]["request_type"],"property_interest")
+        self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-001")
 
 
 if __name__ == "__main__": unittest.main()
