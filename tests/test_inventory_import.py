@@ -337,5 +337,81 @@ class CommandLineTests(unittest.TestCase):
         self.store.insert.assert_called_once()
 
 
+def urbania(**overrides):
+    """The real Urbania listing, as a third_party record. Never applied anywhere."""
+    record = {"public_reference": "ARZ-000001", "operation": "venta", "property_type": "departamento",
+              "district": "Lince", "zone": "Lobatón", "price_amount": 550000, "currency": "PEN",
+              "bedrooms": 2, "bathrooms": 2, "parking_spaces": 1,
+              "area_total_m2": 76.82, "area_built_m2": 58.75, "terrace_area_m2": 18.07,
+              "provenance": "third_party", "source_name": "urbania",
+              "source_reference": "urbania:150921307",
+              "source_url": "https://urbania.pe/inmueble/clasificado/veclapin-venta-de-departamento-en-lobaton-lince-2-dormitorios-ascensor-150921307",
+              "advertiser_name": "INMOBILIARIA PUGA", "observed_at": FRESH}
+    record.update(overrides)
+    return {k: v for k, v in record.items() if v is not None}
+
+
+class ProvenanceGovernanceTests(unittest.TestCase):
+    """1, 2, 3, 5, 6: a borrowed listing must never pass as ARENZ stock."""
+
+    def clean(self, **over):
+        record, errors = importer.normalize_record(urbania(**over))
+        return record, errors + importer.validate_record(record)
+
+    def test_a_third_party_listing_is_not_confused_with_own_stock(self):
+        record, errors = self.clean()
+        self.assertEqual(errors, [])
+        self.assertEqual(record["provenance"], "third_party")
+        self.assertNotEqual(record["provenance"], "own")
+        own, _ = importer.normalize_record(demo())
+        self.assertEqual(own.get("provenance", "own"), "own")
+
+    def test_a_third_party_listing_without_its_trail_is_rejected(self):
+        for field in ("source_name", "source_reference", "source_url", "observed_at"):
+            _, errors = self.clean(**{field: None})
+            self.assertTrue(any(field in error for error in errors), field)
+
+    def test_an_unknown_provenance_is_rejected(self):
+        _, errors = self.clean(provenance="propio")
+        self.assertTrue(any("provenance" in error for error in errors))
+
+    def test_reading_the_source_never_becomes_availability_confirmation(self):
+        record, errors = self.clean()
+        self.assertEqual(errors, [])
+        self.assertEqual(record["observed_at"], FRESH)
+        self.assertNotIn(importer.AVAILABILITY, record)
+        plans = importer.plan_records([urbania()], {}, now=NOW)
+        self.assertEqual(plans[0]["action"], "INSERT")
+        self.assertNotIn(importer.AVAILABILITY, plans[0]["changes"])
+        self.assertFalse(app.property_is_eligible(record, NOW))
+
+    def test_a_third_party_listing_cannot_be_shown_while_unverified(self):
+        _, errors = self.clean(lifecycle_state="active_confirmed", approved_at=FRESH,
+                               availability_confirmed_at=FRESH)
+        self.assertTrue(any("cannot be shown while unverified" in error for error in errors))
+
+    def test_source_reference_and_public_reference_are_independent(self):
+        record, errors = self.clean()
+        self.assertEqual(errors, [])
+        self.assertEqual(record["source_reference"], "urbania:150921307")
+        self.assertEqual(record["public_reference"], "ARZ-000001")
+        self.assertNotIn("150921307", record["public_reference"])
+        moved, errors = self.clean(source_reference="otroportal:999", source_url="https://otro.pe/999")
+        self.assertEqual(errors, [])
+        self.assertEqual(moved["public_reference"], "ARZ-000001")
+
+    def test_the_three_areas_are_preserved_and_area_m2_stays_compatible(self):
+        record, errors = self.clean()
+        self.assertEqual(errors, [])
+        self.assertEqual(record["area_total_m2"], 76.82)
+        self.assertEqual(record["area_built_m2"], 58.75)
+        self.assertEqual(record["terrace_area_m2"], 18.07)
+        self.assertEqual(record["area_m2"], 76.82)
+
+    def test_an_explicit_area_m2_is_not_overwritten_by_the_mirror(self):
+        record, _ = importer.normalize_record(urbania(area_m2=58.75))
+        self.assertEqual(record["area_m2"], 58.75)
+
+
 if __name__ == "__main__":
     unittest.main()

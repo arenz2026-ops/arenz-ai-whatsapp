@@ -30,10 +30,20 @@ LIFECYCLE_STATES = ("draft", "pending_verification", "active_confirmed", "reserv
 VISIBLE_STATE = "active_confirmed"
 TEXT_FIELDS = ("public_reference", "operation", "property_type", "district", "zone", "public_location_reference",
                "exact_address", "internal_owner_contact", "public_description", "source_reference",
-               "lifecycle_state", "approved_by", "verified_by", "verification_notes")
+               "lifecycle_state", "approved_by", "verified_by", "verification_notes",
+               "provenance", "source_url", "advertiser_name", "verification_status")
+PROVENANCES = ("own", "partner", "third_party")
+THIRD_PARTY = "third_party"
+VERIFICATION_STATES = ("unverified", "source_observed", "advertiser_contacted", "verified")
+# A listing ARENZ neither owns nor captured must keep the trail that says where it
+# came from, so the bot can disclose it and nobody can later mistake it for stock.
+THIRD_PARTY_TRAIL = ("source_name", "source_reference", "source_url", "observed_at")
 INT_FIELDS = ("bedrooms", "parking_spaces")
-NUMBER_FIELDS = ("price_amount", "bathrooms", "area_m2")
-TIMESTAMP_FIELDS = ("approved_at", "availability_confirmed_at")
+NUMBER_FIELDS = ("price_amount", "bathrooms", "area_m2", "area_total_m2", "area_built_m2", "terrace_area_m2")
+# observed_at is when the source was read. It is evidence of publication and is
+# deliberately NOT availability_confirmed_at: a page being online proves nothing
+# about the property still being for sale.
+TIMESTAMP_FIELDS = ("approved_at", "availability_confirmed_at", "observed_at")
 AVAILABILITY = "availability_confirmed_at"
 # Only these may be rewritten by an ordinary update. Availability and approval are
 # operator claims, not attributes, so they are absent by design.
@@ -108,6 +118,10 @@ def normalize_record(raw):
         record["operation"] = SOURCE_OPERATION_ALIASES.get(operation, operation)
     if "currency" in raw and str(raw["currency"]).strip():
         record["currency"] = str(raw["currency"]).strip().upper()
+    if record.get("area_total_m2") and "area_m2" not in record:
+        # The matcher and the public snapshot still read area_m2; mirroring keeps the
+        # new breakdown additive instead of a breaking change.
+        record["area_m2"] = record["area_total_m2"]
     if "property_type" in record:
         # The bot compares the stored value directly before canonicalizing, so an
         # 'apartamento' left as-is would never match a 'departamento' search.
@@ -145,6 +159,16 @@ def validate_record(record, confirm_only=False):
     for field in TIMESTAMP_FIELDS:
         if field in record and parse_timestamp(record[field]) is None:
             errors.append(f"{field}: '{record[field]}' is not an ISO-8601 timestamp")
+    provenance = record.get("provenance", "own")
+    if provenance not in PROVENANCES:
+        errors.append(f"provenance: '{provenance}' is not one of {list(PROVENANCES)}")
+    if record.get("verification_status") and record["verification_status"] not in VERIFICATION_STATES:
+        errors.append(f"verification_status: '{record['verification_status']}' is not a known state")
+    if provenance == THIRD_PARTY:
+        errors += [f"{field}: required for a {THIRD_PARTY} listing"
+                   for field in THIRD_PARTY_TRAIL if not record.get(field)]
+        if record.get("lifecycle_state") == VISIBLE_STATE and record.get("verification_status", "unverified") == "unverified":
+            errors.append(f"verification_status: a {THIRD_PARTY} listing cannot be shown while unverified")
     if record.get("lifecycle_state") == VISIBLE_STATE and not (record.get("approved_at") and record.get(AVAILABILITY)):
         errors.append(f"lifecycle_state: '{VISIBLE_STATE}' also needs approved_at and {AVAILABILITY}")
     return errors
@@ -169,6 +193,8 @@ def visibility_gaps(record):
         gaps.append("approved_at is empty")
     if not record.get(AVAILABILITY):
         gaps.append(f"{AVAILABILITY} is empty")
+    if record.get("provenance") == THIRD_PARTY and record.get("verification_status", "unverified") == "unverified":
+        gaps.append(f"a {THIRD_PARTY} listing stays hidden while verification_status is 'unverified'")
     return gaps
 
 

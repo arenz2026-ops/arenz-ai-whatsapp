@@ -695,6 +695,13 @@ def public_property_snapshot(property_row, media_rows):
         "bedrooms": property_row.get("bedrooms"),
         "bathrooms": property_row.get("bathrooms"),
         "area_m2": property_row.get("area_m2"),
+        "area_total_m2": property_row.get("area_total_m2"),
+        "area_built_m2": property_row.get("area_built_m2"),
+        "terrace_area_m2": property_row.get("terrace_area_m2"),
+        # Provenance travels to the client on purpose: a third-party listing must
+        # be shown as such. source_url and advertiser_name stay out — naming the
+        # other agency, or linking to it, hands the lead away.
+        "provenance": property_row.get("provenance") or "own",
         "parking_spaces": property_row.get("parking_spaces"),
         "features": property_row.get("features") or [],
         "public_description": property_row.get("public_description"),
@@ -751,7 +758,9 @@ def property_match_rank(property_row, criteria):
 
 class InventoryStore:
     """Small REST adapter for canonical inventory; it never exposes internal fields."""
-    property_fields = "property_id,public_reference,operation,property_type,district,zone,public_location_reference,price_amount,currency,bedrooms,bathrooms,area_m2,parking_spaces,features,public_description,lifecycle_state,availability_confirmed_at,approved_at"
+    property_fields = ("property_id,public_reference,operation,property_type,district,zone,public_location_reference,"
+                      "price_amount,currency,bedrooms,bathrooms,area_m2,area_total_m2,area_built_m2,terrace_area_m2,"
+                      "parking_spaces,features,public_description,lifecycle_state,availability_confirmed_at,approved_at,provenance")
 
     def __init__(self, url, key):
         self.url = url.rstrip("/")
@@ -813,19 +822,40 @@ def get_inventory_store():
     return InventoryStore(supabase_url, supabase_key) if supabase_url and supabase_key else None
 
 
+THIRD_PARTY = "third_party"
+THIRD_PARTY_LABEL = "publicada por un tercero"
+THIRD_PARTY_NOTE = ("Las publicadas por terceros no son captaciones de ARENZ: reconfirmamos "
+                    "disponibilidad con el anunciante antes de coordinar una visita.")
+
+
+def is_third_party(public):
+    return (public or {}).get("provenance") == THIRD_PARTY
+
+
 def inventory_reply(matches):
     if not matches:
         return "No encontré opciones verificadas que coincidan exactamente con tus criterios en este momento. Puedo ampliar distrito, presupuesto o derivar tu solicitud a un asesor."
-    lines = ["Encontré opciones verificadas que coinciden con tus criterios:"]
+    borrowed = any(is_third_party(item["public"]) for item in matches)
+    # Calling a listing ARENZ neither owns nor captured "verificada" would be exactly
+    # the false claim this classification exists to prevent.
+    lines = ["Encontré estas opciones que coinciden con tus criterios:" if borrowed
+             else "Encontré opciones verificadas que coinciden con tus criterios:"]
     for item in matches:
         public = item["public"]
         details = [f"Ref. {public['public_reference']}", public["property_type"].capitalize(), public["district"], f"{public['currency']} {public['price_amount']}", f"{public['bedrooms']} dormitorios"]
+        area = public.get("area_total_m2") or public.get("area_m2")
+        if area:
+            details.append(f"{area} m2")
         if public.get("parking_spaces"):
             details.append(f"{public['parking_spaces']} estacionamiento(s)")
+        if is_third_party(public):
+            details.append(THIRD_PARTY_LABEL)
         lines.append(" · ".join(details) + ".")
         if public["media"]:
             first_media = public["media"][0]
             lines.append(f"{first_media['media_type'].capitalize()}: {first_media['media_url']}")
+    if borrowed:
+        lines.append(THIRD_PARTY_NOTE)
     return "\n".join(lines)
 
 

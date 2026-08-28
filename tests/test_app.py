@@ -16,6 +16,13 @@ INVENTORY_ROW = {"property_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","public_re
                  "availability_confirmed_at":"2026-08-27T00:00:00+00:00","approved_at":"2026-08-01T00:00:00+00:00"}
 
 
+URBANIA_ROW = {**INVENTORY_ROW, "property_id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+               "public_reference": "ARZ-000001", "district": "Lince", "zone": "Lobatón",
+               "price_amount": 550000, "currency": "PEN", "bathrooms": 2,
+               "area_m2": 76.82, "area_total_m2": 76.82, "area_built_m2": 58.75,
+               "terrace_area_m2": 18.07, "provenance": "third_party"}
+
+
 def inventory_match(reference="ARZ-001", property_id=None):
     """Build a match shaped exactly as InventoryStore.find_matches returns one."""
     row = {**INVENTORY_ROW, "public_reference": reference}
@@ -717,6 +724,60 @@ class AppTests(unittest.TestCase):
             first=store.claim_work("wamid-replay")[0]
             second=store.claim_work("wamid-replay")[0]
         self.assertEqual((first,second),("claimed","duplicate"))
+
+
+    # --- gobernanza de procedencia: ARZ-000001 de extremo a extremo ---------------
+    def _lince(self):
+        return self._matches_for([URBANIA_ROW], self._criteria(districts=["Lince"], currency="PEN",
+                                                               budget_max=600000))
+
+    def test_arz_000001_travels_from_matching_to_the_message(self):
+        matches = self._lince()
+        self.assertEqual(len(matches), 1)
+        reply = app.inventory_reply(matches)
+        self.assertIn("Ref. ARZ-000001", reply)
+        self.assertIn("76.82 m2", reply)
+        self.assertNotIn("150921307", reply)     # el id del portal no viaja al cliente
+        self.assertNotIn("urbania", reply.lower())
+        self.assertNotIn("PUGA", reply)
+
+    def test_arz_000001_binds_property_interest_and_visit(self):
+        previous = {"state": {"recent_turns": [{"direction": "assistant",
+                                                "content": app.inventory_reply(self._lince())}]}}
+        _, stage, payload = self._commit_handoff("Me interesa la ARZ-000001", previous)
+        self.assertEqual((stage, payload["p_handoff"]["request_type"]), ("handoff", "property_interest"))
+        self.assertEqual(payload["p_handoff"]["property_reference"], "ARZ-000001")
+        _, stage, payload = self._commit_handoff("Quiero agendar una visita a la ARZ-000001", previous)
+        self.assertEqual((stage, payload["p_handoff"]["request_type"]), ("handoff", "visit"))
+        self.assertEqual(payload["p_handoff"]["property_reference"], "ARZ-000001")
+
+    def test_a_third_party_listing_is_disclosed_as_such(self):
+        reply = app.inventory_reply(self._lince())
+        self.assertIn(app.THIRD_PARTY_LABEL, reply)
+        self.assertIn(app.THIRD_PARTY_NOTE, reply)
+        self.assertNotIn("opciones verificadas", reply)
+
+    def test_the_bot_never_claims_representation_it_does_not_have(self):
+        matches = self._lince()
+        previous = {"state": {"recent_turns": [{"direction": "assistant",
+                                                "content": app.inventory_reply(matches)}]}}
+        texts = [app.inventory_reply(matches)]
+        for message in ("Me interesa la ARZ-000001", "Quiero agendar una visita a la ARZ-000001",
+                        "Quiero hablar con un asesor"):
+            reply, _, _ = self._commit_handoff(message, previous)
+            texts.append(reply)
+        forbidden = ("nuestra propiedad", "nuestro inmueble", "somos los propietarios",
+                     "en exclusiva", "propiedad de arenz", "representamos", "captación de arenz")
+        for text in texts:
+            lowered = text.lower()
+            for claim in forbidden:
+                self.assertNotIn(claim, lowered, f"{claim!r} en: {text}")
+
+    def test_own_stock_is_still_presented_as_verified(self):
+        reply = app.inventory_reply(self._matches_for([INVENTORY_ROW], self._criteria()))
+        self.assertIn("opciones verificadas", reply)
+        self.assertNotIn(app.THIRD_PARTY_LABEL, reply)
+        self.assertNotIn(app.THIRD_PARTY_NOTE, reply)
 
 
 if __name__ == "__main__": unittest.main()
