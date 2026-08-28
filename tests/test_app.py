@@ -627,6 +627,98 @@ class AppTests(unittest.TestCase):
         self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-001")
 
 
+    # --- FASE 5/6/7: matching, identificador estable y E2E sin WhatsApp ----------
+    def _matches_for(self, rows, criteria, now=None):
+        store=app.InventoryStore("https://project.supabase.co","key")
+        response=Mock(); response.raise_for_status.return_value=None
+        response.json.side_effect=[rows,[]]
+        with patch.object(app.requests,"get",return_value=response):
+            matches,_=store.find_matches(criteria, now=now or app.datetime(2026,8,28,tzinfo=app.timezone.utc))
+        return matches
+
+    def _criteria(self, **over):
+        base={"operation":"compra","districts":["Surco"],"budget_max":250000,
+              "currency":"USD","bedrooms":2,"property_type":"departamento"}
+        base.update(over); return base
+
+    def test_matching_excludes_the_other_operation(self):
+        row={**INVENTORY_ROW,"operation":"alquiler"}
+        self.assertEqual(self._matches_for([row], self._criteria()), [])
+
+    def test_matching_excludes_another_district_and_currency(self):
+        self.assertEqual(self._matches_for([{**INVENTORY_ROW,"district":"Miraflores"}], self._criteria()), [])
+        self.assertEqual(self._matches_for([{**INVENTORY_ROW,"currency":"PEN"}], self._criteria()), [])
+
+    def test_matching_excludes_a_property_over_budget(self):
+        self.assertEqual(self._matches_for([{**INVENTORY_ROW,"price_amount":300000}], self._criteria()), [])
+
+    def test_matching_drops_properties_without_parking_when_it_was_required(self):
+        rows=[{**INVENTORY_ROW,"parking_spaces":0}]
+        self.assertEqual(self._matches_for(rows, self._criteria(parking_required=True)), [])
+        self.assertEqual(len(self._matches_for(rows, self._criteria())), 1)
+
+    def test_matching_excludes_expired_and_inactive_properties(self):
+        stale={**INVENTORY_ROW,"availability_confirmed_at":"2026-07-01T00:00:00+00:00"}
+        self.assertEqual(self._matches_for([stale], self._criteria()), [])
+        self.assertEqual(self._matches_for([{**INVENTORY_ROW,"lifecycle_state":"reserved"}], self._criteria()), [])
+
+    def test_matching_is_deterministic_and_capped(self):
+        rows=[{**INVENTORY_ROW,"property_id":f"1111111{i}-bbbb-cccc-dddd-eeeeeeeeeeee",
+               "public_reference":f"ARZ-{i:03d}","price_amount":100000+i*1000} for i in range(1,6)]
+        first=[m["public"]["public_reference"] for m in self._matches_for(rows, self._criteria())]
+        second=[m["public"]["public_reference"] for m in self._matches_for(list(reversed(rows)), self._criteria())]
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), app.INVENTORY_MAX_RESULTS)
+        self.assertEqual(first, ["ARZ-001","ARZ-002","ARZ-003"])
+
+    def test_zero_matches_never_fabricates_a_property(self):
+        matches=self._matches_for([], self._criteria())
+        self.assertEqual(matches, [])
+        self.assertNotIn("Ref.", app.inventory_reply(matches))
+
+    def test_empty_inventory_does_not_create_a_commercial_handoff(self):
+        _, stage, payload = self._commit_handoff("Busco en Surco", None, None, None, [])
+        self.assertNotEqual(stage,"handoff"); self.assertNotIn("p_handoff", payload)
+
+    def test_e2e_flow_a_interest_binds_the_reference_that_was_shown(self):
+        matches=self._matches_for([INVENTORY_ROW], self._criteria())
+        previous={"state":{"recent_turns":[{"direction":"assistant","content":app.inventory_reply(matches)}]}}
+        reply, stage, payload = self._commit_handoff("Me interesa la ARZ-001", previous)
+        self.assertEqual(stage,"handoff")
+        self.assertEqual(payload["p_handoff"]["request_type"],"property_interest")
+        self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-001")
+        self.assertIn("ARZ-001", reply)
+
+    def test_e2e_flow_b_visit_binds_the_reference_that_was_shown(self):
+        matches=self._matches_for([INVENTORY_ROW], self._criteria())
+        previous={"state":{"recent_turns":[{"direction":"assistant","content":app.inventory_reply(matches)}]}}
+        _, stage, payload = self._commit_handoff("Quiero agendar una visita a la ARZ-001", previous)
+        self.assertEqual(payload["p_handoff"]["request_type"],"visit")
+        self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-001")
+
+    def test_e2e_flow_c_visit_without_a_shown_reference_keeps_qualifying(self):
+        previous={"state":{"recent_turns":[{"direction":"assistant","content":app.inventory_reply([inventory_match("ARZ-001")])}]}}
+        reply, stage, payload = self._commit_handoff("Quiero visitar la ARZ-999", previous)
+        self.assertNotEqual(stage,"handoff"); self.assertNotIn("p_handoff", payload)
+        self.assertNotIn("ARZ-999", reply)
+
+    def test_a_handoff_never_binds_a_property_the_client_was_not_shown(self):
+        previous={"state":{"recent_turns":[{"direction":"assistant","content":app.inventory_reply([inventory_match("ARZ-001")])}]}}
+        _, _, payload = self._commit_handoff("Me interesa la ARZ-001", previous)
+        self.assertEqual(payload["p_handoff"]["property_reference"],"ARZ-001")
+        self.assertNotEqual(payload["p_handoff"]["property_reference"],"ARZ-777")
+
+    def test_e2e_flow_d_replay_of_the_same_message_is_claimed_once(self):
+        store=app.ConversationMemoryStore("https://project.supabase.co","key")
+        response=Mock(); response.raise_for_status.return_value=None
+        response.json.side_effect=[[{"outcome":"claimed","claim_token":"tok"}],
+                                   [{"outcome":"duplicate","claim_token":None}]]
+        with patch.object(app.requests,"post",return_value=response):
+            first=store.claim_work("wamid-replay")[0]
+            second=store.claim_work("wamid-replay")[0]
+        self.assertEqual((first,second),("claimed","duplicate"))
+
+
 if __name__ == "__main__": unittest.main()
 
 
