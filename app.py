@@ -488,6 +488,7 @@ PROPERTY_TYPE_ALIASES = {"apartamento": "departamento"}
 INVENTORY_RULES_VERSION = "p1-v1"
 INVENTORY_MAX_RESULTS = 3
 INVENTORY_VERIFICATION_DAYS = 7
+THIRD_PARTY = "third_party"
 
 
 def explicit_operation_from_text(text):
@@ -710,11 +711,28 @@ def public_property_snapshot(property_row, media_rows):
     }
 
 
+COLLABORATION_CONFIRMED = "collaboration_confirmed"
+
+
+def collaboration_allows_showing(property_row):
+    """A borrowed listing needs the advertiser's consent, not just availability.
+
+    A public advert is not permission to route clients to it. ARENZ's own approval
+    cannot stand in for the other agency accepting the referral.
+    """
+    if property_row.get("provenance") != THIRD_PARTY:
+        return True
+    return (property_row.get("verification_status") == COLLABORATION_CONFIRMED
+            and bool(property_row.get("collaboration_confirmed_at")))
+
+
 def property_is_eligible(property_row, now=None):
     """The P1 eligibility rule is deterministic and independent of model output."""
     now = now or datetime.now(timezone.utc)
     required = ("public_reference", "operation", "property_type", "district", "price_amount", "currency", "approved_at", "availability_confirmed_at")
     if property_row.get("lifecycle_state") != "active_confirmed" or any(property_row.get(field) in (None, "") for field in required):
+        return False
+    if not collaboration_allows_showing(property_row):
         return False
     try:
         verified_at = datetime.fromisoformat(property_row["availability_confirmed_at"].replace("Z", "+00:00"))
@@ -760,7 +778,8 @@ class InventoryStore:
     """Small REST adapter for canonical inventory; it never exposes internal fields."""
     property_fields = ("property_id,public_reference,operation,property_type,district,zone,public_location_reference,"
                       "price_amount,currency,bedrooms,bathrooms,area_m2,area_total_m2,area_built_m2,terrace_area_m2,"
-                      "parking_spaces,features,public_description,lifecycle_state,availability_confirmed_at,approved_at,provenance")
+                      "parking_spaces,features,public_description,lifecycle_state,availability_confirmed_at,approved_at,"
+                      "provenance,verification_status,collaboration_confirmed_at")
 
     def __init__(self, url, key):
         self.url = url.rstrip("/")
@@ -822,7 +841,6 @@ def get_inventory_store():
     return InventoryStore(supabase_url, supabase_key) if supabase_url and supabase_key else None
 
 
-THIRD_PARTY = "third_party"
 THIRD_PARTY_LABEL = "publicada por un tercero"
 THIRD_PARTY_NOTE = ("Las publicadas por terceros no son captaciones de ARENZ: reconfirmamos "
                     "disponibilidad con el anunciante antes de coordinar una visita.")

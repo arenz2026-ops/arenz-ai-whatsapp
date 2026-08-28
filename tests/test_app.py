@@ -20,7 +20,9 @@ URBANIA_ROW = {**INVENTORY_ROW, "property_id": "bbbbbbbb-cccc-dddd-eeee-ffffffff
                "public_reference": "ARZ-000001", "district": "Lince", "zone": "Lobatón",
                "price_amount": 550000, "currency": "PEN", "bathrooms": 2,
                "area_m2": 76.82, "area_total_m2": 76.82, "area_built_m2": 58.75,
-               "terrace_area_m2": 18.07, "provenance": "third_party"}
+               "terrace_area_m2": 18.07, "provenance": "third_party",
+               "verification_status": "collaboration_confirmed",
+               "collaboration_confirmed_at": "2026-08-28T00:00:00+00:00"}
 
 
 def inventory_match(reference="ARZ-001", property_id=None):
@@ -778,6 +780,32 @@ class AppTests(unittest.TestCase):
         self.assertIn("opciones verificadas", reply)
         self.assertNotIn(app.THIRD_PARTY_LABEL, reply)
         self.assertNotIn(app.THIRD_PARTY_NOTE, reply)
+
+
+    # --- gate comercial: disponible no es lo mismo que autorizado -----------------
+    def _row(self, **over):
+        return {**URBANIA_ROW, **over}
+
+    def test_available_third_party_without_collaboration_is_not_shown(self):
+        row = self._row(verification_status="advertiser_contacted", collaboration_confirmed_at=None)
+        self.assertFalse(app.property_is_eligible(row))
+        self.assertEqual(self._matches_for([row], self._criteria(districts=["Lince"],
+                         currency="PEN", budget_max=600000)), [])
+
+    def test_third_party_with_collaboration_and_fresh_availability_is_eligible(self):
+        self.assertTrue(app.property_is_eligible(self._row()))
+
+    def test_expired_availability_hides_it_even_with_collaboration_in_force(self):
+        row = self._row(availability_confirmed_at="2026-07-01T00:00:00+00:00")
+        self.assertFalse(app.property_is_eligible(row))
+        self.assertEqual(row["verification_status"], "collaboration_confirmed")
+
+    def test_a_rejected_collaboration_is_never_shown(self):
+        row = self._row(verification_status="collaboration_rejected", collaboration_confirmed_at=None)
+        self.assertFalse(app.property_is_eligible(row))
+
+    def test_own_stock_needs_no_collaboration(self):
+        self.assertTrue(app.property_is_eligible({**INVENTORY_ROW, "provenance": "own"}))
 
 
 if __name__ == "__main__": unittest.main()

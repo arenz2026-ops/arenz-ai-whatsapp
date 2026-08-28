@@ -410,10 +410,25 @@ class ProvenanceGovernanceTests(unittest.TestCase):
         self.assertNotIn(importer.AVAILABILITY, plans[0]["changes"])
         self.assertFalse(app.property_is_eligible(record, NOW))
 
-    def test_a_third_party_listing_cannot_be_shown_while_unverified(self):
+    def test_a_third_party_listing_cannot_be_shown_without_collaboration(self):
+        """Available is not authorised: the advertiser must accept the referral."""
         _, errors = self.clean(lifecycle_state="active_confirmed", approved_at=FRESH,
                                availability_confirmed_at=FRESH)
-        self.assertTrue(any("cannot be shown while unverified" in error for error in errors))
+        self.assertTrue(any("a public advert is not permission" in error for error in errors))
+
+    def test_a_third_party_listing_with_collaboration_may_be_shown(self):
+        _, errors = self.clean(lifecycle_state="active_confirmed", approved_at=FRESH,
+                               availability_confirmed_at=FRESH,
+                               verification_status="collaboration_confirmed",
+                               collaboration_confirmed_at=FRESH)
+        self.assertEqual(errors, [])
+
+    def test_the_collaboration_stamp_and_status_cannot_disagree(self):
+        _, errors = self.clean(verification_status="collaboration_confirmed")
+        self.assertTrue(any(importer.COLLABORATION in error for error in errors))
+        _, errors = self.clean(collaboration_confirmed_at=FRESH)
+        self.assertTrue(any(importer.COLLABORATION in error for error in errors))
+
 
     def test_source_reference_and_public_reference_are_independent(self):
         record, errors = self.clean()
@@ -437,6 +452,55 @@ class ProvenanceGovernanceTests(unittest.TestCase):
         record, _ = importer.normalize_record(urbania(area_m2=58.75))
         self.assertEqual(record["area_m2"], 58.75)
 
+
+class CommercialGateTests(unittest.TestCase):
+    """Availability and commercial permission are renewed by different acts."""
+
+    def loaded(self, **over):
+        row = {**urbania(), "property_id": "x", "lifecycle_state": "active_confirmed",
+               "approved_at": STALE, "availability_confirmed_at": STALE,
+               "verification_status": "collaboration_confirmed",
+               "collaboration_confirmed_at": STALE, "operation": "compra", "area_m2": 76.82}
+        row.update(over)
+        return {"ARZ-000001": row}
+
+    def test_reconfirming_availability_does_not_renew_the_collaboration(self):
+        plans = importer.plan_records([{"public_reference": "ARZ-000001"}], self.loaded(),
+                                      now=NOW, confirm_availability=True)
+        self.assertEqual(plans[0]["action"], "UPDATE")
+        self.assertEqual(list(plans[0]["changes"]), [importer.AVAILABILITY])
+        self.assertNotIn(importer.COLLABORATION, plans[0]["changes"])
+
+    def test_a_price_change_does_not_imply_a_new_authorisation(self):
+        plans = importer.plan_records([urbania(price_amount=520000,
+                                               verification_status="collaboration_confirmed",
+                                               collaboration_confirmed_at=STALE)],
+                                      self.loaded(), now=NOW)
+        self.assertEqual(plans[0]["action"], "UPDATE")
+        self.assertEqual(list(plans[0]["changes"]), ["price_amount"])
+        self.assertNotIn(importer.COLLABORATION, plans[0]["changes"])
+
+    def test_publishing_cannot_stamp_the_collaboration_by_itself(self):
+        plans = importer.plan_records([urbania()], {}, now=NOW, publish=True)
+        self.assertEqual(plans[0]["action"], "REJECT")
+        self.assertTrue(any("a public advert is not permission" in e for e in plans[0]["errors"]))
+
+    def test_replaying_the_same_authorised_listing_is_a_noop(self):
+        source = urbania(lifecycle_state="active_confirmed", approved_at=STALE,
+                         availability_confirmed_at=STALE,
+                         verification_status="collaboration_confirmed",
+                         collaboration_confirmed_at=STALE)
+        for _ in range(3):
+            plans = importer.plan_records([source], self.loaded(), now=NOW, publish=True)
+            self.assertEqual(plans[0]["action"], "NO-OP")
+
+    def test_a_rejected_collaboration_stays_as_market_reference_not_stock(self):
+        record, errors = importer.normalize_record(
+            urbania(verification_status="collaboration_rejected"))
+        self.assertEqual(errors + importer.validate_record(record), [])
+        self.assertEqual(record["lifecycle_state"] if "lifecycle_state" in record else "draft", "draft")
+        self.assertTrue(importer.visibility_gaps(record))
+        self.assertEqual(record["source_reference"], "urbania:150921307")
 
 if __name__ == "__main__":
     unittest.main()

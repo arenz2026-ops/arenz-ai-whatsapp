@@ -34,7 +34,10 @@ TEXT_FIELDS = ("public_reference", "operation", "property_type", "district", "zo
                "provenance", "source_url", "advertiser_name", "verification_status")
 PROVENANCES = ("own", "partner", "third_party")
 THIRD_PARTY = "third_party"
-VERIFICATION_STATES = ("unverified", "source_observed", "advertiser_contacted", "verified")
+VERIFICATION_STATES = ("unverified", "source_observed", "advertiser_contacted",
+                       "collaboration_confirmed", "collaboration_rejected", "verified")
+COLLABORATION_CONFIRMED = "collaboration_confirmed"
+COLLABORATION = "collaboration_confirmed_at"
 # A listing ARENZ neither owns nor captured must keep the trail that says where it
 # came from, so the bot can disclose it and nobody can later mistake it for stock.
 THIRD_PARTY_TRAIL = ("source_name", "source_reference", "source_url", "observed_at")
@@ -43,7 +46,8 @@ NUMBER_FIELDS = ("price_amount", "bathrooms", "area_m2", "area_total_m2", "area_
 # observed_at is when the source was read. It is evidence of publication and is
 # deliberately NOT availability_confirmed_at: a page being online proves nothing
 # about the property still being for sale.
-TIMESTAMP_FIELDS = ("approved_at", "availability_confirmed_at", "observed_at")
+TIMESTAMP_FIELDS = ("approved_at", "availability_confirmed_at", "observed_at",
+                    "collaboration_confirmed_at")
 AVAILABILITY = "availability_confirmed_at"
 # Only these may be rewritten by an ordinary update. Availability and approval are
 # operator claims, not attributes, so they are absent by design.
@@ -167,8 +171,12 @@ def validate_record(record, confirm_only=False):
     if provenance == THIRD_PARTY:
         errors += [f"{field}: required for a {THIRD_PARTY} listing"
                    for field in THIRD_PARTY_TRAIL if not record.get(field)]
-        if record.get("lifecycle_state") == VISIBLE_STATE and record.get("verification_status", "unverified") == "unverified":
-            errors.append(f"verification_status: a {THIRD_PARTY} listing cannot be shown while unverified")
+        collaborating = record.get("verification_status") == COLLABORATION_CONFIRMED
+        if bool(record.get(COLLABORATION)) != collaborating:
+            errors.append(f"{COLLABORATION}: must be set exactly when verification_status is '{COLLABORATION_CONFIRMED}'")
+        if record.get("lifecycle_state") == VISIBLE_STATE and not collaborating:
+            errors.append(f"verification_status: a {THIRD_PARTY} listing may only be shown at "
+                          f"'{COLLABORATION_CONFIRMED}'; a public advert is not permission")
     if record.get("lifecycle_state") == VISIBLE_STATE and not (record.get("approved_at") and record.get(AVAILABILITY)):
         errors.append(f"lifecycle_state: '{VISIBLE_STATE}' also needs approved_at and {AVAILABILITY}")
     return errors
@@ -193,8 +201,9 @@ def visibility_gaps(record):
         gaps.append("approved_at is empty")
     if not record.get(AVAILABILITY):
         gaps.append(f"{AVAILABILITY} is empty")
-    if record.get("provenance") == THIRD_PARTY and record.get("verification_status", "unverified") == "unverified":
-        gaps.append(f"a {THIRD_PARTY} listing stays hidden while verification_status is 'unverified'")
+    if record.get("provenance") == THIRD_PARTY and record.get("verification_status") != COLLABORATION_CONFIRMED:
+        gaps.append(f"a {THIRD_PARTY} listing stays hidden until the advertiser accepts collaborating "
+                    f"(verification_status is '{record.get('verification_status', 'unverified')}')")
     return gaps
 
 
@@ -238,6 +247,18 @@ def plan_records(records, existing_by_reference, now=None, publish=False, confir
         record, errors = normalize_record(raw)
         if source_name and "source_name" not in record:
             record["source_name"] = source_name
+        # Which governance timestamps the source actually stated, before --publish
+        # fills the gaps. Only a stated one may overwrite what is already stored.
+        stated = {field for field in ("approved_at", AVAILABILITY) if record.get(field)}
+        if publish:
+            # Applied before validating, so forcing a property visible still has to
+            # satisfy every rule for being visible — including the collaboration gate.
+            record["lifecycle_state"] = VISIBLE_STATE
+            record.setdefault("approved_at", stamp)
+            # Honour a stated confirmation time. The advertiser may have confirmed
+            # hours before this runs, and stamping "now" would silently extend the
+            # seven-day window past what anyone actually verified.
+            record.setdefault(AVAILABILITY, stamp)
         errors = errors + validate_record(record, confirm_only=confirm_availability)
         reference = record.get("public_reference")
         if reference and reference in seen:
@@ -248,24 +269,12 @@ def plan_records(records, existing_by_reference, now=None, publish=False, confir
             plans.append({"row": position, "reference": reference, "action": "REJECT",
                           "errors": errors, "changes": {}, "record": record, "gaps": []})
             continue
-        # Which governance timestamps the source actually stated, before --publish
-        # fills the gaps. Only a stated one may overwrite what is already stored.
-        stated = {field for field in ("approved_at", AVAILABILITY) if record.get(field)}
         existing = existing_by_reference.get(reference)
         if confirm_availability and existing is None:
             plans.append({"row": position, "reference": reference, "action": "REJECT", "changes": {}, "gaps": [],
                           "errors": ["reconfirmación: no existe ese public_reference; reconfirmar no da de alta"],
                           "record": record})
             continue
-        if publish:
-            # An operator asserting, right now, that this property is verified and
-            # available. Never inferred from the file merely being imported.
-            record["lifecycle_state"] = VISIBLE_STATE
-            record.setdefault("approved_at", stamp)
-            # Honour a stated confirmation time. The advertiser may have confirmed
-            # hours before this runs, and stamping "now" would silently extend the
-            # seven-day window past what anyone actually verified.
-            record.setdefault(AVAILABILITY, stamp)
         if existing is None:
             plans.append({"row": position, "reference": reference, "action": "INSERT", "errors": [],
                           "changes": dict(record), "record": record, "gaps": visibility_gaps(record)})
