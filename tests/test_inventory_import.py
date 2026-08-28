@@ -176,6 +176,31 @@ class AvailabilitySemanticsTests(unittest.TestCase):
         self.assertEqual(list(plans[0]["changes"]), [importer.AVAILABILITY])
         self.assertEqual(plans[0]["changes"][importer.AVAILABILITY], NOW.isoformat())
 
+    def test_republishing_an_unchanged_property_is_a_noop(self):
+        """--publish twice must not re-stamp an approval nobody renewed."""
+        loaded = stored(lifecycle_state="active_confirmed", approved_at=FRESH,
+                        availability_confirmed_at=FRESH)
+        plans = importer.plan_records([demo(lifecycle_state="draft", approved_at=None,
+                                            availability_confirmed_at=None)],
+                                      {"TEST-DEMO-001": loaded}, now=NOW, publish=True)
+        self.assertEqual(plans[0]["action"], "NO-OP")
+
+    def test_republishing_with_a_stated_confirmation_does_update_it(self):
+        loaded = stored(lifecycle_state="active_confirmed", approved_at=FRESH,
+                        availability_confirmed_at=STALE)
+        again = "2026-08-28T09:30:00+00:00"
+        plans = importer.plan_records([demo(availability_confirmed_at=again)],
+                                      {"TEST-DEMO-001": loaded}, now=NOW, publish=True)
+        self.assertEqual(plans[0]["changes"], {importer.AVAILABILITY: again})
+
+    def test_publish_keeps_the_confirmation_time_that_was_actually_stated(self):
+        """Stamping "now" would extend the seven-day window past the real check."""
+        confirmed = "2026-08-28T09:30:00+00:00"
+        plans = importer.plan_records([demo(lifecycle_state="draft", approved_at=None,
+                                            availability_confirmed_at=confirmed)], {},
+                                      now=NOW, publish=True)
+        self.assertEqual(plans[0]["record"][importer.AVAILABILITY], confirmed)
+
     def test_publish_is_an_explicit_claim_that_sets_state_approval_and_availability(self):
         plans = importer.plan_records([demo(lifecycle_state="draft", approved_at=None,
                                             availability_confirmed_at=None)], {}, now=NOW, publish=True)

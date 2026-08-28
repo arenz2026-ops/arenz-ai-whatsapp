@@ -248,6 +248,9 @@ def plan_records(records, existing_by_reference, now=None, publish=False, confir
             plans.append({"row": position, "reference": reference, "action": "REJECT",
                           "errors": errors, "changes": {}, "record": record, "gaps": []})
             continue
+        # Which governance timestamps the source actually stated, before --publish
+        # fills the gaps. Only a stated one may overwrite what is already stored.
+        stated = {field for field in ("approved_at", AVAILABILITY) if record.get(field)}
         existing = existing_by_reference.get(reference)
         if confirm_availability and existing is None:
             plans.append({"row": position, "reference": reference, "action": "REJECT", "changes": {}, "gaps": [],
@@ -259,7 +262,10 @@ def plan_records(records, existing_by_reference, now=None, publish=False, confir
             # available. Never inferred from the file merely being imported.
             record["lifecycle_state"] = VISIBLE_STATE
             record.setdefault("approved_at", stamp)
-            record[AVAILABILITY] = stamp
+            # Honour a stated confirmation time. The advertiser may have confirmed
+            # hours before this runs, and stamping "now" would silently extend the
+            # seven-day window past what anyone actually verified.
+            record.setdefault(AVAILABILITY, stamp)
         if existing is None:
             plans.append({"row": position, "reference": reference, "action": "INSERT", "errors": [],
                           "changes": dict(record), "record": record, "gaps": visibility_gaps(record)})
@@ -272,7 +278,11 @@ def plan_records(records, existing_by_reference, now=None, publish=False, confir
             changes = _changed_fields(record, existing)
             if publish:
                 for field in ("lifecycle_state", "approved_at", AVAILABILITY):
-                    if record.get(field) and record[field] != existing.get(field):
+                    if not record.get(field) or record[field] == existing.get(field):
+                        continue
+                    # Re-running --publish must not re-stamp an approval nobody
+                    # renewed; that would make the command quietly non-idempotent.
+                    if field == "lifecycle_state" or field in stated or not existing.get(field):
                         changes[field] = record[field]
         merged = {**existing, **changes}
         action = "UPDATE" if changes else "NO-OP"

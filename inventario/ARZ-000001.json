@@ -1,0 +1,31 @@
+[{
+  "public_reference": "ARZ-000001",
+  "provenance": "third_party",
+  "source_name": "urbania",
+  "source_reference": "urbania:150921307",
+  "source_url": "https://urbania.pe/inmueble/clasificado/veclapin-venta-de-departamento-en-lobaton-lince-2-dormitorios-ascensor-150921307",
+  "advertiser_name": "INMOBILIARIA PUGA",
+  "observed_at": "2026-08-28T07:00:00+00:00",
+
+  "verification_status": "advertiser_contacted",
+  "verified_by": "PENDIENTE: quien confirmo con el anunciante",
+  "approved_by": "PENDIENTE: quien aprueba mostrarlo en ARENZ",
+  "verification_notes": "PENDIENTE: canal y respuesta textual del anunciante",
+  "availability_confirmed_at": "PENDIENTE: fecha y hora ISO-8601 de la respuesta del anunciante",
+
+  "operation": "venta",
+  "property_type": "departamento",
+  "district": "Lince",
+  "zone": "Lobatón",
+  "public_location_reference": "Av. Arequipa al 2600, Lobatón",
+  "price_amount": 550000,
+  "currency": "PEN",
+  "bedrooms": 2,
+  "bathrooms": 2,
+  "parking_spaces": 1,
+  "area_total_m2": 76.82,
+  "area_built_m2": 58.75,
+  "terrace_area_m2": 18.07,
+  "features": ["balcón terraza","cocina cerrada","acabados modernos","depósito","ascensor","seguridad","acepta mascotas","gimnasio","zona de parrillas","área social","juegos para niños","pet spa","terraza","sala de billar","sala de cine","coworking"],
+  "public_description": "Proyecto Lavanda, Av. Arequipa al 2600 (Urb. Lobatón, Lince). Área total 76.82 m2, área construida 58.75 m2, balcón terraza 18.07 m2. 2 dormitorios, principal con baño completo, cocina cerrada, 1 estacionamiento, 1 depósito. Antigüedad 3 años. Mantenimiento S/ 300."
+}]
