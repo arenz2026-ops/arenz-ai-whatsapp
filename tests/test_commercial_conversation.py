@@ -194,3 +194,22 @@ class CommercialConversationTests(unittest.TestCase):
         previous = {"state": {"active_search_id": "new", "recent_turns": [{"direction": "assistant", "content": "viejo"}],
             "searches": {"new": {"recent_turns": [{"direction": "assistant", "content": "actual"}]}}}}
         self.assertEqual(app.recent_conversation_turns(previous)[0]["content"], "actual")
+
+    def test_parking_followup_answers_missing_confirmation_without_repeating_unit(self):
+        item = {"public": {"public_reference": "C2-FIRST", "parking_spaces": None}}
+        previous = {"stage": "property_detail", "state": {"criteria": self.criteria,
+            "recent_turns": [{"direction": "assistant", "content": "Ref. C2-FIRST ¿Qué característica te gustaría confirmar de esta unidad?"}]}}
+        for text in ("qué falta para confirmar el estacionamiento", "¿La cochera está incluida?", "¿cuánto cuesta el estacionamiento?"):
+            reply, criteria, stage, _ = app.progressive_reply(previous, self.observe(parking_required=True), "fallback", text, inventory_matches=[item])
+            self.assertIn("no indica", reply)
+            self.assertIn("responsable del proyecto", reply)
+            self.assertIn("por separado", reply)
+            self.assertNotIn("Revisemos esta unidad", reply)
+            self.assertEqual(criteria, self.criteria)
+            self.assertEqual(stage, "property_detail")
+            previous["state"]["recent_turns"] = [{"direction": "assistant", "content": app.bounded_turn_content(reply, "assistant")}]
+        for spaces, expected in ((0, "sin estacionamiento incluido"), (1, "registra 1 estacionamiento")):
+            item["public"]["parking_spaces"] = spaces
+            reply = app.parking_question_reply(item)
+            self.assertIn(expected, reply)
+            self.assertIn("confirmación aún está pendiente", reply)
