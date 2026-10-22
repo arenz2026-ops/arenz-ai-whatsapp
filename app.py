@@ -1376,7 +1376,16 @@ def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, out
     return memory.commit_work(payload)
 
 
+def customer_visible_reply(message):
+    """Keep stable property identifiers in memory, outside customer-facing copy."""
+    message = re.sub(r"(?im)^\s*Ref\.\s*[a-z0-9-]+\s*\n?", "", message)
+    message = re.sub(r"(?i)(?:la\s+)?referencia\s+C2-[a-z0-9-]+", "la unidad elegida", message)
+    message = re.sub(r"(?i)\bC2-[a-z0-9-]+\b", "la unidad elegida", message)
+    return message.strip()
+
+
 def send_whatsapp_message(to, message):
+    message = customer_visible_reply(message)
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID: raise RuntimeError("WhatsApp credentials are not configured")
     response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages", headers={"Authorization":f"Bearer {WHATSAPP_TOKEN}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
     try:
