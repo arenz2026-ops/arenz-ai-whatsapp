@@ -27,7 +27,7 @@ GRAPH_API_VERSION = "v26.0"
 SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
 COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "C2 Inmobiliaria")
-INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND}. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?"
+INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?"
 user_sessions = {}
 
 OBSERVATION_SCHEMA = {
@@ -59,7 +59,7 @@ _slot_contract["required"].extend(COMMERCIAL_FIELDS)
 OBSERVATION_SCHEMA["properties"]["criteria_actions"]["items"]["properties"]["field"]["enum"].extend(COMMERCIAL_FIELDS)
 
 COMMERCIAL_POLICY = (
-    f" Preséntate como {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND}, con trato cálido y sin presión. "
+    f" Preséntate como {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}, con trato cálido y sin presión. "
     "Sigue los cinco filtros QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO de manera progresiva, "
     "con una sola pregunta por mensaje. Responde primero la consulta concreta; no repitas datos ya conocidos. "
     "En el primer saludo explica brevemente que ayudas a orientar su búsqueda, sin un menú numérico. "
@@ -313,7 +313,7 @@ def generate_reply(sender, text):
     session = user_sessions.get(sender, {"step":"start", "intent":None, "district":None, "budget":None, "bedrooms":None})
     if session["step"] == "start":
         session["step"] = "intent"; user_sessions[sender] = session
-        return INTRODUCTION if any(w in text for w in ("hola", "buenos días", "buenas tardes", "buenas noches")) else f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND}. ¿Deseas comprar, alquilar o vender?"
+        return INTRODUCTION if any(w in text for w in ("hola", "buenos días", "buenas tardes", "buenas noches")) else f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. ¿Deseas comprar, alquilar o vender?"
     if session["step"] == "intent":
         for intent, words in (("compra",("1","compr")), ("alquiler",("2","alquil")), ("venta",("3","vend"))):
             if any(w in text for w in words):
@@ -341,7 +341,7 @@ def generate_reply(sender, text):
 
 def generate_ai_reply(sender, text, fallback):
     if not OPENAI_API_KEY: return fallback
-    payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":f"Eres {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND} en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
+    payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":f"Eres {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
     try:
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}, json=payload, timeout=15)
         response.raise_for_status()
