@@ -16,7 +16,7 @@ class CommercialConversationTests(unittest.TestCase):
     def test_opening_is_one_question_without_numeric_menu(self):
         for observation in (None, {"intent": "greeting", "slot_updates": {}}):
             reply, _, _, _ = app.progressive_reply(None, observation, "old menu", "hola")
-            self.assertIn("asistente virtual de ARENZ", reply)
+            self.assertIn("Cecilia, asistente virtual de C2 Inmobiliaria", reply)
             self.assertEqual(reply.count("?"), 1)
             self.assertNotIn("1️⃣", reply)
 
@@ -72,3 +72,14 @@ class CommercialConversationTests(unittest.TestCase):
         instructions = app.build_observation_payload(None, "hola")["instructions"]
         for term in ("QUÉ", "CÓMO", "CUÁNDO", "DNI", "familia", "una sola pregunta"):
             self.assertIn(term, instructions)
+
+    def test_five_filters_are_available_to_advisor_and_preserve_false(self):
+        criteria = {**self.criteria, "parking_required": False, "payment_method": "credito",
+                    "credit_status": "en_tramite", "purchase_timeline": "sin urgencia"}
+        profile = app._profile_payload("test", criteria, "mensaje", "respuesta", "qualification")
+        snapshot = profile["conversation"]["qualification"]
+        self.assertEqual(set(snapshot), {"que", "donde", "cuanto", "como", "cuando"})
+        self.assertIs(snapshot["que"]["parking_required"], False)
+        self.assertEqual(snapshot["como"]["credit_status"], "en_tramite")
+        self.assertEqual(snapshot["cuando"]["purchase_timeline"], "sin urgencia")
+        self.assertEqual(app.qualification_snapshot({})["como"], {})
