@@ -1,4 +1,5 @@
 import hashlib, hmac, json, os, tempfile, unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("VERIFY_TOKEN", "test-verify-token")
@@ -497,7 +498,10 @@ class AppTests(unittest.TestCase):
     def test_complete_search_with_empty_inventory_keeps_deterministic_reply(self):
         observation={"intent":"property_search","slot_updates":{"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":2,"property_type":"departamento","preferences":[]},"handoff":False,"assistant_reply":"Busco un departamento. Humor y beneficios."}
         reply, _, stage, _ = app.progressive_reply(None, observation, "fallback", inventory_matches=[])
-        self.assertEqual(stage,"qualified"); self.assertEqual(reply, app.inventory_reply([]))
+        self.assertEqual(stage,"qualified")
+        self.assertTrue(reply.startswith(app.inventory_reply([])))
+        self.assertIn("contado", reply)
+        self.assertEqual(reply.count("?"), 1)
 
     def test_general_question_and_handoff_do_not_reset_conversation(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Miraflores"],"budget_max":180000,"currency":"USD","bedrooms":3,"property_type":"departamento"}}}
@@ -793,7 +797,7 @@ class AppTests(unittest.TestCase):
                          currency="PEN", budget_max=600000)), [])
 
     def test_third_party_with_collaboration_and_fresh_availability_is_eligible(self):
-        self.assertTrue(app.property_is_eligible(self._row()))
+        self.assertTrue(app.property_is_eligible(self._row(), now=datetime.fromisoformat("2026-08-28T00:00:00+00:00")))
 
     def test_expired_availability_hides_it_even_with_collaboration_in_force(self):
         row = self._row(availability_confirmed_at="2026-07-01T00:00:00+00:00")
@@ -805,7 +809,7 @@ class AppTests(unittest.TestCase):
         self.assertFalse(app.property_is_eligible(row))
 
     def test_own_stock_needs_no_collaboration(self):
-        self.assertTrue(app.property_is_eligible({**INVENTORY_ROW, "provenance": "own"}))
+        self.assertTrue(app.property_is_eligible({**INVENTORY_ROW, "provenance": "own"}, now=datetime.fromisoformat("2026-08-28T00:00:00+00:00")))
 
 
 if __name__ == "__main__": unittest.main()
