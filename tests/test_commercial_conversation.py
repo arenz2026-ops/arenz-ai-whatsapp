@@ -93,3 +93,20 @@ class CommercialConversationTests(unittest.TestCase):
                 self.assertNotIn("inventario", reply)
                 self.assertEqual(criteria, self.criteria)
                 self.assertEqual(stage, "conversation")
+
+    def test_explicit_budget_currency_does_not_repeat_currency_question(self):
+        for text, amount, currency in (("presupuesto de 120000 dolares",120000,"USD"),
+                                       ("120.000 dólares",120000,"USD"),
+                                       ("120,000 USD",120000,"USD"),
+                                       ("presupuesto 450000 soles",450000,"PEN")):
+            previous = {"state": {"criteria": {"operation": "compra", "property_type": "departamento", "districts": ["Surco"]}}}
+            observation = self.observe()
+            observation["assistant_reply"] = "¿Tu presupuesto es en USD o PEN?"
+            reply, criteria, _, _ = app.progressive_reply(previous, observation, "fallback", text)
+            self.assertEqual(criteria["budget_max"], amount)
+            self.assertEqual(criteria["currency"], currency)
+            self.assertNotIn("USD o PEN", reply)
+            fallback = app.with_explicit_operation(None, text)
+            self.assertEqual(fallback["slot_updates"]["currency"], currency)
+        self.assertIsNone(app.with_explicit_operation(None, "120000"))
+        self.assertIsNone(app.with_explicit_operation(None, "USD o PEN"))
