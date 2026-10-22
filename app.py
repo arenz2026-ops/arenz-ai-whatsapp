@@ -415,6 +415,16 @@ def response_usage_metadata(response_body, started_at):
     }
 
 
+def bounded_turn_content(content, direction):
+    content = content.strip()
+    if direction != "assistant" or len(content) <= 280:
+        return content[:280]
+    refs = re.findall(r"\bRef\.\s*[A-Za-z0-9-]+", content)[:3]
+    prefix = " · ".join(refs) if refs else content[:60]
+    prefix = prefix[:100]
+    return prefix + " … " + content[-(277 - len(prefix)):]
+
+
 def recent_conversation_turns(previous, limit=4):
     """Return a small durable dialogue window, without internal observation data."""
     state = previous.get("state", {}) if isinstance(previous, dict) else {}
@@ -425,12 +435,12 @@ def recent_conversation_turns(previous, limit=4):
             continue
         direction, content = turn.get("direction"), turn.get("content")
         if direction in ("user", "assistant") and isinstance(content, str) and content.strip():
-            clean.append({"direction": direction, "content": content.strip()[:280]})
+            clean.append({"direction": direction, "content": bounded_turn_content(content, direction)})
     if not clean and isinstance(state, dict):
         for direction, key in (("user", "last_user_message"), ("assistant", "last_assistant_message")):
             content = state.get(key)
             if isinstance(content, str) and content.strip():
-                clean.append({"direction": direction, "content": content.strip()[:280]})
+                clean.append({"direction": direction, "content": bounded_turn_content(content, direction)})
     return clean[-limit:]
 
 
@@ -1110,6 +1120,26 @@ def commercial_next_question(criteria):
     return None
 
 
+def inventory_conversation_reply(matches, criteria):
+    """Keep the verified listing reply and one useful next step on every path."""
+    reply = inventory_reply(matches)
+    if matches:
+        if not criteria.get("purchase_timeline"):
+            dates = list(dict.fromkeys(m.group(1) for item in matches
+                for m in re.finditer(r"Entrega según fuente: ([^.]+)\.", item["public"].get("public_description") or "")))
+            if dates:
+                question = f"Estas opciones indican entrega en {' / '.join(dates)}. ¿Para cuándo necesitas tener el departamento?"
+            else:
+                question = commercial_next_question(criteria)
+        else:
+            question = commercial_next_question(criteria)
+        if not question:
+            question = "¿Cuál de estas unidades te gustaría revisar con más detalle?"
+    else:
+        question = "¿Prefieres ampliar las zonas de búsqueda o revisar el presupuesto?"
+    return reply + "\n\n" + question
+
+
 def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     greeting = re.sub(r"[^\w\s]", "", (user_text or "").casefold()).strip()
@@ -1151,7 +1181,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if intent == "general_question":
         natural_reply = usable_assistant_reply(observation, "conversation")
         if inventory_matches is not None and inventory_ready(criteria):
-            return inventory_reply(inventory_matches), criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
+            return inventory_conversation_reply(inventory_matches, criteria), criteria, "qualified", "Consulta de inventario con siguiente paso comercial."
         if natural_reply:
             return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
         return "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?", criteria, "conversation", "Consulta libre; criterios conservados."
@@ -1165,10 +1195,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
                 return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
     if inventory_matches is not None and inventory_ready(criteria):
-        reply = inventory_reply(inventory_matches)
-        question = commercial_next_question(criteria)
-        if question:
-            reply += "\n\n" + question
+        reply = inventory_conversation_reply(inventory_matches, criteria)
         return reply, criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
     question = commercial_next_question(criteria)
     if question and criteria.get("operation") in {"compra", "alquiler"}:
