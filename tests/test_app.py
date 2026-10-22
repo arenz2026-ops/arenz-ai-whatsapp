@@ -500,7 +500,7 @@ class AppTests(unittest.TestCase):
         reply, _, stage, _ = app.progressive_reply(None, observation, "fallback", inventory_matches=[])
         self.assertEqual(stage,"qualified")
         self.assertTrue(reply.startswith(app.inventory_reply([])))
-        self.assertIn("contado", reply)
+        self.assertIn("¿Prefieres ampliar las zonas", reply)
         self.assertEqual(reply.count("?"), 1)
 
     def test_general_question_and_handoff_do_not_reset_conversation(self):

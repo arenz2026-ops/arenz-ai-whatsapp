@@ -138,3 +138,29 @@ class CommercialConversationTests(unittest.TestCase):
         self.assertIn("estacionamiento por confirmar", reply)
         self.assertNotIn("250000.0", reply)
         self.assertNotIn("None", reply)
+
+    def test_inventory_always_continues_for_search_and_general_question(self):
+        public = {"public_reference": "C2-TEST", "property_type": "departamento", "district": "Surco",
+            "currency": "USD", "price_amount": 120000, "bedrooms": 3, "parking_spaces": 1,
+            "media": [], "provenance": "partner", "public_description": "Proyecto TEST; unidad 306. Entrega según fuente: 1er Tri 2029."}
+        matches = [{"public": public}]
+        for intent in ("property_search", "general_question"):
+            observation = self.observe()
+            observation["intent"] = intent
+            reply, criteria, _, _ = app.progressive_reply(self.previous, observation, "fallback", "muéstrame opciones", inventory_matches=matches)
+            self.assertTrue(reply.endswith("¿Para cuándo necesitas tener el departamento?"))
+            self.assertIn("1er Tri 2029", reply)
+            self.assertEqual(reply.count("?"), 1)
+            known = {**self.criteria, "payment_method": "contado", "purchase_timeline": "sin urgencia"}
+            previous = {"state": {"criteria": known}}
+            reply, _, _, _ = app.progressive_reply(previous, observation, "fallback", "muéstrame opciones", inventory_matches=matches)
+            self.assertTrue(reply.endswith("¿Cuál de estas unidades te gustaría revisar con más detalle?"))
+            self.assertNotIn("¿Para cuándo", reply)
+
+    def test_long_inventory_context_keeps_the_final_question_and_references(self):
+        text = "Ref. C2-A\n" + "detalle " * 100 + "Ref. C2-B\n¿Para cuándo necesitas tener el departamento?"
+        context = app.bounded_turn_content(text, "assistant")
+        self.assertLessEqual(len(context), 280)
+        self.assertIn("Ref. C2-A", context)
+        self.assertIn("Ref. C2-B", context)
+        self.assertTrue(context.endswith("¿Para cuándo necesitas tener el departamento?"))
