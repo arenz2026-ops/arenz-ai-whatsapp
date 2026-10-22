@@ -42,6 +42,36 @@ OBSERVATION_SCHEMA = {
     "required": ["intent", "slot_updates", "criteria_change", "criteria_actions", "user_question", "next_action", "handoff", "assistant_reply"]
 }
 
+# ARENZ commercial qualification: what, where, budget, payment, and timing.
+COMMERCIAL_FIELDS = {
+    "payment_method": {"type": ["string", "null"], "enum": ["contado", "credito", "mixto", "por_definir", "prefiere_no_indicar", None]},
+    "credit_status": {"type": ["string", "null"], "enum": ["aprobado", "en_tramite", "por_evaluar", "prefiere_no_indicar", None]},
+    "purchase_timeline": {"type": ["string", "null"]},
+    "area_min_m2": {"type": ["number", "null"]},
+    "bathrooms_min": {"type": ["number", "null"]},
+}
+_slot_contract = OBSERVATION_SCHEMA["properties"]["slot_updates"]
+_slot_contract["properties"].update(COMMERCIAL_FIELDS)
+_slot_contract["required"].extend(COMMERCIAL_FIELDS)
+OBSERVATION_SCHEMA["properties"]["criteria_actions"]["items"]["properties"]["field"]["enum"].extend(COMMERCIAL_FIELDS)
+
+COMMERCIAL_POLICY = (
+    " Actúa como asistente virtual de ARENZ, con trato cálido y sin presión. "
+    "Sigue los cinco filtros QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO de manera progresiva, "
+    "con una sola pregunta por mensaje. Responde primero la consulta concreta; no repitas datos ya conocidos. "
+    "En el primer saludo explica brevemente que ayudas a orientar su búsqueda, sin un menú numérico. "
+    "CÓMO: registra payment_method y credit_status solo si el cliente los declara; "
+    "no deduzcas solvencia, aprobación de crédito ni capacidad de compra. Nunca pidas DNI, "
+    "documentos bancarios ni ingresos para iniciar una búsqueda. CUÁNDO: registra purchase_timeline "
+    "literalmente, incluyendo 'sin urgencia' o una negativa a indicarlo. Una negativa es válida: no insistas. "
+    "Registra área mínima y baños mínimos en area_min_m2 y bathrooms_min cuando se indiquen. "
+    "Si quiere consultarlo con su familia o dice que escribirá después, respeta su espacio: "
+    "no añadas preguntas, no prometas seguimientos automáticos ni afirmes que hay una cita agendada. "
+    "No uses ejemplos de clientes del contexto como inventario ni como datos de otro cliente. "
+    "Solo presenta propiedades devueltas por el inventario autorizado; nunca inventes fotos, precios o disponibilidad. "
+    "Para una visita o un asesor, registra una solicitud sin prometer una fecha confirmada."
+)
+
 
 class LeadStore:
     def __init__(self, path): self.path = path
@@ -400,12 +430,14 @@ def recent_conversation_turns(previous, limit=4):
 def build_observation_payload(previous, text):
     """Build a bounded request from durable criteria and recent dialogue."""
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
-    return {
+    payload = {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
         "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. property_type debe usar solo valores canónicos: departamento es el valor para departamento y apartamento; nunca devuelvas apartamento. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, exclusivamente sobre búsqueda inmobiliaria, criterios, aclaraciones, compra, alquiler, venta o derivación a un asesor. No introduzcas humor, temas generales, recomendaciones no inmobiliarias ni contenido accesorio; nunca afirmes disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
+    payload["instructions"] += COMMERCIAL_POLICY
+    return payload
 
 
 def observe_conversation(sender, text, deterministic_reply, timings=None, previous=None, previous_loaded=False):
@@ -557,6 +589,17 @@ def validated_slot_updates(slot_updates):
         preferences = [value.strip().lower() for value in preferences if isinstance(value, str) and 1 <= len(value.strip()) <= 80][:10]
         if preferences:
             clean["preferences"] = preferences
+    for key in ("payment_method", "credit_status"):
+        value = slot_updates.get(key)
+        if value is not None and value in COMMERCIAL_FIELDS[key]["enum"]:
+            clean[key] = value
+    timeline = slot_updates.get("purchase_timeline")
+    if isinstance(timeline, str) and 1 <= len(timeline.strip()) <= 120:
+        clean["purchase_timeline"] = timeline.strip()
+    for key, limit in (("area_min_m2", 100000), ("bathrooms_min", 30)):
+        value = slot_updates.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= limit:
+            clean[key] = value
     return clean
 
 
@@ -568,7 +611,8 @@ def conversation_state(previous):
         criteria = searches[active].get("criteria", {})
     else:
         criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
-    return {key: criteria.get(key) for key in ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences") if criteria.get(key) not in (None, [], "")}
+    keys = ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences", *COMMERCIAL_FIELDS)
+    return {key: criteria.get(key) for key in keys if criteria.get(key) not in (None, [], "")}
 
 
 def active_search_id(previous):
@@ -624,12 +668,12 @@ def search_state_for_turn(previous, observation, user_text=None):
 def apply_criteria_actions(criteria, actions):
     """Apply explicit mutations so removed values cannot reappear from stale state."""
     result = dict(criteria)
-    scalar_update_fields = {"budget_max", "currency", "bedrooms", "property_type", "parking_required"}
+    scalar_update_fields = {"budget_max", "currency", "bedrooms", "property_type", "parking_required", *COMMERCIAL_FIELDS}
     for action in actions if isinstance(actions, list) else []:
         if not isinstance(action, dict):
             continue
         kind, field, values = action.get("action"), action.get("field"), action.get("values")
-        if kind not in {"ADD", "UPDATE", "REMOVE"} or field not in {"districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences"}:
+        if kind not in {"ADD", "UPDATE", "REMOVE"} or field not in {"districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences", *COMMERCIAL_FIELDS}:
             continue
         value_for_validation = values
         if kind == "UPDATE" and field in scalar_update_fields and isinstance(values, list) and len(values) == 1:
@@ -667,7 +711,7 @@ def usable_assistant_reply(observation, route):
     if route not in {"conversation", "qualification"} or not isinstance(reply, str):
         return None
     reply = reply.strip()
-    if not reply or len(reply) > 280:
+    if not reply or len(reply) > 280 or reply.count("?") > 1:
         return None
     prohibited = ("tenemos disponible", "encontré", "encontre", "hay disponibilidad", "opción recomendada", "opcion recomendada", "la recomendada", "revisando disponibilidad", "cuenta con", "te mostraré las opciones", "te mostrare las opciones")
     return None if any(term in reply.lower() for term in prohibited) or not assistant_reply_is_real_estate_scoped(reply) else reply
@@ -761,6 +805,14 @@ def property_matches_criteria(property_row, criteria):
     if criteria.get("parking_required") is True and not property_row.get("parking_spaces"):
         return False
     try:
+        for field, minimum in (("bedrooms", criteria.get("bedrooms")),
+                               ("bathrooms", criteria.get("bathrooms_min")),
+                               ("area_total_m2", criteria.get("area_min_m2"))):
+            actual = property_row.get(field)
+            if field == "area_total_m2" and actual is None:
+                actual = property_row.get("area_m2")
+            if minimum is not None and (actual is None or float(actual) < float(minimum)):
+                return False
         return float(property_row["price_amount"]) <= float(criteria["budget_max"])
     except (KeyError, TypeError, ValueError):
         return False
@@ -957,13 +1009,40 @@ def _handoff_payload(phone, handoff, search_id, criteria):
             "contact_preference": "phone_call" if consent else None, "callback_consent": consent}
 
 
+def customer_pause_reply(text):
+    normalized = " ".join((text or "").casefold().split())
+    if any(phrase in normalized for phrase in ("no me escribas", "no me contacten", "no me contactes", "no me interesa")):
+        return "Entendido. Respetaré tu decisión y cierro esta consulta. Gracias por escribir a ARENZ.", "do_not_contact"
+    family_review = re.search(r"(?:voy a|quiero|necesito|debo|tengo que|lo)\s+consult\w*.{0,35}(?:familia|hijas|hijos|esposa|esposo|pareja)", normalized)
+    if family_review or any(phrase in normalized for phrase in ("consultar con mi familia", "consultarlo con mi familia", "consultarlo con mis hijas", "consultar con mis hijas", "consultarlo con mi esposa", "consultarlo con mi esposo", "lo voy a consultar", "te escribo después", "te escribo luego", "yo te aviso", "yo les aviso")):
+        return "Claro, revísalo con tranquilidad. Cuando quieras retomar la búsqueda, escríbeme por aquí; con gusto te ayudo.", "awaiting_customer"
+    return None
+
+
+def commercial_next_question(criteria):
+    if criteria.get("operation") == "compra" and not criteria.get("payment_method"):
+        return "Para orientarte mejor, ¿piensas comprar al contado, con crédito o aún estás evaluando cómo financiarlo?"
+    if not criteria.get("purchase_timeline"):
+        return "¿Para cuándo te gustaría concretarlo, o por ahora estás evaluando opciones sin urgencia?"
+    return None
+
+
 def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
     observation = with_explicit_operation(observation, user_text)
     observation = sanitize_new_search_observation(observation, user_text)
+    pause = customer_pause_reply(user_text)
+    if pause:
+        criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
+        if isinstance(observation, dict):
+            criteria = apply_criteria_actions(criteria, observation.get("criteria_actions"))
+            criteria.update(validated_slot_updates(observation.get("slot_updates")))
+        return pause[0], criteria, pause[1], "Cliente solicita espacio o finalizar la consulta; sin seguimiento automático."
     if not observation:
         if is_new_search_request(user_text):
             return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
+        if (user_text or "").strip().casefold() in {"hola", "buenos días", "buenas tardes", "buenas noches"} and not conversation_state(previous):
+            return "Hola, soy el asistente virtual de ARENZ. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?", {}, "qualification", "Apertura cálida sin cuestionario."
         return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
     if prior_criteria is None:
         _, prior_criteria = search_state_for_turn(previous, observation, user_text)
@@ -973,6 +1052,8 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         criteria["preferences"] = list(dict.fromkeys(criteria.get("preferences", []) + slots.pop("preferences")))
     criteria.update(slots)
     intent = observation.get("intent")
+    if intent == "greeting" and not criteria and not conversation_state(previous):
+        return "Hola, soy el asistente virtual de ARENZ. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?", criteria, "qualification", "Apertura cálida; escuchar la necesidad antes de calificar."
     handoff = detected_handoff(previous, observation, user_text, inventory_matches)
     if handoff:
         reply, summary = handoff_reply(handoff)
@@ -994,7 +1075,14 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
                 return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
     if inventory_matches is not None and inventory_ready(criteria):
-        return inventory_reply(inventory_matches), criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
+        reply = inventory_reply(inventory_matches)
+        question = commercial_next_question(criteria)
+        if question:
+            reply += "\n\n" + question
+        return reply, criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
+    question = commercial_next_question(criteria)
+    if question and criteria.get("operation") in {"compra", "alquiler"}:
+        return "Tengo registrados tus criterios; aún no cuento con inventario verificado conectado para mostrarte propiedades reales. " + question, criteria, "qualified", "Completar los cinco filtros ARENZ sin repetir criterios conocidos."
     return "Tengo registrados tus criterios. Aún no cuento con inventario verificado conectado para mostrarte propiedades reales; puedo derivar tu solicitud a un asesor.", criteria, "qualified", "Criterios completos; inventario no conectado, sin afirmaciones sobre propiedades."
 
 
