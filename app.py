@@ -428,6 +428,10 @@ def bounded_turn_content(content, direction):
 def recent_conversation_turns(previous, limit=4):
     """Return a small durable dialogue window, without internal observation data."""
     state = previous.get("state", {}) if isinstance(previous, dict) else {}
+    searches = state.get("searches", {}) if isinstance(state, dict) else {}
+    active = state.get("active_search_id") if isinstance(state, dict) else None
+    if isinstance(searches, dict) and isinstance(searches.get(active), dict):
+        state = searches[active]
     turns = state.get("recent_turns", []) if isinstance(state, dict) else []
     clean = []
     for turn in turns if isinstance(turns, list) else []:
@@ -1054,6 +1058,38 @@ def mentioned_property_reference(text, presented):
     return None
 
 
+def latest_presented_references(previous):
+    for turn in reversed(recent_conversation_turns(previous)):
+        if turn["direction"] == "assistant":
+            return list(dict.fromkeys(PRESENTED_REFERENCE_PATTERN.findall(turn["content"])))
+    return []
+
+
+def selected_option(previous, text):
+    normalized = (text or "").casefold().strip().strip(".!¡¿?")
+    match = re.fullmatch(r"(?:la\s+|el\s+)?(?:opci[oó]n\s*)?([1-9])", normalized)
+    ordinal = {"la primera": 1, "el primero": 1, "primera": 1,
+               "la segunda": 2, "el segundo": 2, "segunda": 2,
+               "la tercera": 3, "el tercero": 3, "tercera": 3}.get(normalized)
+    if not match and ordinal is None:
+        return None
+    turns = recent_conversation_turns(previous)
+    last = next((t["content"] for t in reversed(turns) if t["direction"] == "assistant"), "")
+    references = latest_presented_references(previous)
+    # A bare count answers a bedroom/payment question, not an old property list.
+    if not references or not re.search(r"cu[aá]l de estas|opci[oó]n|elegiste|unidad.*confirmar", last, re.I):
+        return None
+    index = int(match.group(1)) if match else ordinal
+    return {"index": index, "reference": references[index - 1] if index <= len(references) else None,
+            "count": len(references)}
+
+
+def selected_unit_reply(item):
+    details = inventory_reply([item]).split("\n", 1)[1].strip()
+    details = re.sub(r"^1\.\s*", "", details)
+    return "Revisemos esta unidad:\n\n" + details + "\n\n¿Qué característica te gustaría confirmar de esta unidad?"
+
+
 def handoff_request_type(text, reference):
     """Deterministic escalation types. Visit and interest need a real reference."""
     normalized = " ".join((text or "").casefold().split())
@@ -1158,6 +1194,17 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
             criteria = apply_criteria_actions(criteria, observation.get("criteria_actions"))
             criteria.update(validated_slot_updates(observation.get("slot_updates")))
         return pause[0], criteria, pause[1], "Cliente solicita espacio o finalizar la consulta; sin seguimiento automático."
+    selection = selected_option(previous, user_text)
+    if selection:
+        criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
+        if not selection["reference"]:
+            return f"Te mostré {selection['count']} opciones. ¿Cuál de esas opciones deseas revisar?", criteria, "qualified", "Selección fuera de rango; sin inventar una unidad."
+        if inventory_matches is None:
+            return "Revisaré la unidad que seleccionaste.", criteria, "property_detail", f"Selección de la referencia {selection['reference']}."
+        item = next((m for m in inventory_matches if m["public"]["public_reference"] == selection["reference"]), None)
+        if item:
+            return selected_unit_reply(item), criteria, "property_detail", f"Detalle de la referencia seleccionada {selection['reference']}."
+        return "No pude reconfirmar la unidad que elegiste entre las opciones actuales. ¿Quieres revisar las alternativas vigentes?", criteria, "conversation", "Unidad anterior no reconfirmada; no se sustituye por otra posición."
     if not observation:
         if is_new_search_request(user_text):
             return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
@@ -1178,6 +1225,12 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if handoff:
         reply, summary = handoff_reply(handoff)
         return reply, criteria, "handoff", summary
+    if (previous or {}).get("stage") == "property_detail" and intent == "general_question" and inventory_matches is not None and criteria == conversation_state(previous):
+        references = latest_presented_references(previous)
+        if len(references) == 1:
+            item = next((m for m in inventory_matches if m["public"]["public_reference"] == references[0]), None)
+            if item:
+                return selected_unit_reply(item), criteria, "property_detail", f"Consulta sobre la unidad seleccionada {references[0]}."
     if intent == "general_question":
         natural_reply = usable_assistant_reply(observation, "conversation")
         if inventory_matches is not None and inventory_ready(criteria):
@@ -1360,6 +1413,9 @@ def receive_webhook():
             # This prevents an explicit operation from updating the prior search only in
             # the response layer while persistence still sees the unnormalized input.
             effective_observation = with_explicit_operation(observation, text)
+            if selected_option(previous, text):
+                effective_observation = {**(effective_observation or {}), "intent": "confirmation",
+                                         "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}
             turn_state, turn_prior_criteria = search_state_for_turn(previous, effective_observation, text)
             reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria)
             inventory_store = get_inventory_store()
