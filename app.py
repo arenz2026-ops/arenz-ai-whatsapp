@@ -542,11 +542,51 @@ def explicit_operation_from_text(text):
     return matches[0]
 
 
+SPANISH_NUMBERS = dict(zip(
+    "cero uno un una dos tres cuatro cinco seis siete ocho nueve diez once doce trece catorce quince dieciseis diecisiete dieciocho diecinueve veinte veintiuno veintiun veintidos veintitres veinticuatro veinticinco veintiseis veintisiete veintiocho veintinueve treinta cuarenta cincuenta sesenta setenta ochenta noventa cien ciento doscientos trescientos cuatrocientos quinientos seiscientos setecientos ochocientos novecientos".split(),
+    list(range(0, 2)) + [1, 1] + list(range(2, 22)) + [21] + list(range(22, 30)) + [30, 40, 50, 60, 70, 80, 90, 100, 100, 200, 300, 400, 500, 600, 700, 800, 900]))
+
+
+def explicit_money_amount(text):
+    """Read a single currency-adjacent amount, including Spanish whole numbers."""
+    normalized = text.translate(str.maketrans("áéíóú", "aeiou"))
+    units = r"(?:dolares?|usd|soles|pen)\b"
+    number = r"\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?(?:\s+mil)?"
+    words = "|".join(sorted((*SPANISH_NUMBERS, "y", "mil", "millon", "millones"), key=len, reverse=True))
+    written = rf"(?:\b(?:{words})\s+)+"
+    candidates = re.findall(rf"(?<![\w.])({number}|{written})\s*(?={units})", normalized)
+    for match in re.finditer(rf"(?:us\$|\$|s/)\s*({number})(?![\w.,])", normalized):
+        if not re.match(rf"\s*{units}", normalized[match.end():]):
+            candidates.append(match.group(1))
+    candidates += re.findall(rf"(?<![\w.])({number})\s*(?=\$)", normalized)
+    if len(candidates) != 1:
+        return None
+    value = candidates[0].strip()
+    if value[0].isdigit():
+        multiplier = 1000 if value.endswith("mil") else 1
+        value = value.removesuffix("mil").strip()
+        value = re.sub(r"[.,](?=\d{3}(?:[.,]|$))", "", value).replace(",", ".")
+        return float(value) * multiplier
+    total = group = 0
+    for token in value.split():
+        if token == "y":
+            continue
+        if token == "mil":
+            total += (group or 1) * 1000
+            group = 0
+        elif token in {"millon", "millones"}:
+            total = (total + group or 1) * 1000000
+            group = 0
+        else:
+            group += SPANISH_NUMBERS[token]
+    return float(total + group)
+
+
 def with_explicit_operation(observation, text):
     """Overlay a deterministic explicit operation while preserving extractor output."""
     operation = explicit_operation_from_text(text)
     normalized = (text or "").casefold()
-    usd = bool(re.search(r"\b(?:d[oó]lares?|usd)\b|us\$", normalized))
+    usd = bool(re.search(r"\b(?:d[oó]lares?|usd)\b|\$", normalized))
     pen = bool(re.search(r"\b(?:soles|sol|pen)\b|s/", normalized))
     currency = "USD" if usd and not pen else "PEN" if pen and not usd else None
     if not operation and not currency:
@@ -558,11 +598,9 @@ def with_explicit_operation(observation, text):
     if currency:
         slots["currency"] = currency
         # A single explicit amount next to its currency is safe even without AI.
-        amounts = re.findall(r"(?<![\w.])\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?\s*(?=d[oó]lares?\b|usd\b|soles\b|pen\b)", normalized)
-        if len(amounts) == 1:
-            amount = amounts[0].strip()
-            amount = re.sub(r"[.,](?=\d{3}(?:[.,]|$))", "", amount).replace(",", ".")
-            slots["budget_max"] = float(amount)
+        amount = explicit_money_amount(normalized)
+        if amount is not None:
+            slots["budget_max"] = amount
         # Discard a stale generated question about a currency just supplied.
         if re.search(r"moneda|usd|pen|d[oó]lares|soles", str(result.get("assistant_reply", "")), re.I):
             result["assistant_reply"] = None
