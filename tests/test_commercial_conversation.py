@@ -110,3 +110,13 @@ class CommercialConversationTests(unittest.TestCase):
             self.assertEqual(fallback["slot_updates"]["currency"], currency)
         self.assertIsNone(app.with_explicit_operation(None, "120000"))
         self.assertIsNone(app.with_explicit_operation(None, "USD o PEN"))
+
+    def test_dollar_symbol_and_written_spanish_budget(self):
+        for text in ("$120000", "$ 120.000", "US$120,000", "120000 $", "$120000 dólares",
+                     "ciento veinte mil dólares", "ciento veinte mil dolares", "120 mil dólares"):
+            observation = app.with_explicit_operation(None, text)
+            self.assertEqual(observation["slot_updates"]["currency"], "USD", text)
+            self.assertEqual(observation["slot_updates"]["budget_max"], 120000, text)
+        self.assertEqual(app.explicit_money_amount("doscientos treinta y cinco mil dolares"), 235000)
+        self.assertIsNone(app.explicit_money_amount("entre $100000 y $120000"))
+        self.assertIsNone(app.with_explicit_operation(None, "$120000 o 450000 soles"))
