@@ -974,19 +974,41 @@ def inventory_reply(matches):
     borrowed = any(is_third_party(item["public"]) for item in matches)
     # Calling a listing ARENZ neither owns nor captured "verificada" would be exactly
     # the false claim this classification exists to prevent.
-    lines = ["Encontré estas opciones que coinciden con tus criterios:" if borrowed
-             else "Encontré opciones verificadas que coinciden con tus criterios:"]
-    for item in matches:
+    own_stock = all((item["public"].get("provenance") or "own") == "own" for item in matches)
+    lines = ["Encontré opciones verificadas que coinciden con tus criterios:" if own_stock
+             else "Encontré estas opciones para tu búsqueda:"]
+    for index, item in enumerate(matches, 1):
         public = item["public"]
-        details = [f"Ref. {public['public_reference']}", public["property_type"].capitalize(), public["district"], f"{public['currency']} {public['price_amount']}", f"{public['bedrooms']} dormitorios"]
+        description = public.get("public_description") or ""
+        identity = re.match(r"^Proyecto (.*?); unidad (.*?)\.(?:\s|$)", description)
+        title = f"{identity.group(1)} · Unidad {identity.group(2)}" if identity else public["property_type"].capitalize()
+        amount = f"{float(public['price_amount']):,.2f}".rstrip("0").rstrip(".")
+        amount = amount.translate(str.maketrans({",": ".", ".": ","}))
+        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
+        lines.append(f"\n{index}. {title} · {public['district']}")
+        lines.append(f"Ref. {public['public_reference']}")
+        details = [f"{symbol} {amount}"]
+        if public.get("bedrooms") is not None:
+            details.append(f"{public['bedrooms']:g} dormitorios")
         area = public.get("area_total_m2") or public.get("area_m2")
         if area:
-            details.append(f"{area} m2")
+            details.append(f"{float(area):g}".replace(".", ",") + " m²")
+        if public.get("bathrooms") is not None:
+            details.append(f"{float(public['bathrooms']):g}".replace(".", ",") + " baños")
         if public.get("parking_spaces"):
             details.append(f"{public['parking_spaces']} estacionamiento(s)")
+        elif public.get("parking_spaces") == 0:
+            details.append("sin estacionamiento incluido")
+        else:
+            details.append("estacionamiento por confirmar")
         if is_third_party(public):
             details.append(THIRD_PARTY_LABEL)
         lines.append(" · ".join(details) + ".")
+        if identity:
+            for label, pattern in (("Piso", r"\bPiso ([^.]+)\."), ("Entrega según fuente", r"Entrega según fuente: ([^.]+)\.")):
+                value = re.search(pattern, description)
+                if value:
+                    lines.append(f"{label}: {value.group(1)}.")
         if public["media"]:
             first_media = public["media"][0]
             lines.append(f"{first_media['media_type'].capitalize()}: {first_media['media_url']}")
