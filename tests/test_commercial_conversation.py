@@ -16,7 +16,7 @@ class CommercialConversationTests(unittest.TestCase):
     def test_opening_is_one_question_without_numeric_menu(self):
         for observation in (None, {"intent": "greeting", "slot_updates": {}}):
             reply, _, _, _ = app.progressive_reply(None, observation, "old menu", "hola")
-            self.assertIn("Cecilia, asistente virtual de C2 Inmobiliaria", reply)
+            self.assertIn("Cecilia, asesora de C2 Inmobiliaria", reply)
             self.assertEqual(reply.count("?"), 1)
             self.assertNotIn("1️⃣", reply)
 
