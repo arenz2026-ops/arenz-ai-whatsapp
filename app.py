@@ -574,7 +574,7 @@ def conversation_state(previous):
 def active_search_id(previous):
     state = previous.get("state", {}) if isinstance(previous, dict) else {}
     active = state.get("active_search_id") if isinstance(state, dict) else None
-    return active if isinstance(active, str) else None
+    return active if isinstance(active, str) and active != "legacy" else None
 
 
 def is_new_search_request(text):
@@ -599,8 +599,13 @@ def search_state_for_turn(previous, observation, user_text=None):
     searches = dict(old_state.get("searches", {})) if isinstance(old_state.get("searches"), dict) else {}
     active = old_state.get("active_search_id") if isinstance(old_state, dict) else None
     if not searches and conversation_state(previous):
-        active = active or "legacy"
+        active = active_search_id(previous) or str(uuid.uuid4())
         searches[active] = {"criteria": conversation_state(previous)}
+    if active == "legacy" and active in searches:
+        # Old sessions used the sentinel "legacy"; durable search keys are UUIDs.
+        legacy_search = searches[active]
+        active = str(uuid.uuid4())
+        searches[active] = legacy_search
     slots = validated_slot_updates(observation.get("slot_updates")) if isinstance(observation, dict) else {}
     requested_operation = slots.get("operation")
     starts_new = is_new_search_request(user_text) or (isinstance(observation, dict) and observation.get("intent") == "new_search")
