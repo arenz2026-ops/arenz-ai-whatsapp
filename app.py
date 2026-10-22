@@ -25,6 +25,9 @@ GRAPH_API_VERSION = "v26.0"
 # Render injects RENDER_GIT_COMMIT. Without it a deploy can only be assumed, never
 # verified, so /health reports the short SHA it is actually running.
 SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
+ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
+COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "C2 Inmobiliaria")
+INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND}. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?"
 user_sessions = {}
 
 OBSERVATION_SCHEMA = {
@@ -56,10 +59,14 @@ _slot_contract["required"].extend(COMMERCIAL_FIELDS)
 OBSERVATION_SCHEMA["properties"]["criteria_actions"]["items"]["properties"]["field"]["enum"].extend(COMMERCIAL_FIELDS)
 
 COMMERCIAL_POLICY = (
-    " Actúa como asistente virtual de ARENZ, con trato cálido y sin presión. "
+    f" Preséntate como {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND}, con trato cálido y sin presión. "
     "Sigue los cinco filtros QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO de manera progresiva, "
     "con una sola pregunta por mensaje. Responde primero la consulta concreta; no repitas datos ya conocidos. "
     "En el primer saludo explica brevemente que ayudas a orientar su búsqueda, sin un menú numérico. "
+    "QUÉ: operation, property_type, bedrooms, area_min_m2, bathrooms_min, parking_required y preferences. "
+    "DÓNDE: districts y preferencias de ubicación. CUÁNTO: budget_max y currency. "
+    "Aprovecha todo dato espontáneo aunque corresponda a un filtro posterior; conserva los anteriores "
+    "y actualiza únicamente lo que el cliente cambie. No completes datos desconocidos por suposición. "
     "CÓMO: registra payment_method y credit_status solo si el cliente los declara; "
     "no deduzcas solvencia, aprobación de crédito ni capacidad de compra. Nunca pidas DNI, "
     "documentos bancarios ni ingresos para iniciar una búsqueda. CUÁNDO: registra purchase_timeline "
@@ -306,7 +313,7 @@ def generate_reply(sender, text):
     session = user_sessions.get(sender, {"step":"start", "intent":None, "district":None, "budget":None, "bedrooms":None})
     if session["step"] == "start":
         session["step"] = "intent"; user_sessions[sender] = session
-        return "Hola 👋 Soy ARENZ AI.\n\n¿Qué estás buscando?\n1️⃣ Comprar\n2️⃣ Alquilar\n3️⃣ Vender\n4️⃣ Hablar con un asesor" if any(w in text for w in ("hola", "buenos días", "buenas tardes", "buenas noches")) else "Hola 👋 Soy ARENZ AI. Dime si deseas comprar, alquilar, vender o hablar con un asesor."
+        return INTRODUCTION if any(w in text for w in ("hola", "buenos días", "buenas tardes", "buenas noches")) else f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND}. ¿Deseas comprar, alquilar o vender?"
     if session["step"] == "intent":
         for intent, words in (("compra",("1","compr")), ("alquiler",("2","alquil")), ("venta",("3","vend"))):
             if any(w in text for w in words):
@@ -314,7 +321,7 @@ def generate_reply(sender, text):
                 return "Perfecto. ¿En qué distrito o zona estás interesado?"
         if any(w in text for w in ("4","asesor","humano")):
             session.update(intent="asesor", step="done"); user_sessions[sender] = session
-            return "Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo."
+            return f"Perfecto. Registraré tu solicitud para que un asesor de {COMMERCIAL_BRAND} continúe contigo."
         return "Indica una opción: 1 Comprar, 2 Alquilar, 3 Vender o 4 Hablar con un asesor."
     if session["step"] == "district":
         session.update(district=text, step="budget"); user_sessions[sender] = session; return "¿Cuál es tu presupuesto aproximado?"
@@ -325,7 +332,7 @@ def generate_reply(sender, text):
         return f"Tengo estos datos:\nOperación: {session['intent']}\nZona: {session['district']}\nPresupuesto: {session['budget']}\nDormitorios: {session['bedrooms']}\n\n¿La información es correcta? Responde Sí o No."
     if session["step"] == "summary":
         if text in ("sí","si"):
-            session["step"]="done"; user_sessions[sender]=session; return "Excelente ✅. Un asesor de ARENZ podrá continuar contigo."
+            session["step"]="done"; user_sessions[sender]=session; return f"Excelente ✅. Un asesor de {COMMERCIAL_BRAND} podrá continuar contigo."
         if "no" in text:
             session["step"]="intent"; user_sessions[sender]=session; return "De acuerdo. ¿Deseas comprar, alquilar o vender una propiedad?"
         return "Por favor responde Sí o No."
@@ -334,7 +341,7 @@ def generate_reply(sender, text):
 
 def generate_ai_reply(sender, text, fallback):
     if not OPENAI_API_KEY: return fallback
-    payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":"Eres ARENZ AI, asistente inmobiliario en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
+    payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":f"Eres {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND} en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
     try:
         response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}, json=payload, timeout=15)
         response.raise_for_status()
@@ -989,15 +996,15 @@ def detected_handoff(previous, observation, user_text, inventory_matches=None):
 def handoff_reply(handoff):
     request_type, reference = handoff["request_type"], handoff["property_reference"]
     if request_type == "callback":
-        return ("Perfecto. Registré tu solicitud de llamada; un asesor de ARENZ te contactará por teléfono.",
+        return (f"Perfecto. Registré tu solicitud de llamada; un asesor de {COMMERCIAL_BRAND} coordinará contigo.",
                 "Solicitud de llamada registrada con consentimiento explícito.")
     if request_type == "visit":
-        return (f"Perfecto. Registré tu solicitud de visita para la referencia {reference}; un asesor de ARENZ coordinará contigo.",
+        return (f"Perfecto. Registré tu solicitud de visita para la referencia {reference}; un asesor de {COMMERCIAL_BRAND} coordinará contigo.",
                 f"Solicitud de visita registrada para la referencia {reference}.")
     if request_type == "property_interest":
-        return (f"Perfecto. Registré tu interés en la referencia {reference}; un asesor de ARENZ continuará contigo.",
+        return (f"Perfecto. Registré tu interés en la referencia {reference}; un asesor de {COMMERCIAL_BRAND} continuará contigo.",
                 f"Interés registrado en la referencia {reference}.")
-    return ("Perfecto. Registraré tu solicitud para que un asesor de ARENZ continúe contigo.",
+    return (f"Perfecto. Registraré tu solicitud para que un asesor de {COMMERCIAL_BRAND} continúe contigo.",
             "Solicitud de asesor registrada.")
 
 
@@ -1012,7 +1019,7 @@ def _handoff_payload(phone, handoff, search_id, criteria):
 def customer_pause_reply(text):
     normalized = " ".join((text or "").casefold().split())
     if any(phrase in normalized for phrase in ("no me escribas", "no me contacten", "no me contactes", "no me interesa")):
-        return "Entendido. Respetaré tu decisión y cierro esta consulta. Gracias por escribir a ARENZ.", "do_not_contact"
+        return f"Entendido. Respetaré tu decisión y cierro esta consulta. Gracias por escribir a {COMMERCIAL_BRAND}.", "do_not_contact"
     family_review = re.search(r"(?:voy a|quiero|necesito|debo|tengo que|lo)\s+consult\w*.{0,35}(?:familia|hijas|hijos|esposa|esposo|pareja)", normalized)
     if family_review or any(phrase in normalized for phrase in ("consultar con mi familia", "consultarlo con mi familia", "consultarlo con mis hijas", "consultar con mis hijas", "consultarlo con mi esposa", "consultarlo con mi esposo", "lo voy a consultar", "te escribo después", "te escribo luego", "yo te aviso", "yo les aviso")):
         return "Claro, revísalo con tranquilidad. Cuando quieras retomar la búsqueda, escríbeme por aquí; con gusto te ayudo.", "awaiting_customer"
@@ -1042,7 +1049,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         if is_new_search_request(user_text):
             return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
         if (user_text or "").strip().casefold() in {"hola", "buenos días", "buenas tardes", "buenas noches"} and not conversation_state(previous):
-            return "Hola, soy el asistente virtual de ARENZ. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?", {}, "qualification", "Apertura cálida sin cuestionario."
+            return INTRODUCTION, {}, "qualification", "Apertura cálida sin cuestionario."
         return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
     if prior_criteria is None:
         _, prior_criteria = search_state_for_turn(previous, observation, user_text)
@@ -1053,7 +1060,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     criteria.update(slots)
     intent = observation.get("intent")
     if intent == "greeting" and not criteria and not conversation_state(previous):
-        return "Hola, soy el asistente virtual de ARENZ. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?", criteria, "qualification", "Apertura cálida; escuchar la necesidad antes de calificar."
+        return INTRODUCTION, criteria, "qualification", "Apertura cálida; escuchar la necesidad antes de calificar."
     handoff = detected_handoff(previous, observation, user_text, inventory_matches)
     if handoff:
         reply, summary = handoff_reply(handoff)
@@ -1105,12 +1112,25 @@ def persist_conversation_turn(sender, message_id, inbound, outbound, observation
     return active_id
 
 
+def qualification_snapshot(criteria):
+    """Expose the five declared filters to the advisor without assuming missing data."""
+    groups = {
+        "que": ("operation", "property_type", "bedrooms", "area_min_m2", "bathrooms_min", "parking_required", "preferences"),
+        "donde": ("districts",),
+        "cuanto": ("budget_max", "currency"),
+        "como": ("payment_method", "credit_status"),
+        "cuando": ("purchase_timeline",),
+    }
+    return {group: {key: criteria[key] for key in keys if key in criteria and criteria[key] is not None}
+            for group, keys in groups.items()}
+
+
 def _profile_payload(phone, criteria, inbound, outbound, stage):
     status = "pendiente_asesor" if stage == "handoff" else "en_calificacion"
     return {"phone": phone, "intent": criteria.get("operation"), "district": ", ".join(criteria.get("districts", [])) or None,
             "budget": f"{criteria.get('currency')} {criteria.get('budget_max')}" if criteria.get("currency") and criteria.get("budget_max") is not None else None,
             "bedrooms": str(criteria["bedrooms"]) if criteria.get("bedrooms") is not None else None,
-            "conversation": {"last_user_message": inbound, "last_assistant_message": outbound}, "status": status,
+            "conversation": {"last_user_message": inbound, "last_assistant_message": outbound, "qualification": qualification_snapshot(criteria)}, "status": status,
             "next_action": "Contactar al lead" if status == "pendiente_asesor" else "Continuar la calificación por WhatsApp"}
 
 
