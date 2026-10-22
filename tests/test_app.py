@@ -742,7 +742,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         reply = app.inventory_reply(matches)
         self.assertIn("Ref. ARZ-000001", reply)
-        self.assertIn("76.82 m2", reply)
+        self.assertIn("76,82 m²", reply)
         self.assertNotIn("150921307", reply)     # el id del portal no viaja al cliente
         self.assertNotIn("urbania", reply.lower())
         self.assertNotIn("PUGA", reply)

@@ -120,3 +120,21 @@ class CommercialConversationTests(unittest.TestCase):
         self.assertEqual(app.explicit_money_amount("doscientos treinta y cinco mil dolares"), 235000)
         self.assertIsNone(app.explicit_money_amount("entre $100000 y $120000"))
         self.assertIsNone(app.with_explicit_operation(None, "$120000 o 450000 soles"))
+
+    def test_options_distinguish_units_and_show_delivery_and_formatted_price(self):
+        matches = []
+        for unit, floor in (("A - 306", 3), ("A - 406", 4), ("A - 506", 5)):
+            matches.append({"public": {"public_reference": "C2-" + str(floor), "property_type": "departamento",
+                "district": "Chorrillos", "currency": "PEN", "price_amount": 250000.0,
+                "bedrooms": 2, "bathrooms": None, "area_total_m2": 52.34, "parking_spaces": None,
+                "provenance": "partner", "media": [],
+                "public_description": f"Proyecto CONDOMINIO LOS BOSQUES; unidad {unit}. Piso {floor}. Entrega según fuente: 1er Tri 2029."}})
+        reply = app.inventory_reply(matches)
+        for unit in ("A - 306", "A - 406", "A - 506"):
+            self.assertIn(unit, reply)
+        self.assertEqual(reply.count("S/ 250.000"), 3)
+        self.assertIn("52,34 m²", reply)
+        self.assertIn("1er Tri 2029", reply)
+        self.assertIn("estacionamiento por confirmar", reply)
+        self.assertNotIn("250000.0", reply)
+        self.assertNotIn("None", reply)
