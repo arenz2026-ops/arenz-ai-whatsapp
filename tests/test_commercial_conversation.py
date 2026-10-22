@@ -164,3 +164,33 @@ class CommercialConversationTests(unittest.TestCase):
         self.assertIn("Ref. C2-A", context)
         self.assertIn("Ref. C2-B", context)
         self.assertTrue(context.endswith("¿Para cuándo necesitas tener el departamento?"))
+
+    def test_number_selects_the_displayed_unit_instead_of_repeating_results(self):
+        def item(ref, unit):
+            return {"public": {"public_reference": ref, "property_type": "departamento", "district": "Surco",
+                "currency": "USD", "price_amount": 120000, "bedrooms": 3, "parking_spaces": 1,
+                "media": [], "provenance": "partner", "public_description": f"Proyecto TEST; unidad {unit}."}}
+        first, second = item("C2-FIRST", "406"), item("C2-SECOND", "506")
+        criteria = {**self.criteria, "payment_method": "contado", "purchase_timeline": "sin urgencia"}
+        opening = app.inventory_conversation_reply([first, second], criteria)
+        previous = {"stage": "qualified", "state": {"active_search_id": "search-test", "searches": {
+            "search-test": {"criteria": criteria, "recent_turns": [{"direction": "assistant", "content": opening}]}}}}
+        for text in ("1", "el 1", "opción 1", "la primera"):
+            observation = self.observe(bedrooms=1)
+            reply, retained, stage, _ = app.progressive_reply(previous, observation, "fallback", text, inventory_matches=[second, first])
+            self.assertIn("C2-FIRST", reply)
+            self.assertNotIn("C2-SECOND", reply)
+            self.assertEqual(retained["bedrooms"], 3)
+            self.assertEqual(stage, "property_detail")
+        reply, _, _, _ = app.progressive_reply(previous, self.observe(), "fallback", "9", inventory_matches=[first, second])
+        self.assertIn("Te mostré 2 opciones", reply)
+        reply, _, _, _ = app.progressive_reply(previous, self.observe(), "fallback", "1", inventory_matches=[second])
+        self.assertIn("No pude reconfirmar", reply)
+        self.assertNotIn("Unidad 506", reply)
+        previous["state"]["searches"]["search-test"]["recent_turns"].append({"direction": "assistant", "content": "¿Cuántos dormitorios necesitas?"})
+        self.assertIsNone(app.selected_option(previous, "1"))
+
+    def test_recent_context_comes_from_active_search_not_an_old_session(self):
+        previous = {"state": {"active_search_id": "new", "recent_turns": [{"direction": "assistant", "content": "viejo"}],
+            "searches": {"new": {"recent_turns": [{"direction": "assistant", "content": "actual"}]}}}}
+        self.assertEqual(app.recent_conversation_turns(previous)[0]["content"], "actual")
