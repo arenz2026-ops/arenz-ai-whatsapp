@@ -1036,6 +1036,13 @@ def commercial_next_question(criteria):
 
 def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
     """Policy layer: AI extracts; bounded code validates state and chooses the reply."""
+    greeting = re.sub(r"[^\w\s]", "", (user_text or "").casefold()).strip()
+    if greeting in {"hola", "buenos días", "buenos dias", "buenas tardes", "buenas noches"}:
+        criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
+        if criteria:
+            reply = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. ¿Quieres retomar tu búsqueda anterior o comenzar una nueva?"
+            return reply, criteria, "conversation", "Saludo atendido; criterios conservados sin consultar inventario."
+        return INTRODUCTION, criteria, "qualification", "Saludo atendido antes de la calificación."
     observation = with_explicit_operation(observation, user_text)
     observation = sanitize_new_search_observation(observation, user_text)
     pause = customer_pause_reply(user_text)
