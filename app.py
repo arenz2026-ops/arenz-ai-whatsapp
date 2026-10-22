@@ -1090,6 +1090,31 @@ def selected_unit_reply(item):
     return "Revisemos esta unidad:\n\n" + details + "\n\n¿Qué característica te gustaría confirmar de esta unidad?"
 
 
+def parking_question_reply(item):
+    public = item["public"]
+    spaces = public.get("parking_spaces")
+    reference = public["public_reference"]
+    if spaces is None:
+        fact = "La ficha de esta unidad no indica si cuenta con estacionamiento."
+    elif spaces == 0:
+        fact = "La ficha registra esta unidad sin estacionamiento incluido."
+    else:
+        fact = f"La ficha registra {spaces} estacionamiento(s), pero ese dato por sí solo no confirma si están incluidos en el precio."
+    return (f"Ref. {reference}\n{fact} "
+            "Para confirmarlo, un asesor debe consultar con el responsable del proyecto "
+            "si hay una cochera disponible para esta unidad, si está incluida en el precio del departamento "
+            "y, si se vende por separado, cuál es su precio. "
+            "Esa confirmación aún está pendiente; no puedo asegurar que esté incluida.")
+
+
+def is_selected_parking_question(previous, text):
+    normalized = (text or "").casefold()
+    return ((previous or {}).get("stage") == "property_detail"
+            and len(latest_presented_references(previous)) == 1
+            and bool(re.search(r"estacionamiento|cochera|parking", normalized))
+            and bool(re.search(r"\?|confirm|falta|inclu|cu[aá]nt|precio|disponib|tiene|cuenta", normalized)))
+
+
 def handoff_request_type(text, reference):
     """Deterministic escalation types. Visit and interest need a real reference."""
     normalized = " ".join((text or "").casefold().split())
@@ -1194,6 +1219,15 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
             criteria = apply_criteria_actions(criteria, observation.get("criteria_actions"))
             criteria.update(validated_slot_updates(observation.get("slot_updates")))
         return pause[0], criteria, pause[1], "Cliente solicita espacio o finalizar la consulta; sin seguimiento automático."
+    if is_selected_parking_question(previous, user_text):
+        criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
+        reference = latest_presented_references(previous)[0]
+        if inventory_matches is None:
+            return "Consultaré el dato de estacionamiento de esta unidad.", criteria, "property_detail", "Consulta de estacionamiento; criterios conservados."
+        item = next((m for m in inventory_matches if m["public"]["public_reference"] == reference), None)
+        if item:
+            return parking_question_reply(item), criteria, "property_detail", f"Estacionamiento pendiente de confirmación para {reference}."
+        return f"Ref. {reference}\nNo pude reconfirmar la ficha actual de esta unidad. El asesor debe verificar con el responsable del proyecto la disponibilidad y las condiciones del estacionamiento.", criteria, "property_detail", "Ficha no reconfirmada; sin inventar condiciones de estacionamiento."
     selection = selected_option(previous, user_text)
     if selection:
         criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
@@ -1413,7 +1447,7 @@ def receive_webhook():
             # This prevents an explicit operation from updating the prior search only in
             # the response layer while persistence still sees the unnormalized input.
             effective_observation = with_explicit_operation(observation, text)
-            if selected_option(previous, text):
+            if selected_option(previous, text) or is_selected_parking_question(previous, text):
                 effective_observation = {**(effective_observation or {}), "intent": "confirmation",
                                          "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}
             turn_state, turn_prior_criteria = search_state_for_turn(previous, effective_observation, text)
