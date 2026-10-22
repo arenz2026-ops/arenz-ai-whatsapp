@@ -213,3 +213,15 @@ class CommercialConversationTests(unittest.TestCase):
             reply = app.parking_question_reply(item)
             self.assertIn(expected, reply)
             self.assertIn("confirmación aún está pendiente", reply)
+
+    def test_customer_copy_hides_internal_codes_without_losing_selection_context(self):
+        internal = "Encontré estas opciones:\n1. LOS BOSQUES · Unidad A-406 · Chorrillos\nRef. C2-ABC123\nS/ 250.000\n2. LOS BOSQUES · Unidad A-506\nRef. C2-DEF456\n¿Cuál de estas unidades te gustaría revisar con más detalle?"
+        visible = app.customer_visible_reply(internal)
+        self.assertNotIn("C2-", visible)
+        self.assertNotIn("Ref.", visible)
+        self.assertIn("Unidad A-406", visible)
+        self.assertIn("S/ 250.000", visible)
+        previous = {"state": {"recent_turns": [{"direction": "assistant", "content": internal}]}}
+        self.assertEqual(app.selected_option(previous, "1")["reference"], "C2-ABC123")
+        self.assertEqual(app.customer_visible_reply("Ref. C2-ABC123\nLa ficha no indica cochera."), "La ficha no indica cochera.")
+        self.assertEqual(app.customer_visible_reply("Registré tu interés en la referencia C2-ABC123."), "Registré tu interés en la unidad elegida.")
