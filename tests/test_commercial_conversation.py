@@ -83,3 +83,13 @@ class CommercialConversationTests(unittest.TestCase):
         self.assertEqual(snapshot["como"]["credit_status"], "en_tramite")
         self.assertEqual(snapshot["cuando"]["purchase_timeline"], "sin urgencia")
         self.assertEqual(app.qualification_snapshot({})["como"], {})
+
+    def test_greeting_with_saved_criteria_never_returns_inventory(self):
+        for observation in (None, self.observe(), {"intent": "greeting", "slot_updates": {}}):
+            for text in ("Hola", "¡Hola!", "hola 👋"):
+                reply, criteria, stage, _ = app.progressive_reply(self.previous, observation, "fallback", text, inventory_matches=[])
+                self.assertIn("Cecilia", reply)
+                self.assertIn("retomar", reply)
+                self.assertNotIn("inventario", reply)
+                self.assertEqual(criteria, self.criteria)
+                self.assertEqual(stage, "conversation")
