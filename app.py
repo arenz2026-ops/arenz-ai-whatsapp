@@ -545,11 +545,27 @@ def explicit_operation_from_text(text):
 def with_explicit_operation(observation, text):
     """Overlay a deterministic explicit operation while preserving extractor output."""
     operation = explicit_operation_from_text(text)
-    if not operation:
+    normalized = (text or "").casefold()
+    usd = bool(re.search(r"\b(?:d[oó]lares?|usd)\b|us\$", normalized))
+    pen = bool(re.search(r"\b(?:soles|sol|pen)\b|s/", normalized))
+    currency = "USD" if usd and not pen else "PEN" if pen and not usd else None
+    if not operation and not currency:
         return observation
     result = dict(observation) if isinstance(observation, dict) else {"intent": "change_criteria", "handoff": False}
     slots = dict(result.get("slot_updates", {}))
-    slots["operation"] = operation
+    if operation:
+        slots["operation"] = operation
+    if currency:
+        slots["currency"] = currency
+        # A single explicit amount next to its currency is safe even without AI.
+        amounts = re.findall(r"(?<![\w.])\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?\s*(?=d[oó]lares?\b|usd\b|soles\b|pen\b)", normalized)
+        if len(amounts) == 1:
+            amount = amounts[0].strip()
+            amount = re.sub(r"[.,](?=\d{3}(?:[.,]|$))", "", amount).replace(",", ".")
+            slots["budget_max"] = float(amount)
+        # Discard a stale generated question about a currency just supplied.
+        if re.search(r"moneda|usd|pen|d[oó]lares|soles", str(result.get("assistant_reply", "")), re.I):
+            result["assistant_reply"] = None
     result["slot_updates"] = slots
     return result
 
