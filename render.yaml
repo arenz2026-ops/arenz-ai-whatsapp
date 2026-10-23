@@ -17,6 +17,16 @@ services:
         sync: false
       - key: APP_SECRET
         sync: false
+      # WAAPI (linked-device WhatsApp). WHATSAPP_PROVIDER=waapi makes /health
+      # require these instead of the Meta credentials above.
+      - key: WHATSAPP_PROVIDER
+        sync: false
+      - key: WAAPI_TOKEN
+        sync: false
+      - key: WAAPI_INSTANCE_ID
+        sync: false
+      - key: WAAPI_WEBHOOK_SECRET
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL

@@ -84,3 +84,13 @@ esa clave ni la uses en una aplicación cliente.
 3. En App settings → Basic, carga App Secret solo en `APP_SECRET` de Render.
 4. En WhatsApp → API Setup, carga token temporal y Phone number ID en Render, y agrega el teléfono destinatario de prueba.
 5. Envía `hola`: debe recibirse respuesta y un lead en `LEADS_DB_PATH`.
+
+## WAAPI: número vinculado por QR (alternativa a Meta)
+
+El bot también puede atender un número de WhatsApp normal vinculado a WAAPI (waapi.app) como dispositivo. La ruta de Meta (`/webhook`) sigue igual; cada mensaje se responde por el mismo canal por el que llegó.
+
+1. En WAAPI crea una instancia y escanea el QR desde WhatsApp → Ajustes → Dispositivos vinculados.
+2. En Render define `WAAPI_TOKEN` (API token de WAAPI), `WAAPI_INSTANCE_ID` (número de la instancia), `WAAPI_WEBHOOK_SECRET` (clave larga que inventas, solo letras, números, `-` o `_`) y `WHATSAPP_PROVIDER=waapi` para que `/health` valide estas credenciales.
+3. En WAAPI configura el webhook `https://arenz-ai-whatsapp-prod.onrender.com/webhook/waapi/<WAAPI_WEBHOOK_SECRET>` con el evento `message`.
+
+WAAPI no firma sus avisos: la clave en la URL y la verificación de `instanceId` los autentican, así que no compartas esa URL. Se ignoran mensajes propios, grupos, estados, canales y mensajes que no son de texto. Si WAAPI reenvía un aviso, la deduplicación por ID evita responder dos veces.
