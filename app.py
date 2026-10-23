@@ -22,6 +22,14 @@ APP_SECRET = os.getenv("APP_SECRET", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 GRAPH_API_VERSION = "v26.0"
+# Channel used to judge health: "meta" (official Cloud API) or "waapi" (linked device).
+# Each webhook always answers through the channel the message arrived on.
+WHATSAPP_PROVIDER = os.getenv("WHATSAPP_PROVIDER", "meta").strip().lower() or "meta"
+WAAPI_TOKEN = os.getenv("WAAPI_TOKEN", "")
+WAAPI_INSTANCE_ID = os.getenv("WAAPI_INSTANCE_ID", "").strip()
+# WAAPI does not sign its webhooks; a long secret in the URL path authenticates them.
+WAAPI_WEBHOOK_SECRET = os.getenv("WAAPI_WEBHOOK_SECRET", "")
+WAAPI_API_BASE = "https://waapi.app/api/v1"
 # Render injects RENDER_GIT_COMMIT. Without it a deploy can only be assumed, never
 # verified, so /health reports the short SHA it is actually running.
 SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
@@ -303,7 +311,7 @@ def health():
         if isinstance(store, LeadStore): store._connect().close()
         db_ok = True
     except (sqlite3.Error, requests.RequestException): db_ok = False
-    ok = all((VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID, APP_SECRET)) and db_ok
+    ok = channel_configured(WHATSAPP_PROVIDER) and db_ok
     return jsonify({"status": "ok" if ok else "degraded", "commit": SERVICE_COMMIT or "unknown"}), 200 if ok else 503
 
 
@@ -1384,7 +1392,42 @@ def customer_visible_reply(message):
     return message.strip()
 
 
-def send_whatsapp_message(to, message):
+def channel_configured(channel):
+    if channel == "waapi": return all((WAAPI_TOKEN, WAAPI_INSTANCE_ID, WAAPI_WEBHOOK_SECRET))
+    return all((VERIFY_TOKEN, WHATSAPP_TOKEN, PHONE_NUMBER_ID, APP_SECRET))
+
+
+class WaapiDeliveryError(requests.RequestException):
+    """WAAPI answered HTTP 2xx but reported that the message was not sent."""
+
+
+def waapi_chat_id(sender):
+    return f"{sender}@c.us" if sender.isdigit() else sender
+
+
+def send_waapi_message(to, message):
+    message = customer_visible_reply(message)
+    if not WAAPI_TOKEN or not WAAPI_INSTANCE_ID: raise RuntimeError("WAAPI credentials are not configured")
+    response = requests.post(f"{WAAPI_API_BASE}/instances/{WAAPI_INSTANCE_ID}/client/action/send-message", headers={"Authorization":f"Bearer {WAAPI_TOKEN}","Content-Type":"application/json","Accept":"application/json"}, json={"chatId":waapi_chat_id(to),"message":message}, timeout=20)
+    try:
+        response.raise_for_status()
+    except requests.HTTPError:
+        logger.error("WAAPI rejected reply: status=%s", response.status_code)
+        raise
+    try:
+        data = (response.json() or {}).get("data") or {}
+    except ValueError:
+        data = {}
+    # HTTP 200 does not guarantee delivery: WAAPI reports failures in data.status.
+    if data.get("status") == "error":
+        logger.warning("WAAPI did not send reply: message=%s", str(data.get("message") or "")[:120])
+        raise WaapiDeliveryError("WAAPI reported status=error", response=response)
+    logger.info("WhatsApp reply accepted by WAAPI")
+    return response
+
+
+def send_whatsapp_message(to, message, channel="meta"):
+    if channel == "waapi": return send_waapi_message(to, message)
     message = customer_visible_reply(message)
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID: raise RuntimeError("WhatsApp credentials are not configured")
     response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages", headers={"Authorization":f"Bearer {WHATSAPP_TOKEN}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
@@ -1427,6 +1470,35 @@ def receive_webhook():
         logger.warning("Rejected webhook with invalid signature"); return jsonify({"status":"invalid_signature"}), 401
     messages = iter_incoming_messages(request.get_json(silent=True))
     if not messages: return jsonify({"status":"ignored"}), 200
+    return process_incoming_messages(messages, "meta", webhook_started_at)
+
+
+def iter_waapi_messages(data):
+    """Normalize a WAAPI 'message' event to the Meta message shape used internally."""
+    if not isinstance(data, dict) or data.get("event") != "message": return []
+    message = (data.get("data") or {}).get("message") or {}
+    sender, body = message.get("from") or "", (message.get("body") or "").strip()
+    if message.get("fromMe") or message.get("type") != "chat" or not body: return []
+    if sender.endswith("@c.us"): sender = sender[:-len("@c.us")]
+    elif not sender.endswith("@lid"): return []  # groups, status broadcasts, channels
+    message_id = (message.get("id") or {}).get("_serialized") if isinstance(message.get("id"), dict) else message.get("id")
+    if not sender or not message_id: return []
+    return [{"id": f"waapi:{message_id}", "from": sender, "type": "text", "text": {"body": body}}]
+
+
+@app.route("/webhook/waapi/<secret>", methods=["POST"])
+def receive_waapi_webhook(secret):
+    webhook_started_at = time.monotonic()
+    if not WAAPI_WEBHOOK_SECRET or not channel_configured("waapi"): return jsonify({"status":"not_configured"}), 503
+    data = request.get_json(silent=True)
+    if not hmac.compare_digest(secret, WAAPI_WEBHOOK_SECRET) or str((data or {}).get("instanceId", "")) != WAAPI_INSTANCE_ID:
+        logger.warning("Rejected WAAPI webhook with invalid secret or instance"); return jsonify({"status":"unauthorized"}), 401
+    messages = iter_waapi_messages(data)
+    if not messages: return jsonify({"status":"ignored"}), 200
+    return process_incoming_messages(messages, "waapi", webhook_started_at)
+
+
+def process_incoming_messages(messages, channel, webhook_started_at):
     try:
         processed = 0
         for message in messages:
@@ -1479,12 +1551,13 @@ def receive_webhook():
             timings["internal_commit_ms"] = round((time.monotonic() - started_at) * 1000)
             started_at = time.monotonic()
             try:
-                send_whatsapp_message(sender, reply)
+                send_whatsapp_message(sender, reply, channel)
                 if memory: memory.record_delivery(message_id, "sent")
             except requests.RequestException as error:
                 # Internal commit remains processed. Never retry Meta automatically.
                 if memory:
-                    code = f"meta_http_{getattr(error.response, 'status_code', None)}" if getattr(error, "response", None) is not None else "meta_transport"
+                    if isinstance(error, WaapiDeliveryError): code = "waapi_rejected"
+                    else: code = f"{channel}_http_{getattr(error.response, 'status_code', None)}" if getattr(error, "response", None) is not None else f"{channel}_transport"
                     memory.record_delivery(message_id, "failed", code)
                 logger.warning("WhatsApp delivery failed after internal commit: category=%s", type(error).__name__)
             timings["graph_ms"] = round((time.monotonic() - started_at) * 1000)
