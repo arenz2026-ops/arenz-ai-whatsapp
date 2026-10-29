@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request
 
 import advisor_notify
 import embedded_signup
+import property_media
 
 app = Flask(__name__)
 app.register_blueprint(embedded_signup.bp)
@@ -1039,9 +1040,6 @@ def inventory_reply(matches):
                 value = re.search(pattern, description)
                 if value:
                     lines.append(f"{label}: {value.group(1)}.")
-        if public["media"]:
-            first_media = public["media"][0]
-            lines.append(f"{first_media['media_type'].capitalize()}: {first_media['media_url']}")
     if borrowed:
         lines.append(THIRD_PARTY_NOTE)
     return "\n".join(lines)
@@ -1424,6 +1422,44 @@ def post_graph_message(payload):
     return response
 
 
+def send_whatsapp_image(to, image_url, caption):
+    """Send one image by public HTTPS link; WhatsApp downloads it from there."""
+    payload = {"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"image","image":{"link":image_url}}
+    if caption: payload["image"]["caption"] = customer_visible_reply(caption)[:1024]
+    return post_graph_message(payload)
+
+
+_media_log = None
+
+
+def get_media_log():
+    """Supabase-backed when configured; an in-process log otherwise (kept across turns)."""
+    global _media_log
+    url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    if _media_log is None or _media_log.url != url.rstrip("/"):
+        _media_log = property_media.MediaDeliveryLog(url if url and key else None, key if url and key else None)
+    return _media_log
+
+
+def requested_photo_reference(previous, text):
+    """The unit a photo request points at: one named by the client, or the only one on screen."""
+    reference = mentioned_property_reference(text, presented_property_references(previous))
+    if reference:
+        return reference
+    latest = latest_presented_references(previous)
+    return latest[0] if len(latest) == 1 else None
+
+
+def apply_photo_plan(previous, text, reply, stage, summary, inventory_matches):
+    """Choose this turn's photos; answer an explicit photo request in text as well."""
+    reference = requested_photo_reference(previous, text) if stage != "handoff" and property_media.is_photo_request(text) else None
+    photos, requested = property_media.plan_photos(reply, stage, inventory_matches, text, reference)
+    if requested:
+        reply = property_media.photo_request_reply(requested, bool(photos))
+        stage, summary = "property_detail", f"Fotos solicitadas de la referencia {requested['public']['public_reference']}."
+    return photos, reply, stage, summary
+
+
 def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None):
     """After the client has their reply, tell the advisor. Best effort; never raises."""
     if stage != "handoff":
@@ -1501,6 +1537,7 @@ def receive_webhook():
             if inventory_store and inventory_ready(criteria):
                 inventory_matches, inventory_cutoff = inventory_store.find_matches(criteria)
                 reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
+            photos, reply, stage, summary = apply_photo_plan(previous, text, reply, stage, summary, inventory_matches)
             started_at = time.monotonic()
             if memory:
                 # All mandatory internal state commits before attempting Meta.
@@ -1513,6 +1550,8 @@ def receive_webhook():
                 get_lead_store().upsert_lead(sender, profile_session, text, reply)
             timings["internal_commit_ms"] = round((time.monotonic() - started_at) * 1000)
             started_at = time.monotonic()
+            # Photos first, so the question in the text reply arrives after them.
+            property_media.send_photos(send_whatsapp_image, get_media_log(), sender, (turn_state or {}).get("active_search_id"), photos)
             try:
                 send_whatsapp_message(sender, reply)
                 if memory: memory.record_delivery(message_id, "sent")
