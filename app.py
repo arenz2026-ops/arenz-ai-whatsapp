@@ -1143,10 +1143,25 @@ def handoff_request_type(text, reference):
     return None
 
 
+def accepted_photo_offer(previous, text):
+    """The unit whose photos the bot offered to have an advisor send, when the client says yes."""
+    last = next((turn["content"] for turn in reversed(recent_conversation_turns(previous)) if turn["direction"] == "assistant"), "")
+    references = latest_presented_references(previous)
+    if len(references) == 1 and property_media.PHOTO_OFFER_PATTERN.search(last) and property_media.is_affirmative(text):
+        return references[0]
+    return None
+
+
 def detected_handoff(previous, observation, user_text, inventory_matches=None):
     """Resolve one escalation per turn, or None to continue the qualification."""
     reference = mentioned_property_reference(user_text, presented_property_references(previous, inventory_matches))
     request_type = handoff_request_type(user_text, reference)
+    if request_type in (None, "advisor"):
+        # A yes to "¿te pido a un asesor que te envíe las fotos?" names the unit, so the
+        # advisor learns which one; a plain "asesor" request would lose it.
+        offered = accepted_photo_offer(previous, user_text)
+        if offered:
+            return {"request_type": "property_interest", "property_reference": offered, "reason": "photos"}
     if not request_type and isinstance(observation, dict) and (observation.get("handoff") or observation.get("intent") == "human_handoff"):
         request_type = "advisor"
     if not request_type:
@@ -1156,6 +1171,9 @@ def detected_handoff(previous, observation, user_text, inventory_matches=None):
 
 def handoff_reply(handoff):
     request_type, reference = handoff["request_type"], handoff["property_reference"]
+    if handoff.get("reason") == "photos":
+        return (f"Perfecto. Registré tu pedido: un asesor de {COMMERCIAL_BRAND} te enviará las fotos de esta unidad por aquí.",
+                f"Fotos pedidas a un asesor para la referencia {reference}.")
     if request_type == "callback":
         return (f"Perfecto. Registré tu solicitud de llamada; un asesor de {COMMERCIAL_BRAND} coordinará contigo.",
                 "Solicitud de llamada registrada con consentimiento explícito.")
@@ -1393,8 +1411,8 @@ def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, out
 def customer_visible_reply(message):
     """Keep stable property identifiers in memory, outside customer-facing copy."""
     message = re.sub(r"(?im)^\s*Ref\.\s*[a-z0-9-]+\s*\n?", "", message)
-    message = re.sub(r"(?i)(?:la\s+)?referencia\s+C2-[a-z0-9-]+", "la unidad elegida", message)
-    message = re.sub(r"(?i)\bC2-[a-z0-9-]+\b", "la unidad elegida", message)
+    message = re.sub(r"(?i)(?:la\s+)?referencia\s+(?:C2|ARZ)-[a-z0-9-]+", "la unidad elegida", message)
+    message = re.sub(r"(?i)\b(?:C2|ARZ)-[a-z0-9-]+\b", "la unidad elegida", message)
     return message.strip()
 
 
@@ -1424,6 +1442,8 @@ def post_graph_message(payload):
 
 def send_whatsapp_image(to, image_url, caption):
     """Send one image by public HTTPS link; WhatsApp downloads it from there."""
+    if not str(image_url or "").startswith("https://"):
+        raise ValueError("WhatsApp only downloads images from a public HTTPS link")
     payload = {"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"image","image":{"link":image_url}}
     if caption: payload["image"]["caption"] = customer_visible_reply(caption)[:1024]
     return post_graph_message(payload)
@@ -1436,28 +1456,68 @@ def get_media_log():
     """Supabase-backed when configured; an in-process log otherwise (kept across turns)."""
     global _media_log
     url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    if not (url and key):
+        url, key = "", ""
     if _media_log is None or _media_log.url != url.rstrip("/"):
-        _media_log = property_media.MediaDeliveryLog(url if url and key else None, key if url and key else None)
+        _media_log = property_media.MediaDeliveryLog(url or None, key or None)
     return _media_log
 
 
+# Replies that close or hand over the conversation; a photo request never replaces them.
+PHOTO_PROTECTED_STAGES = {"handoff", "do_not_contact", "awaiting_customer"}
+
+
+def latest_listing_references(previous):
+    """The options of the last reply that listed several: what "la 2" points at."""
+    for turn in reversed(recent_conversation_turns(previous)):
+        if turn["direction"] == "assistant":
+            references = list(dict.fromkeys(PRESENTED_REFERENCE_PATTERN.findall(turn["content"])))
+            if len(references) > 1:
+                return references
+    return []
+
+
 def requested_photo_reference(previous, text):
-    """The unit a photo request points at: one named by the client, or the only one on screen."""
+    """The unit a photo request points at: named, by option number, or the only one on screen."""
     reference = mentioned_property_reference(text, presented_property_references(previous))
     if reference:
         return reference
+    number = property_media.option_number(text)
+    if number:
+        options = latest_listing_references(previous) or latest_presented_references(previous)
+        return options[number - 1] if number <= len(options) else None
     latest = latest_presented_references(previous)
     return latest[0] if len(latest) == 1 else None
 
 
-def apply_photo_plan(previous, text, reply, stage, summary, inventory_matches):
-    """Choose this turn's photos; answer an explicit photo request in text as well."""
-    reference = requested_photo_reference(previous, text) if stage != "handoff" and property_media.is_photo_request(text) else None
-    photos, requested = property_media.plan_photos(reply, stage, inventory_matches, text, reference)
-    if requested:
-        reply = property_media.photo_request_reply(requested, bool(photos))
-        stage, summary = "property_detail", f"Fotos solicitadas de la referencia {requested['public']['public_reference']}."
-    return photos, reply, stage, summary
+def apply_photo_plan(previous, text, reply, stage, summary, inventory_matches, phone=None, search_key=None):
+    """Choose this turn's photos and, when the client asked for photos, answer that in text.
+
+    Options listed get their main photo; a chosen unit, up to MAX_UNIT_PHOTOS not sent
+    before. A handoff, pause or do-not-contact reply is never replaced.
+    """
+    if stage in PHOTO_PROTECTED_STAGES or not inventory_matches:
+        return [], reply, stage, summary
+
+    def fresh(photos):
+        return property_media.unsent(get_media_log(), phone, search_key, photos) if phone else photos
+
+    if property_media.is_photo_request(text):
+        reference = requested_photo_reference(previous, text)
+        photos, item = property_media.plan_photos(reply, stage, inventory_matches, unit_reference=reference)
+        if item:
+            sending = fresh(photos)[:property_media.MAX_UNIT_PHOTOS]
+            reply = property_media.photo_request_reply(item, len(photos), len(sending))
+            return sending, reply, "property_detail", f"Fotos solicitadas de la referencia {reference}."
+        options = latest_listing_references(previous)
+        if not reference and len(options) > 1:
+            return [], property_media.which_option_reply(options), "qualified", "Fotos solicitadas sin indicar la opción."
+    selection = selected_option(previous, text)
+    if selection and selection["reference"] and stage == "property_detail":
+        photos, _ = property_media.plan_photos(reply, stage, inventory_matches, unit_reference=selection["reference"])
+        return fresh(photos)[:property_media.MAX_UNIT_PHOTOS], reply, stage, summary
+    photos, _ = property_media.plan_photos(reply, stage, inventory_matches)
+    return fresh(photos), reply, stage, summary
 
 
 def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None):
@@ -1537,7 +1597,12 @@ def receive_webhook():
             if inventory_store and inventory_ready(criteria):
                 inventory_matches, inventory_cutoff = inventory_store.find_matches(criteria)
                 reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
-            photos, reply, stage, summary = apply_photo_plan(previous, text, reply, stage, summary, inventory_matches)
+            search_key = (turn_state or {}).get("active_search_id")
+            try:
+                photos, reply, stage, summary = apply_photo_plan(previous, text, reply, stage, summary, inventory_matches, sender, search_key)
+            except Exception:  # photos are extra; the text reply must still be committed and sent
+                photos = []
+                logger.exception("Photo planning skipped")
             started_at = time.monotonic()
             if memory:
                 # All mandatory internal state commits before attempting Meta.
@@ -1551,7 +1616,7 @@ def receive_webhook():
             timings["internal_commit_ms"] = round((time.monotonic() - started_at) * 1000)
             started_at = time.monotonic()
             # Photos first, so the question in the text reply arrives after them.
-            property_media.send_photos(send_whatsapp_image, get_media_log(), sender, (turn_state or {}).get("active_search_id"), photos)
+            property_media.send_photos(send_whatsapp_image, get_media_log(), sender, search_key, photos)
             try:
                 send_whatsapp_message(sender, reply)
                 if memory: memory.record_delivery(message_id, "sent")

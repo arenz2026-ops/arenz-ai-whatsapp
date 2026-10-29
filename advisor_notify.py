@@ -22,6 +22,9 @@ REQUEST_LABELS = {
     "property_interest": "Mostró interés en un inmueble",
     "advisor": "Pidió hablar con un asesor",
 }
+# A yes to the bot's offer to have an advisor send photos is recorded as interest in
+# that unit; the notice says what the client actually asked for.
+REASON_LABELS = {"photos": "Pidió fotos de un inmueble"}
 PAYMENT_LABELS = {"contado": "contado", "credito": "crédito hipotecario", "mixto": "mixto",
                   "por_definir": "por definir", "prefiere_no_indicar": "prefiere no indicar"}
 CREDIT_LABELS = {"aprobado": "crédito aprobado", "en_tramite": "crédito en trámite",
@@ -73,8 +76,12 @@ def criteria_lines(criteria):
     ]
 
 
+def request_label(handoff):
+    return REASON_LABELS.get(handoff.get("reason")) or REQUEST_LABELS.get(handoff["request_type"], "Pidió atención")
+
+
 def advisor_text(client_phone, handoff, criteria, last_message):
-    lines = [f"🔔 Nuevo lead para atender — {REQUEST_LABELS.get(handoff['request_type'], 'Pidió atención')}",
+    lines = [f"🔔 Nuevo lead para atender — {request_label(handoff)}",
              f"Cliente: +{client_phone} (https://wa.me/{client_phone})"]
     if handoff.get("property_reference"):
         lines.append(f"Inmueble: {handoff['property_reference']}")
@@ -91,7 +98,7 @@ def _template_param(value):
 def template_payload(advisor_phone, template_name, language, client_phone, handoff, criteria):
     """Template body parameters: {{1}} cliente, {{2}} solicitud, {{3}} inmueble, {{4}} criterios."""
     summary = " | ".join(f"{label}: {value}" for label, value in criteria_lines(criteria))
-    params = [f"+{client_phone}", REQUEST_LABELS.get(handoff["request_type"], "Pidió atención"),
+    params = [f"+{client_phone}", request_label(handoff),
               handoff.get("property_reference") or "sin referencia", summary]
     return {"messaging_product": "whatsapp", "recipient_type": "individual", "to": advisor_phone, "type": "template",
             "template": {"name": template_name, "language": {"code": language},

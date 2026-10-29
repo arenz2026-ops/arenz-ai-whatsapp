@@ -111,6 +111,82 @@ alter table public.whatsapp_connection enable row level security;
 revoke all on public.whatsapp_connection from anon, authenticated;
 ```
 
+## Fotos de inmuebles
+
+El bot envía las fotos como imágenes de WhatsApp, siempre antes del texto:
+
+- Al presentar opciones: la foto principal de cada una (máximo 3).
+- Al elegir una unidad o pedir "fotos": hasta 5 fotos de esa unidad; si pide más, recibe
+  las siguientes. Con varias opciones en pantalla puede decir "fotos de la 2"; si no
+  indica cuál, el bot le pregunta.
+- Si la unidad no tiene fotos (o ya se enviaron todas), lo dice y ofrece que un asesor se
+  las envíe. Si el cliente acepta, se registra la derivación y se avisa al asesor con la
+  referencia. Una respuesta de derivación nunca se reemplaza por fotos.
+- Los pies de foto no muestran la referencia ARZ. Si una foto falla, el texto sale igual.
+- No se repite una foto al mismo cliente dentro de la misma búsqueda (tabla
+  `media_deliveries`; sin Supabase se recuerda en la memoria del proceso).
+
+Solo se envían filas de `inventory_property_media` con `media_type = 'photo'`,
+`approved_for_client = true` y enlace `https://`.
+
+Ejecuta una vez en el SQL Editor de Supabase:
+
+```sql
+-- Qué fotos recibió cada cliente en cada búsqueda, para no repetirlas.
+create table if not exists public.media_deliveries (
+  id bigint generated always as identity primary key,
+  phone text not null,
+  search_key text not null,
+  media_url text not null,
+  sent_at timestamptz not null default now(),
+  unique (phone, search_key, media_url)
+);
+alter table public.media_deliveries enable row level security;
+revoke all on public.media_deliveries from anon, authenticated;
+
+-- Bucket público de las fotos: solo JPG de hasta 1 MB.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('inmuebles', 'inmuebles', true, 1048576, array['image/jpeg'])
+on conflict (id) do update
+  set public = excluded.public,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+```
+
+El bucket es público porque WhatsApp descarga cada foto desde su enlace: quien tenga el
+enlace puede verla, incluso antes de aprobarla. Los nombres llevan un código derivado del
+archivo, así que no se pueden adivinar, y el bucket no se puede listar sin la clave de
+servidor.
+
+### Subir fotos con `media_import.py`
+
+Organiza las fotos en una carpeta por referencia. El orden de los nombres es el orden de
+envío y la primera es la foto principal. Formatos: JPG, PNG o WEBP (las HEIC del iPhone
+se exportan antes como JPG).
+
+```
+fotos/
+  ARZ-000001/
+    01-sala.jpg
+    02-cocina.png
+```
+
+```powershell
+$env:SUPABASE_URL = "https://TU-PROYECTO.supabase.co"
+$env:SUPABASE_KEY = "clave-de-servidor"
+python media_import.py fotos                          # prueba: muestra el plan, no escribe nada
+python media_import.py fotos --apply                  # sube y registra sin aprobar
+python media_import.py fotos --apply --approve-media  # aprueba las fotos de esa carpeta
+```
+
+Cada foto se convierte a JPG de máximo 1600 px y 1 MB, sin metadatos (incluida la
+ubicación GPS), se sube a `inmuebles/<referencia>/` y se registra en
+`inventory_property_media` con `approved_for_client = false`. Revisa las fotos en los
+enlaces que imprime `--apply` y apruébalas con `--approve-media` (también se puede usar
+desde el inicio para subir y aprobar a la vez). Repetir el comando con la misma carpeta
+no duplica nada. Si alguna foto se rechaza (formato, archivo dañado o referencia
+inexistente), `--apply` no hace nada hasta corregirla.
+
 ## Aviso al asesor
 
 Cuando el cliente pide asesor, llamada, visita o muestra interés en un inmueble, el
