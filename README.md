@@ -131,3 +131,73 @@ Solicitud: {{2}}
 Inmueble: {{3}}
 Criterios: {{4}}
 ```
+
+## Fotos de inmuebles
+
+El bot envía fotos como mensajes de imagen de WhatsApp (por enlace HTTPS), siempre
+antes del texto:
+
+- Al presentar opciones: la foto principal de cada una (máximo 3).
+- Al elegir una unidad o pedir fotos ("fotos de la 2", o solo "fotos" si hay una
+  unidad en pantalla): hasta 5 fotos de esa unidad.
+- Si se piden fotos con varias opciones en pantalla, pregunta de cuál.
+- Si la unidad no tiene fotos aprobadas (o ya se enviaron todas), lo dice y ofrece
+  que un asesor se las envíe; un "sí" registra la derivación y avisa al asesor.
+- Una respuesta de derivación nunca se reemplaza ni lleva fotos.
+
+Los pies de foto describen la unidad sin la referencia interna. Solo se envían las
+filas de `inventory_property_media` con `approved_for_client = true`. La misma foto
+no se repite al mismo cliente dentro de una búsqueda (`media_deliveries`; si la
+tabla falla, el bot recuerda los envíos en memoria hasta el siguiente reinicio). Si
+una foto falla, se registra en el log y el texto se envía igual.
+
+Ejecuta una vez en el SQL Editor de Supabase:
+
+```sql
+create table if not exists public.media_deliveries (
+  id bigint generated always as identity primary key,
+  phone text not null,
+  search_key text not null,
+  media_url text not null,
+  delivered_at timestamptz not null default now(),
+  unique (phone, search_key, media_url)
+);
+alter table public.media_deliveries enable row level security;
+revoke all on public.media_deliveries from anon, authenticated;
+
+-- Bucket público: WhatsApp descarga cada foto desde su URL pública.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('inmuebles', 'inmuebles', true, 1048576, array['image/jpeg'])
+on conflict (id) do update
+  set public = true,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+```
+
+### Subir fotos (`media_import.py`)
+
+Organiza una carpeta con una subcarpeta por `public_reference`; el orden alfabético
+de los archivos es el orden de las fotos y la primera es la principal:
+
+```
+fotos/
+  C2-00003A4AD688/
+    01-fachada.jpg
+    02-sala.png
+```
+
+```powershell
+$env:SUPABASE_URL = "https://TU-PROYECTO.supabase.co"
+$env:SUPABASE_KEY = "clave-service-role"
+python media_import.py fotos                                # prueba: no sube ni escribe nada
+python media_import.py fotos --apply                        # sube y registra sin aprobar
+python media_import.py fotos --apply --approve-media        # tras revisarlas: aprobadas para clientes
+```
+
+Cada foto se convierte a JPG de máximo 1 MB y 1600 px por lado, sin metadatos EXIF
+(las fotos de celular traen la ubicación GPS), se sube a `inmuebles/REFERENCIA/` y se
+registra en `inventory_property_media` con `approved_for_client = false`; el bot no
+la envía hasta aprobarla con `--approve-media`. Sin `--apply` solo muestra el plan
+(con las credenciales, además verifica que cada referencia exista). Volver a correrlo
+es seguro: una foto ya registrada no se vuelve a subir, y el script nunca borra. Con
+cualquier error (referencia inexistente, archivo ilegible) no aplica nada.
