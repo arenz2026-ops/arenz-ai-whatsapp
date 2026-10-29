@@ -25,3 +25,9 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
+      - key: ADVISOR_PHONE
+        sync: false
+      - key: ADVISOR_TEMPLATE
+        sync: false
+      - key: ADVISOR_TEMPLATE_LANGUAGE
+        value: es

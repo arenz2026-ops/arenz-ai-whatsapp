@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 from flask import Flask, jsonify, request
 
+import advisor_notify
 import embedded_signup
 
 app = Flask(__name__)
@@ -1401,9 +1402,16 @@ def customer_visible_reply(message):
 
 def send_whatsapp_message(to, message):
     message = customer_visible_reply(message)
+    response = post_graph_message({"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}})
+    logger.info("WhatsApp reply accepted by Graph API")
+    return response
+
+
+def post_graph_message(payload):
+    """POST one messages payload to the Graph API with the active credentials; raise on rejection."""
     token, phone_number_id = embedded_signup.active_credentials(WHATSAPP_TOKEN, PHONE_NUMBER_ID)
     if not token or not phone_number_id: raise RuntimeError("WhatsApp credentials are not configured")
-    response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/messages", headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
+    response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/messages", headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}, json=payload, timeout=20)
     try:
         response.raise_for_status()
     except requests.HTTPError as error:
@@ -1413,8 +1421,19 @@ def send_whatsapp_message(to, message):
             details = {}
         logger.error("Graph API rejected reply: status=%s code=%s type=%s message=%s", response.status_code, details.get("code"), details.get("type"), details.get("message"))
         raise error
-    logger.info("WhatsApp reply accepted by Graph API")
     return response
+
+
+def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None):
+    """After the client has their reply, tell the advisor. Best effort; never raises."""
+    if stage != "handoff":
+        return 0
+    try:
+        handoff = detected_handoff(previous, sanitize_new_search_observation(observation, text), text, inventory_matches)
+        return advisor_notify.notify_advisors(post_graph_message, sender, handoff, criteria, text)
+    except Exception:
+        logger.exception("Advisor notice skipped")
+        return 0
 
 
 def valid_meta_signature(raw_body, signature):
@@ -1503,6 +1522,9 @@ def receive_webhook():
                     code = f"meta_http_{getattr(error.response, 'status_code', None)}" if getattr(error, "response", None) is not None else "meta_transport"
                     memory.record_delivery(message_id, "failed", code)
                 logger.warning("WhatsApp delivery failed after internal commit: category=%s", type(error).__name__)
+            # The handoff is already committed; the notice to the advisor comes last so it
+            # can never delay or break the client's reply.
+            notify_advisor_of_handoff(sender, stage, previous, effective_observation, text, criteria, inventory_matches)
             timings["graph_ms"] = round((time.monotonic() - started_at) * 1000)
             timings["total_ms"] = round((time.monotonic() - webhook_started_at) * 1000)
             logger.info("Webhook timing: dedupe_ms=%s session_read_ms=%s context_ms=%s openai_ms=%s session_write_ms=%s messages_write_ms=%s lead_write_ms=%s graph_ms=%s total_ms=%s", timings.get("dedupe_ms"), timings.get("session_read_ms"), timings.get("context_ms"), timings.get("openai_ms"), timings.get("session_write_ms"), timings.get("messages_write_ms"), timings.get("lead_write_ms"), timings.get("graph_ms"), timings.get("total_ms"))

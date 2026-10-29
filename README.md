@@ -19,6 +19,9 @@ Configúralas en Render o localmente, nunca en Git.
 | `SUPABASE_KEY` | Clave de servidor Supabase; nunca la expongas en el cliente o Git. |
 | `LEADS_DB_PATH` | SQLite solo como fallback local. |
 | `PORT` | Render lo configura automáticamente. |
+| `ADVISOR_PHONE` | Opcional. Números de asesor que reciben el aviso de cada derivación, separados por coma (`51979300318,51996353549`; se acepta `979300318`). |
+| `ADVISOR_TEMPLATE` | Opcional. Nombre de la plantilla aprobada para el aviso; sin ella se envía texto libre. |
+| `ADVISOR_TEMPLATE_LANGUAGE` | Opcional; por defecto `es`. Código de idioma con que se aprobó la plantilla. |
 
 ## Local
 
@@ -106,4 +109,25 @@ create table if not exists public.whatsapp_connection (
 );
 alter table public.whatsapp_connection enable row level security;
 revoke all on public.whatsapp_connection from anon, authenticated;
+```
+
+## Aviso al asesor
+
+Cuando el cliente pide asesor, llamada, visita o muestra interés en un inmueble, el
+bot responde al cliente, registra la derivación en Supabase y, al final, envía por
+WhatsApp a cada número de `ADVISOR_PHONE` un aviso con el teléfono del cliente
+(enlace `wa.me`), el tipo de solicitud, la referencia del inmueble y los filtros
+Qué / Dónde / Cuánto / Cómo / Cuándo (lo no declarado figura como "no indicado").
+Si el aviso falla, se registra en el log y la conversación sigue normal.
+
+WhatsApp solo acepta texto libre hacia un número que escribió al bot en las últimas
+24 h. Para que el aviso llegue siempre, crea en Meta una plantilla de categoría
+*Utility* y configura `ADVISOR_TEMPLATE`. El bot llena cuatro parámetros del cuerpo:
+
+```
+Nuevo lead para atender.
+Cliente: {{1}}
+Solicitud: {{2}}
+Inmueble: {{3}}
+Criterios: {{4}}
 ```
