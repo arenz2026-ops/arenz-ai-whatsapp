@@ -26,6 +26,7 @@ PAYMENT_LABELS = {"contado": "contado", "credito": "crédito hipotecario", "mixt
                   "por_definir": "por definir", "prefiere_no_indicar": "prefiere no indicar"}
 CREDIT_LABELS = {"aprobado": "crédito aprobado", "en_tramite": "crédito en trámite",
                  "por_evaluar": "crédito por evaluar", "prefiere_no_indicar": "no indicó estado del crédito"}
+PHOTOS_LABEL = "Pidió fotos de un inmueble"
 NOT_GIVEN = "no indicado"
 # Meta rejects template parameters with line breaks, tabs or 4+ consecutive spaces.
 _TEMPLATE_UNSAFE = re.compile(r"[\r\n\t]+| {4,}")
@@ -41,6 +42,13 @@ def advisor_phones():
         if digits and digits not in phones:
             phones.append(digits)
     return phones
+
+
+def request_label(handoff):
+    """A photo request rides on property_interest (the type handoff_requests admits)."""
+    if handoff.get("photos_requested"):
+        return PHOTOS_LABEL
+    return REQUEST_LABELS.get(handoff["request_type"], "Pidió atención")
 
 
 def _money(criteria):
@@ -74,7 +82,7 @@ def criteria_lines(criteria):
 
 
 def advisor_text(client_phone, handoff, criteria, last_message):
-    lines = [f"🔔 Nuevo lead para atender — {REQUEST_LABELS.get(handoff['request_type'], 'Pidió atención')}",
+    lines = [f"🔔 Nuevo lead para atender — {request_label(handoff)}",
              f"Cliente: +{client_phone} (https://wa.me/{client_phone})"]
     if handoff.get("property_reference"):
         lines.append(f"Inmueble: {handoff['property_reference']}")
@@ -91,7 +99,7 @@ def _template_param(value):
 def template_payload(advisor_phone, template_name, language, client_phone, handoff, criteria):
     """Template body parameters: {{1}} cliente, {{2}} solicitud, {{3}} inmueble, {{4}} criterios."""
     summary = " | ".join(f"{label}: {value}" for label, value in criteria_lines(criteria))
-    params = [f"+{client_phone}", REQUEST_LABELS.get(handoff["request_type"], "Pidió atención"),
+    params = [f"+{client_phone}", request_label(handoff),
               handoff.get("property_reference") or "sin referencia", summary]
     return {"messaging_product": "whatsapp", "recipient_type": "individual", "to": advisor_phone, "type": "template",
             "template": {"name": template_name, "language": {"code": language},
