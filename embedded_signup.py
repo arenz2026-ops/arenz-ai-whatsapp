@@ -24,7 +24,9 @@ ES_CONFIG_ID = os.getenv("ES_CONFIG_ID", "1878514219986650")
 # Only a WABA owned by this business portfolio (Arenz) may take over the bot.
 ALLOWED_BUSINESS_ID = os.getenv("ALLOWED_BUSINESS_ID", "4420949641567478")
 TABLE = "whatsapp_connection"
-_CACHE = {"at": 0.0, "row": None}
+# "at" is None until the first lookup. A 0.0 sentinel looked fresh whenever
+# time.monotonic() was still under CACHE_SECONDS, i.e. just after a container boot.
+_CACHE = {"at": None, "row": None}
 CACHE_SECONDS = 60
 
 
@@ -37,7 +39,7 @@ def _supabase():
 
 def stored_connection():
     """Return the active connection row from Supabase (cached), or None."""
-    if time.monotonic() - _CACHE["at"] < CACHE_SECONDS:
+    if _CACHE["at"] is not None and time.monotonic() - _CACHE["at"] < CACHE_SECONDS:
         return _CACHE["row"]
     url, headers = _supabase()
     row = None
@@ -120,7 +122,7 @@ def complete_signup(code, waba_id, phone_number_id, app_secret):
                                 "connected_at": datetime.now(timezone.utc).isoformat()}, timeout=10)
     if not saved.ok:
         return False, "No se pudo guardar la conexión en Supabase."
-    _CACHE.update(at=0.0, row=None)
+    _CACHE.update(at=None, row=None)
     logger.info("Embedded Signup completed: waba=%s phone_number_id=%s", waba_id, phone_number_id)
     return True, "Número conectado. El bot ya responde desde este número."
 
