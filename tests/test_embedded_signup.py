@@ -15,13 +15,13 @@ def resp(ok=True, payload=None):
 
 class EmbeddedSignupTests(unittest.TestCase):
     def setUp(self):
-        es._CACHE.update(at=0.0, row=None)
+        es._CACHE.update(at=None, row=None)
         self.client = app.app.test_client()
         self.env = patch.dict(os.environ, {"SUPABASE_URL": "https://db.example", "SUPABASE_KEY": "k"})
         self.env.start()
 
     def tearDown(self):
-        self.env.stop(); es._CACHE.update(at=0.0, row=None)
+        self.env.stop(); es._CACHE.update(at=None, row=None)
 
     def test_page_embeds_app_and_config_ids(self):
         body = self.client.get("/conectar-whatsapp").get_data(as_text=True)
@@ -65,6 +65,12 @@ class EmbeddedSignupTests(unittest.TestCase):
 
     @patch("embedded_signup.requests.get")
     def test_stored_connection_overrides_env(self, get):
+        get.return_value = resp(payload=[{"phone_number_id": "p9", "access_token": "t9", "waba_id": "w"}])
+        self.assertEqual(es.active_credentials("env-t", "env-p"), ("t9", "p9"))
+
+    @patch("embedded_signup.time.monotonic", return_value=5.0)
+    @patch("embedded_signup.requests.get")
+    def test_stored_connection_read_right_after_boot(self, get, _monotonic):
         get.return_value = resp(payload=[{"phone_number_id": "p9", "access_token": "t9", "waba_id": "w"}])
         self.assertEqual(es.active_credentials("env-t", "env-p"), ("t9", "p9"))
 
