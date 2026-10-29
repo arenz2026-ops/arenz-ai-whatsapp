@@ -1,17 +1,21 @@
 """Upload property photos to Supabase Storage and register them for the bot.
 
-The folder holds one subfolder per property, named by its public_reference:
+The folder holds one subfolder per unit, named by its public_reference, or per
+project, named as the project appears in the inventory ("Proyecto <name>; unidad ..."):
 
     fotos/
-      ARZ-000001/
+      C2-37F90956794A/          photos of that unit only
         01-sala.jpg
-        02-cocina.png
+      CONDOMINIO LOS BOSQUES/   photos shared by every unit of the project
+        01-fachada.jpg
+        02-piscina.png
 
 Each photo is re-encoded as JPEG (at most 1600 px on its longest side and 1 MB, with
-its metadata, GPS location included, removed), uploaded to the public bucket
-"inmuebles" and registered in inventory_property_media with approved_for_client=false.
-The bot only sends approved photos, so someone looks at them first and then re-runs
-with --approve-media, which approves the photos of this folder.
+its metadata, GPS location included, removed), uploaded once to the public bucket
+"inmuebles" and registered in inventory_property_media, for each unit it belongs to,
+with approved_for_client=false. The bot only sends approved photos, so someone looks
+at them first and then re-runs with --approve-media, which approves this folder's.
+A unit's own photos come before its project's.
 
 Dry-run is the default: without --apply nothing is uploaded or written. The object
 name carries a hash of the original file, so running the same folder twice uploads
@@ -32,6 +36,9 @@ MIN_SIDE = 400
 MEDIA_TYPE = "photo"  # inventory_property_media.media_type accepts only 'photo' or 'link'
 SUPPORTED = {".jpg", ".jpeg", ".png", ".webp"}
 IGNORED = {"thumbs.db", "desktop.ini"}
+PROJECT_FOLDER = "proyectos"
+PROJECT_ORDER = 100  # project photos sort after a unit's own ones
+PAGE = 1000  # PostgREST returns at most this many rows per request
 
 
 def natural_key(name):
@@ -40,7 +47,7 @@ def natural_key(name):
 
 
 def collect(root):
-    """[(reference, [photo paths])]: one per subfolder, plus the folder itself if it holds files."""
+    """[(name, [photo paths])]: one per subfolder, plus the folder itself if it holds files."""
     def files_in(folder):
         entries = sorted(os.scandir(folder), key=lambda entry: natural_key(entry.name))
         return [entry.path for entry in entries if entry.is_file()
@@ -91,11 +98,20 @@ def compress_photo(data):
         image = image.resize((max(1, round(image.width * 0.8)), max(1, round(image.height * 0.8))), Image.Resampling.LANCZOS)
 
 
-def object_path(reference, filename, data):
-    """'ARZ-000001/01-sala-3fa2c1d9e0.jpg': readable, and unique to the original's content."""
-    stem = unicodedata.normalize("NFKD", os.path.splitext(filename)[0]).encode("ascii", "ignore").decode()
-    stem = re.sub(r"[^a-z0-9]+", "-", stem.casefold()).strip("-") or "foto"
-    return f"{reference}/{stem}-{hashlib.sha256(data).hexdigest()[:10]}.jpg"
+def slug(text):
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")
+
+
+def bucket_folder(name, kind):
+    """A unit's photos live under its reference; a project's under proyectos/<slug>."""
+    return f"{PROJECT_FOLDER}/{slug(name) or 'proyecto'}" if kind == "proyecto" else name
+
+
+def object_path(folder, filename, data):
+    """'C2-37F9…/01-sala-3fa2c1d9e0.jpg': readable, and unique to the original's content."""
+    stem = slug(os.path.splitext(filename)[0]) or "foto"
+    return f"{folder}/{stem}-{hashlib.sha256(data).hexdigest()[:10]}.jpg"
 
 
 def public_url(base_url, path):
@@ -107,23 +123,23 @@ def _read(path):
         return handle.read()
 
 
-def plan_media(groups, property_ids, existing, base_url, approve=False, read=_read):
+def plan_media(groups, targets, existing, base_url, approve=False, read=_read):
     """Decide UPLOAD / APPROVE / NO-OP / REJECT per photo without touching anything.
 
-    property_ids: {public_reference: property_id}; existing: {property_id: [media rows]}.
+    targets: {folder name: {"kind": "unidad"|"proyecto", "property_ids": [...]}};
+    existing: {folder name: [media rows already stored under that folder's links]}.
     """
     plans = []
-    for reference, paths in groups:
-        property_id = property_ids.get(reference)
-        rows = {row["media_url"]: row for row in existing.get(property_id, [])} if property_id else {}
-        next_order = max([int(row.get("display_order") or 0) for row in rows.values()], default=0) + 1
-        for path in paths:
-            plan = {"reference": reference, "property_id": property_id, "file": os.path.basename(path), "source": path,
-                    "action": "REJECT", "errors": [], "approve": approve}
+    for name, paths in groups:
+        target = targets.get(name)
+        rows = existing.get(name, [])
+        for position, path in enumerate(paths, 1):
+            plan = {"group": name, "kind": target and target["kind"], "units": len(target["property_ids"]) if target else 0,
+                    "file": os.path.basename(path), "source": path, "action": "REJECT", "errors": [], "approve": approve}
             plans.append(plan)
             extension = os.path.splitext(path)[1].casefold()
-            if not property_id:
-                plan["errors"].append(f"no existe un inmueble con public_reference '{reference}'")
+            if not target:
+                plan["errors"].append(f"'{name}' no es una referencia ni un proyecto del inventario")
                 continue
             if extension not in SUPPORTED:
                 plan["errors"].append(f"formato '{extension or 'sin extensión'}' no soportado: usa JPG, PNG o WEBP")
@@ -134,18 +150,20 @@ def plan_media(groups, property_ids, existing, base_url, approve=False, read=_re
             except ValueError as error:
                 plan["errors"].append(str(error))
                 continue
-            plan.update(path=object_path(reference, plan["file"], data), size=size, original=original,
-                        bytes_in=len(data), bytes_out=len(jpeg))
+            plan.update(path=object_path(bucket_folder(name, target["kind"]), plan["file"], data), size=size,
+                        original=original, bytes_in=len(data), bytes_out=len(jpeg),
+                        display_order=position + (PROJECT_ORDER if target["kind"] == "proyecto" else 0))
             plan["url"] = public_url(base_url, plan["path"])
-            row = rows.get(plan["url"])
-            if row is None:
-                plan.update(action="UPLOAD", display_order=next_order)
-                rows[plan["url"]] = {"media_url": plan["url"], "approved_for_client": approve, "display_order": next_order}
-                next_order += 1
-            elif approve and not row.get("approved_for_client"):
+            stored = [row for row in rows if row["media_url"] == plan["url"]]
+            registered = {row["property_id"] for row in stored}
+            plan["missing"] = [pid for pid in target["property_ids"] if pid not in registered]
+            plan["unapproved"] = sum(1 for row in stored if not row.get("approved_for_client"))
+            if plan["missing"]:
+                plan["action"] = "UPLOAD"
+            elif approve and plan["unapproved"]:
                 plan["action"] = "APPROVE"
             else:
-                plan.update(action="NO-OP", approved=bool(row.get("approved_for_client")))
+                plan.update(action="NO-OP", approved=not plan["unapproved"])
     return plans
 
 
@@ -156,26 +174,38 @@ class SupabaseMedia:
         self.url = url.rstrip("/")
         self.headers = {"apikey": key, "Authorization": f"Bearer {key}"}
 
-    def property_ids(self, references):
-        if not references:
-            return {}
-        quoted = ",".join('"%s"' % reference.replace('"', '') for reference in references)
-        response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers, timeout=20,
-                                params={"select": "property_id,public_reference", "public_reference": f"in.({quoted})"})
-        response.raise_for_status()
-        return {row["public_reference"]: row["property_id"] for row in response.json()}
+    def _all(self, table, params):
+        rows = []
+        while True:
+            response = requests.get(f"{self.url}/rest/v1/{table}", headers=self.headers, timeout=30,
+                                    params={**params, "limit": PAGE, "offset": len(rows)})
+            response.raise_for_status()
+            page = response.json()
+            rows += page
+            if len(page) < PAGE:
+                return rows
 
-    def media(self, property_ids):
-        if not property_ids:
-            return {}
-        response = requests.get(f"{self.url}/rest/v1/inventory_property_media", headers=self.headers, timeout=20,
-                                params={"select": "property_id,media_url,approved_for_client,display_order",
-                                        "property_id": "in.(" + ",".join(property_ids) + ")"})
-        response.raise_for_status()
-        grouped = {}
-        for row in response.json():
-            grouped.setdefault(row["property_id"], []).append(row)
-        return grouped
+    def resolve(self, names):
+        """{name: target} for folder names that are a public_reference or a project name."""
+        targets = {}
+        if names:
+            quoted = ",".join('"%s"' % name.replace('"', '') for name in names)
+            for row in self._all("inventory_properties", {"select": "property_id,public_reference",
+                                                          "public_reference": f"in.({quoted})", "order": "property_id"}):
+                targets[row["public_reference"]] = {"kind": "unidad", "property_ids": [row["property_id"]]}
+        for name in names:
+            if name in targets:
+                continue
+            # Unit descriptions start "Proyecto <name>; unidad <unit>." (see inventory_reply).
+            units = self._all("inventory_properties", {"select": "property_id", "order": "property_id",
+                                                       "public_description": f"ilike.Proyecto {name}; unidad*"})
+            if units:
+                targets[name] = {"kind": "proyecto", "property_ids": [row["property_id"] for row in units]}
+        return targets
+
+    def media_under(self, url_prefix):
+        return self._all("inventory_property_media", {"select": "property_id,media_url,approved_for_client",
+                                                      "media_url": f"like.{url_prefix}*", "order": "media_id"})
 
     def upload(self, path, data):
         # x-upsert: a re-run after a half-finished one overwrites the same content.
@@ -184,16 +214,19 @@ class SupabaseMedia:
                                           "cache-control": "max-age=31536000"})
         response.raise_for_status()
 
-    def register(self, row):
-        response = requests.post(f"{self.url}/rest/v1/inventory_property_media?on_conflict=property_id,media_url",
-                                 headers={**self.headers, "Content-Type": "application/json",
-                                          "Prefer": "resolution=ignore-duplicates,return=minimal"}, json=row, timeout=20)
-        response.raise_for_status()
+    def register(self, rows):
+        for start in range(0, len(rows), 500):
+            response = requests.post(f"{self.url}/rest/v1/inventory_property_media?on_conflict=property_id,media_url",
+                                     headers={**self.headers, "Content-Type": "application/json",
+                                              "Prefer": "resolution=ignore-duplicates,return=minimal"},
+                                     json=rows[start:start + 500], timeout=30)
+            response.raise_for_status()
 
-    def approve(self, property_id, media_url, stamp):
-        response = requests.patch(f"{self.url}/rest/v1/inventory_property_media", timeout=20,
+    def approve(self, media_url, stamp):
+        """Approve one photo for every unit it is registered to."""
+        response = requests.patch(f"{self.url}/rest/v1/inventory_property_media", timeout=30,
                                   headers={**self.headers, "Content-Type": "application/json", "Prefer": "return=minimal"},
-                                  params={"property_id": f"eq.{property_id}", "media_url": f"eq.{media_url}"},
+                                  params={"media_url": f"eq.{media_url}", "approved_for_client": "is.false"},
                                   json={"approved_for_client": True, "approved_at": stamp})
         response.raise_for_status()
 
@@ -202,20 +235,22 @@ def apply_plans(store, plans, now=None, read=_read, done=None):
     """Upload and register new photos, approve the ones asked. One photo at a time, so a
     failure leaves every earlier photo complete and a re-run picks up the rest."""
     stamp = (now or datetime.now(timezone.utc)).isoformat()
-    done = {"uploaded": 0, "approved": 0} if done is None else done
+    done = {"uploaded": 0, "rows": 0, "approved": 0} if done is None else done
     for plan in plans:
         if plan["action"] == "UPLOAD":
             jpeg, _, _ = compress_photo(read(plan["source"]))
             store.upload(plan["path"], jpeg)
-            row = {"property_id": plan["property_id"], "media_type": MEDIA_TYPE, "media_url": plan["url"],
-                   "display_order": plan["display_order"], "approved_for_client": plan["approve"]}
-            if plan["approve"]:
-                row["approved_at"] = stamp
-            store.register(row)
+            extra = {"approved_at": stamp} if plan["approve"] else {}
+            store.register([{"property_id": property_id, "media_type": MEDIA_TYPE, "media_url": plan["url"],
+                             "display_order": plan["display_order"], "approved_for_client": plan["approve"], **extra}
+                            for property_id in plan["missing"]])
+            if plan["approve"] and plan["unapproved"]:
+                store.approve(plan["url"], stamp)
             done["uploaded"] += 1
+            done["rows"] += len(plan["missing"])
             done["approved"] += int(plan["approve"])
         elif plan["action"] == "APPROVE":
-            store.approve(plan["property_id"], plan["url"], stamp)
+            store.approve(plan["url"], stamp)
             done["approved"] += 1
     return done
 
@@ -224,21 +259,28 @@ def _size(count):
     return f"{count / 1048576:.1f} MB".replace(".", ",") if count >= 1048576 else f"{round(count / 1024)} KB"
 
 
+def _header(plan):
+    if plan["kind"] == "proyecto":
+        return f"{plan['group']} (proyecto, {plan['units']} unidades)"
+    return f"{plan['group']} (unidad)" if plan["kind"] else plan["group"]
+
+
 def render_report(plans, show_urls=False):
     lines, counts, current = [], {"UPLOAD": 0, "APPROVE": 0, "NO-OP": 0, "REJECT": 0}, None
     for plan in plans:
         counts[plan["action"]] += 1
-        if plan["reference"] != current:
-            current = plan["reference"]
-            lines.append(current)
+        if plan["group"] != current:
+            current = plan["group"]
+            lines.append(_header(plan))
         lines.append(f"  [{plan['action']:<7}] {plan['file']}")
         for error in plan["errors"]:
             lines.append(f"            ! {error}")
         if plan["action"] == "UPLOAD":
             (w0, h0), (w1, h1) = plan["original"], plan["size"]
             state = "aprobada" if plan["approve"] else "sin aprobar"
+            units = f", en {len(plan['missing'])} unidades" if plan["kind"] == "proyecto" else ""
             lines.append(f"            · {w0}×{h0} → {w1}×{h1}, {_size(plan['bytes_in'])} → {_size(plan['bytes_out'])}, "
-                         f"orden {plan['display_order']}, {state}")
+                         f"orden {plan['display_order']}, {state}{units}")
             lines.append(f"            · {plan['url'] if show_urls else plan['path']}")
         elif plan["action"] == "APPROVE":
             lines.append("            · ya subida; se marcará aprobada para el cliente")
@@ -264,7 +306,7 @@ def main(argv=None):
         except (AttributeError, ValueError):
             pass
     parser = argparse.ArgumentParser(description="Sube fotos de inmuebles a Supabase Storage. Dry-run salvo --apply.")
-    parser.add_argument("folder", help="carpeta con una subcarpeta por public_reference (p. ej. fotos/ARZ-000001/)")
+    parser.add_argument("folder", help="carpeta con una subcarpeta por referencia o por proyecto (p. ej. fotos/MONET/)")
     parser.add_argument("--apply", action="store_true", help="sube y registra; sin esto no se escribe nada")
     parser.add_argument("--approve-media", action="store_true",
                         help="marca como aprobadas para el cliente las fotos de esta carpeta")
@@ -277,8 +319,10 @@ def main(argv=None):
         print("No hay fotos en la carpeta.")
         return 1
     store = _store_from_env()
-    property_ids = store.property_ids([reference for reference, _ in groups])
-    plans = plan_media(groups, property_ids, store.media(list(property_ids.values())), store.url, args.approve_media)
+    targets = store.resolve([name for name, _ in groups])
+    existing = {name: store.media_under(public_url(store.url, bucket_folder(name, target["kind"]) + "/"))
+                for name, target in targets.items()}
+    plans = plan_media(groups, targets, existing, store.url, args.approve_media)
     report, counts = render_report(plans, show_urls=args.apply)
     print(report)
     if not args.apply:
@@ -287,7 +331,7 @@ def main(argv=None):
     if counts["REJECT"]:
         print("\nHay fotos rechazadas: corrige o quita esos archivos antes de aplicar.")
         return 1
-    result = {"uploaded": 0, "approved": 0}
+    result = {"uploaded": 0, "rows": 0, "approved": 0}
     try:
         apply_plans(store, plans, done=result)
     except requests.RequestException as error:
@@ -297,7 +341,8 @@ def main(argv=None):
         print(f"Quedaron completas {result['uploaded']} subidas y {result['approved']} aprobaciones; "
               f"corrige el problema (¿existe el bucket '{BUCKET}'?, ver README) y vuelve a ejecutar.")
         return 1
-    print(f"\nAplicado: {result['uploaded']} fotos subidas, {result['approved']} aprobadas para el cliente.")
+    print(f"\nAplicado: {result['uploaded']} fotos subidas ({result['rows']} registros), "
+          f"{result['approved']} aprobadas para el cliente.")
     if result["uploaded"] and not args.approve_media:
         print("Revisa las fotos en los enlaces de arriba y apruébalas con --apply --approve-media.")
     return 0

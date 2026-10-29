@@ -134,7 +134,8 @@ def plan_photos(reply, stage, inventory_matches, unit_reference=None):
     for number, reference in enumerate(shown[:MAX_OPTIONS_WITH_PHOTO], 1):
         public = by_reference[reference]["public"]
         images = approved_images(public)
-        if images:
+        # Units of one project share its photos: the same picture goes out once.
+        if images and images[0] not in {photo["url"] for photo in photos}:
             photos.append({"reference": reference, "url": images[0], "caption": caption_for(public, option_number=number)})
     return photos, None
 

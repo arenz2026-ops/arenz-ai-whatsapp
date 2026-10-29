@@ -160,15 +160,20 @@ servidor.
 
 ### Subir fotos con `media_import.py`
 
-Organiza las fotos en una carpeta por referencia. El orden de los nombres es el orden de
-envío y la primera es la foto principal. Formatos: JPG, PNG o WEBP (las HEIC del iPhone
-se exportan antes como JPG).
+Organiza las fotos en una carpeta por **proyecto** (con el nombre tal como figura en el
+inventario: `CONDOMINIO LOS BOSQUES`, `MONET`, …) o por **unidad** (con su referencia,
+`C2-…`). Las fotos de un proyecto se suben una sola vez y quedan asociadas a todas sus
+unidades; las de una unidad, solo a ella, y se muestran antes que las del proyecto. El
+orden de los nombres es el orden de envío. Formatos: JPG, PNG o WEBP (las HEIC del
+iPhone se exportan antes como JPG).
 
 ```
 fotos/
-  ARZ-000001/
+  CONDOMINIO LOS BOSQUES/
+    01-fachada.jpg
+    02-piscina.png
+  C2-37F90956794A/
     01-sala.jpg
-    02-cocina.png
 ```
 
 ```powershell
@@ -180,12 +185,13 @@ python media_import.py fotos --apply --approve-media  # aprueba las fotos de esa
 ```
 
 Cada foto se convierte a JPG de máximo 1600 px y 1 MB, sin metadatos (incluida la
-ubicación GPS), se sube a `inmuebles/<referencia>/` y se registra en
-`inventory_property_media` con `approved_for_client = false`. Revisa las fotos en los
-enlaces que imprime `--apply` y apruébalas con `--approve-media` (también se puede usar
-desde el inicio para subir y aprobar a la vez). Repetir el comando con la misma carpeta
-no duplica nada. Si alguna foto se rechaza (formato, archivo dañado o referencia
-inexistente), `--apply` no hace nada hasta corregirla.
+ubicación GPS), se sube a `inmuebles/proyectos/<proyecto>/` o `inmuebles/<referencia>/`
+y se registra en `inventory_property_media` con `approved_for_client = false`. Revisa
+las fotos en los enlaces que imprime `--apply` y apruébalas con `--approve-media`
+(también se puede usar desde el inicio para subir y aprobar a la vez). Repetir el
+comando no duplica nada, y si al proyecto se le agregan unidades, las asocia a sus
+fotos. Si alguna foto se rechaza (formato, archivo dañado o carpeta que no es ni
+referencia ni proyecto), `--apply` no hace nada hasta corregirla.
 
 ## Aviso al asesor
 

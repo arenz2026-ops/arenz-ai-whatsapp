@@ -64,6 +64,12 @@ class PlanTests(Isolated):
         self.assertEqual(photos[0]["caption"], "Opción 1 · Departamento · Surco · US$ 200.000 · 2 dorm.")
         self.assertTrue(photos[1]["caption"].startswith("Opción 3 · Departamento · Lince"))
 
+    def test_units_of_one_project_do_not_repeat_its_photo(self):
+        first, second = match("C2-A", 2), match("C2-B", 2)
+        second["public"]["media"] = first["public"]["media"]  # project photos shared by both units
+        photos, _ = pm.plan_photos(app.inventory_reply([first, second]), "qualified", [first, second])
+        self.assertEqual(urls(photos), ["https://cdn.example/C2-A/01.jpg"])
+
     def test_only_a_listing_gets_option_photos(self):
         item = match("ARZ-001", 3)
         self.assertEqual(pm.plan_photos(app.parking_question_reply(item), "property_detail", [item]), ([], None))
