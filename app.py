@@ -294,6 +294,11 @@ def privacy():
     return '<html><head><title>Política de Privacidad - ARENZ</title></head><body><h1>Política de Privacidad de ARENZ</h1><p>ARENZ utiliza WhatsApp para atender consultas inmobiliarias.</p><p>Los datos se usan únicamente para atender consultas y mejorar la atención.</p><p>ARENZ no vende ni comercializa información personal.</p><p>Los usuarios pueden solicitar eliminación de datos contactando a ARENZ.</p><p>Última actualización: agosto de 2026.</p></body></html>', 200
 
 
+@app.route("/terminos", methods=["GET"])
+def terms():
+    return '<html lang="es"><head><meta charset="utf-8"><title>Condiciones del servicio - ARENZ</title></head><body><h1>Condiciones del servicio de ARENZ</h1><p>ARENZ ofrece orientación inmobiliaria por WhatsApp, incluida la atención automatizada de consultas.</p><p>La información de inmuebles es referencial y debe confirmarse con un asesor antes de cualquier decisión u operación.</p><p>Al escribirnos aceptas que usemos tus mensajes solo para atender tu consulta, según nuestra <a href="/privacy">Política de Privacidad</a>.</p><p>Puedes pedir hablar con una persona o solicitar la <a href="/data-deletion">eliminación de tus datos</a> en cualquier momento.</p><p>Contacto: arenz2026@gmail.com</p><p>Última actualización: octubre de 2026.</p></body></html>', 200
+
+
 @app.route("/data-deletion", methods=["GET"])
 def data_deletion():
     return '<html><head><title>Eliminación de Datos - ARENZ</title></head><body><h1>Solicitud de eliminación de datos</h1><p>Comunícate con ARENZ indicando tu nombre y número de WhatsApp.</p><p>Correo de contacto: arenz2026@gmail.com</p></body></html>', 200
