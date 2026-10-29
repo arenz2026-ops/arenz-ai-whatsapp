@@ -26,7 +26,7 @@ class EmbeddedSignupTests(unittest.TestCase):
     def test_page_embeds_app_and_config_ids(self):
         body = self.client.get("/conectar-whatsapp").get_data(as_text=True)
         self.assertIn(es.META_APP_ID, body); self.assertIn(es.ES_CONFIG_ID, body)
-        self.assertIn("whatsapp_business_app_onboarding", body)
+        self.assertIn('version: "v5"', body)
 
     @patch("embedded_signup.requests.post")
     @patch("embedded_signup.requests.get")
@@ -47,9 +47,21 @@ class EmbeddedSignupTests(unittest.TestCase):
         r = self.client.post("/conectar-whatsapp/callback", json={"code": "c", "waba_id": "w", "phone_number_id": "p"})
         self.assertEqual(r.status_code, 400); post.assert_not_called()
 
-    def test_missing_fields_rejected(self):
-        r = self.client.post("/conectar-whatsapp/callback", json={"code": "c"})
+    def test_missing_code_rejected(self):
+        r = self.client.post("/conectar-whatsapp/callback", json={"waba_id": "w"})
         self.assertEqual(r.status_code, 400)
+
+    @patch("embedded_signup.requests.post")
+    @patch("embedded_signup.requests.get")
+    def test_ids_recovered_when_session_info_missing(self, get, post):
+        get.side_effect = [resp(payload={"access_token": "t"}),
+                           resp(payload={"data": {"granular_scopes": [{"scope": "whatsapp_business_management", "target_ids": ["w7"]}]}}),
+                           resp(payload={"data": [{"id": "p7"}]}),
+                           resp(payload={"owner_business_info": {"id": es.ALLOWED_BUSINESS_ID}})]
+        post.side_effect = [resp(), resp()]
+        r = self.client.post("/conectar-whatsapp/callback", json={"code": "c"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["phone_number_id"], "p7")
 
     @patch("embedded_signup.requests.get")
     def test_stored_connection_overrides_env(self, get):

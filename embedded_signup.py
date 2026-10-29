@@ -69,10 +69,21 @@ def _graph_error(response):
         return ""
 
 
+def _granted_waba(token, app_secret):
+    """WABA the user granted, read from the token's granular scopes (v5 may omit it)."""
+    debug = requests.get(f"{GRAPH}/debug_token", params={
+        "input_token": token, "access_token": f"{META_APP_ID}|{app_secret}"}, timeout=20)
+    scopes = debug.json().get("data", {}).get("granular_scopes", []) if debug.ok else []
+    for scope in scopes:
+        if scope.get("scope") == "whatsapp_business_management" and scope.get("target_ids"):
+            return scope["target_ids"][0]
+    return ""
+
+
 def complete_signup(code, waba_id, phone_number_id, app_secret):
     """Run the server half of Embedded Signup. Returns (ok, message)."""
-    if not (code and waba_id and phone_number_id):
-        return False, "Faltan datos del registro (code, waba_id o phone_number_id)."
+    if not code:
+        return False, "Meta no devolvió el código de autorización."
     if not app_secret:
         return False, "APP_SECRET no está configurado en el servidor."
     response = requests.get(f"{GRAPH}/oauth/access_token", params={
@@ -83,6 +94,14 @@ def complete_signup(code, waba_id, phone_number_id, app_secret):
     if not token:
         return False, "Meta no devolvió un token."
     auth = {"Authorization": f"Bearer {token}"}
+    if not waba_id:
+        waba_id = _granted_waba(token, app_secret)
+    if waba_id and not phone_number_id:
+        numbers = requests.get(f"{GRAPH}/{waba_id}/phone_numbers", headers=auth, params={"fields": "id"}, timeout=20)
+        rows = numbers.json().get("data", []) if numbers.ok else []
+        phone_number_id = rows[0]["id"] if len(rows) == 1 else ""
+    if not (waba_id and phone_number_id):
+        return False, "No se pudo identificar la cuenta o el número conectado."
     owner = requests.get(f"{GRAPH}/{waba_id}", headers=auth, params={"fields": "owner_business_info"}, timeout=20)
     owner_id = (owner.json().get("owner_business_info") or {}).get("id") if owner.ok else None
     if str(owner_id) != str(ALLOWED_BUSINESS_ID):
@@ -122,7 +141,8 @@ window.addEventListener("message", e => {
   if (!e.origin.endsWith("facebook.com")) return;
   try { const d = JSON.parse(e.data);
     if (d.type === "WA_EMBEDDED_SIGNUP") {
-      if (d.event === "FINISH" || d.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING") sesion = d.data || {};
+      if (String(d.event || "").startsWith("FINISH")) { const x = d.data || {};
+        sesion = {waba_id: x.waba_id || (x.waba || {}).id, phone_number_id: x.phone_number_id || (x.phone_number || {}).id}; }
       else if (d.event === "CANCEL") estado("Proceso cancelado en el paso: " + ((d.data||{}).current_step||"desconocido"));
       else if (d.event === "ERROR") estado("Error de Meta: " + ((d.data||{}).error_message||""));
     } } catch (_) {}
@@ -138,7 +158,7 @@ function conectar() {
       body: JSON.stringify({code, waba_id: sesion.waba_id, phone_number_id: sesion.phone_number_id})})
       .then(x => x.json()).then(j => estado(j.message)).catch(() => estado("No se pudo contactar al servidor.")), 1500);
   }, {config_id: "__CONFIG_ID__", response_type: "code", override_default_response_type: true,
-      extras: {setup: {}, featureType: "whatsapp_business_app_onboarding", sessionInfoVersion: "3"}});
+      extras: {version: "v5"}});
 }
 </script><script async defer crossorigin="anonymous" src="https://connect.facebook.net/es_LA/sdk.js"></script>
 </body></html>"""
