@@ -12,7 +12,10 @@ from datetime import datetime, timedelta, timezone
 import requests
 from flask import Flask, jsonify, request
 
+import embedded_signup
+
 app = Flask(__name__)
+app.register_blueprint(embedded_signup.bp)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("arenz")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
@@ -1386,8 +1389,9 @@ def customer_visible_reply(message):
 
 def send_whatsapp_message(to, message):
     message = customer_visible_reply(message)
-    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID: raise RuntimeError("WhatsApp credentials are not configured")
-    response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/messages", headers={"Authorization":f"Bearer {WHATSAPP_TOKEN}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
+    token, phone_number_id = embedded_signup.active_credentials(WHATSAPP_TOKEN, PHONE_NUMBER_ID)
+    if not token or not phone_number_id: raise RuntimeError("WhatsApp credentials are not configured")
+    response = requests.post(f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_number_id}/messages", headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"}, json={"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}}, timeout=20)
     try:
         response.raise_for_status()
     except requests.HTTPError as error:

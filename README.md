@@ -84,3 +84,26 @@ esa clave ni la uses en una aplicación cliente.
 3. En App settings → Basic, carga App Secret solo en `APP_SECRET` de Render.
 4. En WhatsApp → API Setup, carga token temporal y Phone number ID en Render, y agrega el teléfono destinatario de prueba.
 5. Envía `hola`: debe recibirse respuesta y un lead en `LEADS_DB_PATH`.
+
+## Coexistencia (Embedded Signup)
+
+`/conectar-whatsapp` conecta el número de la app WhatsApp Business a Cloud API sin
+borrar la app. El callback canjea el código, rechaza cualquier WABA que no sea del
+portafolio `ALLOWED_BUSINESS_ID` (Arenz por defecto), suscribe la app a los webhooks
+y guarda token y `phone_number_id` en Supabase; el bot los usa en lugar de
+`WHATSAPP_TOKEN`/`PHONE_NUMBER_ID`. El token caduca a los 60 días: repetir la conexión.
+
+Variables opcionales: `META_APP_ID`, `ES_CONFIG_ID`, `ALLOWED_BUSINESS_ID`.
+
+```sql
+create table if not exists public.whatsapp_connection (
+  id integer primary key default 1 check (id = 1),
+  waba_id text not null,
+  phone_number_id text not null,
+  access_token text not null,
+  business_id text,
+  connected_at timestamptz not null default now()
+);
+alter table public.whatsapp_connection enable row level security;
+revoke all on public.whatsapp_connection from anon, authenticated;
+```
