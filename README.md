@@ -164,8 +164,9 @@ Organiza las fotos en una carpeta por **proyecto** (con el nombre tal como figur
 inventario: `CONDOMINIO LOS BOSQUES`, `MONET`, …) o por **unidad** (con su referencia,
 `C2-…`). Las fotos de un proyecto se suben una sola vez y quedan asociadas a todas sus
 unidades; las de una unidad, solo a ella, y se muestran antes que las del proyecto. El
-orden de los nombres es el orden de envío. Formatos: JPG, PNG o WEBP (las HEIC del
-iPhone se exportan antes como JPG).
+orden de los nombres es el orden de envío (la primera es la foto principal). Formatos:
+JPG, PNG, WEBP, TIFF y HEIC/HEIF del iPhone. Los videos, las fotos RAW (DNG…) y los
+archivos dañados se omiten y se informan, sin detener el resto.
 
 ```
 fotos/
@@ -176,12 +177,16 @@ fotos/
     01-sala.jpg
 ```
 
+Las credenciales se toman del entorno o de un archivo `.env` junto al script (Git lo
+ignora), con dos líneas: `SUPABASE_URL=https://TU-PROYECTO.supabase.co` y
+`SUPABASE_KEY=clave-de-servidor`.
+
 ```powershell
-$env:SUPABASE_URL = "https://TU-PROYECTO.supabase.co"
-$env:SUPABASE_KEY = "clave-de-servidor"
+python -m pip install -r requirements.txt
 python media_import.py fotos                          # prueba: muestra el plan, no escribe nada
 python media_import.py fotos --apply                  # sube y registra sin aprobar
 python media_import.py fotos --apply --approve-media  # aprueba las fotos de esa carpeta
+python media_import.py fotos --max-per-folder 10      # solo las 10 primeras fotos de cada carpeta
 ```
 
 Cada foto se convierte a JPG de máximo 1600 px y 1 MB, sin metadatos (incluida la
@@ -190,8 +195,8 @@ y se registra en `inventory_property_media` con `approved_for_client = false`. R
 las fotos en los enlaces que imprime `--apply` y apruébalas con `--approve-media`
 (también se puede usar desde el inicio para subir y aprobar a la vez). Repetir el
 comando no duplica nada, y si al proyecto se le agregan unidades, las asocia a sus
-fotos. Si alguna foto se rechaza (formato, archivo dañado o carpeta que no es ni
-referencia ni proyecto), `--apply` no hace nada hasta corregirla.
+fotos. Si una carpeta no es ni referencia ni proyecto, `--apply` no hace nada hasta
+renombrarla o quitarla.
 
 ## Aviso al asesor
 

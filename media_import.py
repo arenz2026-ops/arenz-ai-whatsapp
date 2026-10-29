@@ -28,13 +28,26 @@ from urllib.parse import quote
 import requests
 from PIL import Image, ImageOps
 
+try:  # iPhone photos (HEIC/HEIF); optional, so everything else works without it
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    HEIF = True
+except ImportError:
+    HEIF = False
+
 BUCKET = "inmuebles"
 MAX_SIDE = 1600
 MAX_BYTES = 1024 * 1024
 QUALITIES = (85, 80, 75, 70, 65, 60, 55, 50)
 MIN_SIDE = 400
 MEDIA_TYPE = "photo"  # inventory_property_media.media_type accepts only 'photo' or 'link'
-SUPPORTED = {".jpg", ".jpeg", ".png", ".webp"}
+HEIF_EXTENSIONS = {".heic", ".heif"}
+SUPPORTED = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"} | HEIF_EXTENSIONS
+VIDEOS = {".mov", ".mp4", ".m4v", ".avi", ".3gp", ".mkv", ".wmv"}
+RAW = {".dng", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".orf", ".rw2"}
+# Developers' renders run past Pillow's default bomb guard (89 Mpx); these files are
+# the operator's own, not uploads from strangers.
+Image.MAX_IMAGE_PIXELS = 300_000_000
 IGNORED = {"thumbs.db", "desktop.ini"}
 PROJECT_FOLDER = "proyectos"
 PROJECT_ORDER = 100  # project photos sort after a unit's own ones
@@ -79,8 +92,9 @@ def compress_photo(data):
     """Return (jpeg bytes, (width, height), original (width, height)). ValueError if unusable."""
     try:
         with Image.open(io.BytesIO(data)) as source:
-            source.load()
             original, icc = source.size, source.info.get("icc_profile")
+            source.draft("RGB", (MAX_SIDE, MAX_SIDE))  # a large JPEG decodes straight at a smaller scale
+            source.load()
             # Phones store "rotate me" as a tag; apply it, since the tag is dropped below.
             image = _as_rgb(ImageOps.exif_transpose(source))
     except Exception as error:  # Pillow raises many types for a broken or exotic file
@@ -123,16 +137,32 @@ def _read(path):
         return handle.read()
 
 
-def plan_media(groups, targets, existing, base_url, approve=False, read=_read):
-    """Decide UPLOAD / APPROVE / NO-OP / REJECT per photo without touching anything.
+def skip_reason(extension):
+    """Why a file in a photo folder is left out, or None if it is a photo the script reads."""
+    if extension in VIDEOS:
+        return "video: el bot solo envía fotos"
+    if extension in RAW:
+        return "foto RAW: expórtala a JPG si la quieres usar"
+    if extension in HEIF_EXTENSIONS and not HEIF:
+        return "foto HEIC: falta instalar pillow-heif (pip install -r requirements.txt)"
+    if extension not in SUPPORTED:
+        return f"'{extension or 'sin extensión'}' no es un formato de foto compatible"
+    return None
+
+
+def plan_media(groups, targets, existing, base_url, approve=False, read=_read, limit=None):
+    """Decide UPLOAD / APPROVE / NO-OP / SKIP / REJECT per file without touching anything.
 
     targets: {folder name: {"kind": "unidad"|"proyecto", "property_ids": [...]}};
     existing: {folder name: [media rows already stored under that folder's links]}.
+    A folder that is no reference or project is REJECTed (it blocks --apply); a file
+    that is no usable photo (video, RAW, unreadable, past `limit`) is only SKIPped.
     """
     plans = []
     for name, paths in groups:
         target = targets.get(name)
         rows = existing.get(name, [])
+        taken = 0
         for position, path in enumerate(paths, 1):
             plan = {"group": name, "kind": target and target["kind"], "units": len(target["property_ids"]) if target else 0,
                     "file": os.path.basename(path), "source": path, "action": "REJECT", "errors": [], "approve": approve}
@@ -141,15 +171,19 @@ def plan_media(groups, targets, existing, base_url, approve=False, read=_read):
             if not target:
                 plan["errors"].append(f"'{name}' no es una referencia ni un proyecto del inventario")
                 continue
-            if extension not in SUPPORTED:
-                plan["errors"].append(f"formato '{extension or 'sin extensión'}' no soportado: usa JPG, PNG o WEBP")
+            reason = skip_reason(extension)
+            if not reason and limit and taken >= limit:
+                reason = f"pasa el límite de {limit} fotos por carpeta (--max-per-folder)"
+            if reason:
+                plan.update(action="SKIP", note=reason)
                 continue
             data = read(path)
             try:
                 jpeg, size, original = compress_photo(data)
             except ValueError as error:
-                plan["errors"].append(str(error))
+                plan.update(action="SKIP", note=f"{error}; se omite")
                 continue
+            taken += 1
             plan.update(path=object_path(bucket_folder(name, target["kind"]), plan["file"], data), size=size,
                         original=original, bytes_in=len(data), bytes_out=len(jpeg),
                         display_order=position + (PROJECT_ORDER if target["kind"] == "proyecto" else 0))
@@ -266,7 +300,7 @@ def _header(plan):
 
 
 def render_report(plans, show_urls=False):
-    lines, counts, current = [], {"UPLOAD": 0, "APPROVE": 0, "NO-OP": 0, "REJECT": 0}, None
+    lines, counts, current = [], {"UPLOAD": 0, "APPROVE": 0, "NO-OP": 0, "SKIP": 0, "REJECT": 0}, None
     for plan in plans:
         counts[plan["action"]] += 1
         if plan["group"] != current:
@@ -282,6 +316,8 @@ def render_report(plans, show_urls=False):
             lines.append(f"            · {w0}×{h0} → {w1}×{h1}, {_size(plan['bytes_in'])} → {_size(plan['bytes_out'])}, "
                          f"orden {plan['display_order']}, {state}{units}")
             lines.append(f"            · {plan['url'] if show_urls else plan['path']}")
+        elif plan["action"] == "SKIP":
+            lines.append(f"            · se omite: {plan['note']}")
         elif plan["action"] == "APPROVE":
             lines.append("            · ya subida; se marcará aprobada para el cliente")
         elif plan["action"] == "NO-OP":
@@ -292,10 +328,24 @@ def render_report(plans, show_urls=False):
     return "\n".join(lines), counts
 
 
+def load_env_file(path):
+    """KEY=VALUE lines from a local .env (kept out of Git) for variables not already set."""
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8-sig") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip().removeprefix("export ").strip()
+            os.environ.setdefault(key, value.strip().strip('"').strip("'"))
+
+
 def _store_from_env():
     url, key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
     if not (url and key):
-        raise SystemExit("SUPABASE_URL and SUPABASE_KEY must be set")
+        raise SystemExit("Faltan SUPABASE_URL y SUPABASE_KEY (en el entorno o en un archivo .env junto al script)")
     return SupabaseMedia(url, key)
 
 
@@ -310,7 +360,11 @@ def main(argv=None):
     parser.add_argument("--apply", action="store_true", help="sube y registra; sin esto no se escribe nada")
     parser.add_argument("--approve-media", action="store_true",
                         help="marca como aprobadas para el cliente las fotos de esta carpeta")
+    parser.add_argument("--max-per-folder", type=int, default=None, metavar="N",
+                        help="usa solo las primeras N fotos de cada carpeta (por orden de nombre)")
     args = parser.parse_args(argv)
+    if args.max_per_folder is not None and args.max_per_folder < 1:
+        parser.error("--max-per-folder debe ser 1 o más")
     if not os.path.isdir(args.folder):
         parser.error(f"no existe la carpeta {args.folder}")
 
@@ -318,18 +372,20 @@ def main(argv=None):
     if not groups:
         print("No hay fotos en la carpeta.")
         return 1
+    for env_file in (os.path.join(os.getcwd(), ".env"), os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+        load_env_file(env_file)
     store = _store_from_env()
     targets = store.resolve([name for name, _ in groups])
     existing = {name: store.media_under(public_url(store.url, bucket_folder(name, target["kind"]) + "/"))
                 for name, target in targets.items()}
-    plans = plan_media(groups, targets, existing, store.url, args.approve_media)
+    plans = plan_media(groups, targets, existing, store.url, args.approve_media, limit=args.max_per_folder)
     report, counts = render_report(plans, show_urls=args.apply)
     print(report)
     if not args.apply:
         print("\nDRY-RUN: no se subió ni se escribió nada. Repite con --apply para aplicarlo.")
         return 1 if counts["REJECT"] else 0
     if counts["REJECT"]:
-        print("\nHay fotos rechazadas: corrige o quita esos archivos antes de aplicar.")
+        print("\nHay carpetas rechazadas: renómbralas como la referencia o el proyecto del inventario, o quítalas.")
         return 1
     result = {"uploaded": 0, "rows": 0, "approved": 0}
     try:

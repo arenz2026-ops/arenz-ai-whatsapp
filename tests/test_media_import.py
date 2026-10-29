@@ -43,6 +43,15 @@ class CompressionTests(unittest.TestCase):
         jpeg, _, _ = mi.compress_photo(photo((40, 40), (0, 0, 0, 0), "PNG", "RGBA"))
         self.assertEqual(Image.open(io.BytesIO(jpeg)).getpixel((5, 5)), (255, 255, 255))
 
+    def test_tiff_photos_are_converted(self):
+        jpeg, size, _ = mi.compress_photo(photo((2400, 1200), fmt="TIFF"))
+        self.assertEqual((Image.open(io.BytesIO(jpeg)).format, size), ("JPEG", (1600, 800)))
+
+    @unittest.skipUnless(mi.HEIF, "pillow-heif not installed")
+    def test_iphone_heic_photos_are_converted(self):
+        jpeg, size, _ = mi.compress_photo(photo((2000, 1500), fmt="HEIF"))
+        self.assertEqual((Image.open(io.BytesIO(jpeg)).format, size), ("JPEG", (1600, 1200)))
+
     def test_a_small_photo_is_not_enlarged(self):
         _, size, _ = mi.compress_photo(photo((300, 200)))
         self.assertEqual(size, (300, 200))
@@ -122,12 +131,29 @@ class PlanTests(unittest.TestCase):
         [plan] = self.plan([("LOS BOSQUES", ["LOS BOSQUES/fachada.jpg"])], existing)
         self.assertEqual((plan["action"], plan["missing"]), ("UPLOAD", [P3]))
 
-    def test_problems_are_rejected_one_photo_at_a_time(self):
-        plans = self.plan([("ARZ-1", ["ARZ-1/3.heic", "ARZ-1/4.jpg"]), ("ARZ-9", ["ARZ-9/1.jpg"])])
-        self.assertEqual([p["action"] for p in plans], ["REJECT"] * 3)
-        self.assertIn("no soportado", plans[0]["errors"][0])
-        self.assertIn("no es una imagen", plans[1]["errors"][0])
-        self.assertIn("'ARZ-9' no es una referencia ni un proyecto", plans[2]["errors"][0])
+    def test_a_folder_that_is_no_reference_or_project_is_rejected(self):
+        [plan] = self.plan([("ARZ-9", ["ARZ-9/1.jpg"])])
+        self.assertEqual(plan["action"], "REJECT")
+        self.assertIn("'ARZ-9' no es una referencia ni un proyecto", plan["errors"][0])
+
+    def test_videos_raw_and_broken_files_are_skipped_without_blocking(self):
+        files = ["ARZ-1/video.MOV", "ARZ-1/toma.dng", "ARZ-1/notas.txt", "ARZ-1/4.jpg", "ARZ-1/1.jpg"]
+        plans = mi.plan_media([("ARZ-1", files)], TARGETS, {}, BASE_URL, read=self.FILES.get)
+        self.assertEqual([p["action"] for p in plans], ["SKIP", "SKIP", "SKIP", "SKIP", "UPLOAD"])
+        notes = [p["note"] for p in plans[:4]]
+        self.assertIn("video", notes[0]); self.assertIn("RAW", notes[1])
+        self.assertIn("no es un formato de foto", notes[2]); self.assertIn("no es una imagen legible", notes[3])
+
+    def test_heic_needs_pillow_heif(self):
+        with patch.object(mi, "HEIF", False):
+            [plan] = self.plan([("ARZ-1", ["ARZ-1/3.heic"])])
+        self.assertEqual(plan["action"], "SKIP"); self.assertIn("pillow-heif", plan["note"])
+
+    def test_max_per_folder_keeps_the_first_usable_photos(self):
+        plans = mi.plan_media([("ARZ-1", ["ARZ-1/4.jpg", "ARZ-1/1.jpg", "ARZ-1/2.jpg"])], TARGETS, {}, BASE_URL,
+                              read=self.FILES.__getitem__, limit=1)
+        self.assertEqual([p["action"] for p in plans], ["SKIP", "UPLOAD", "SKIP"])
+        self.assertIn("--max-per-folder", plans[2]["note"])
 
     def test_rerunning_the_same_folder_uploads_nothing(self):
         existing = {"ARZ-1": [self.row("ARZ-1/1.jpg")]}
@@ -226,12 +252,28 @@ class MainTests(unittest.TestCase):
         self.assertEqual(patch_.call_args.kwargs["params"], {"media_url": f"eq.{uploaded}", "approved_for_client": "is.false"})
         self.assertTrue(patch_.call_args.kwargs["json"]["approved_for_client"])
 
-    def test_apply_is_refused_when_a_photo_is_rejected(self):
-        self.add("ARZ-1", "02.heic", b"heic")
+    def test_apply_is_refused_when_a_folder_is_rejected(self):
+        self.add("SIN PROYECTO", "01.jpg", photo())
         code, out, post, _ = self.run_main("--apply")
         self.assertEqual(code, 1)
         post.assert_not_called()
         self.assertIn("rechazadas", out)
+
+    def test_videos_in_a_folder_do_not_stop_the_photos(self):
+        self.add("ARZ-1", "recorrido.mov", b"video")
+        code, out, post, _ = self.run_main("--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(post.call_args_list), 2)  # one upload, one registration
+        self.assertIn("se omite: video", out)
+
+    def test_credentials_can_come_from_a_local_env_file(self):
+        env = os.path.join(self.tmp.name, ".env")
+        with open(env, "w", encoding="utf-8") as handle:
+            handle.write('# local\nSUPABASE_URL="https://otro.example"\nexport EXTRA_TEST_VAR=uno\n')
+        with patch.dict(os.environ, {"SUPABASE_URL": BASE_URL}, clear=False):
+            os.environ.pop("EXTRA_TEST_VAR", None)
+            mi.load_env_file(env)
+            self.assertEqual((os.environ["SUPABASE_URL"], os.environ["EXTRA_TEST_VAR"]), (BASE_URL, "uno"))
 
     def test_a_storage_error_stops_with_a_clear_message(self):
         failing = Mock(status_code=404, text='{"error":"Bucket not found"}')
