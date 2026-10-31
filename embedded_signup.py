@@ -74,7 +74,7 @@ def _graph_error(response):
 def _granted_waba(token, app_secret):
     """WABA the user granted, read from the token's granular scopes (v5 may omit it)."""
     debug = requests.get(f"{GRAPH}/debug_token", params={
-        "input_token": token, "access_token": f"{META_APP_ID}|{app_secret}"}, timeout=20)
+        "input_token": token, "access_token": token}, timeout=20)
     scopes = debug.json().get("data", {}).get("granular_scopes", []) if debug.ok else []
     for scope in scopes:
         if scope.get("scope") == "whatsapp_business_management" and scope.get("target_ids"):
@@ -265,7 +265,7 @@ def token_diagnostics():
         return jsonify({"ok": False, "message": "Falta WHATSAPP_TOKEN o APP_SECRET."}), 400
     try:
         debug = requests.get(f"{GRAPH}/debug_token", params={
-            "input_token": token, "access_token": f"{META_APP_ID}|{app_secret}"}, timeout=20)
+            "input_token": token, "access_token": token}, timeout=20)
         body = debug.json()
         data = body.get("data", {}) if debug.ok else {}
         if not debug.ok:
