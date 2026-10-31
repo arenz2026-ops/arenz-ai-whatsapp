@@ -241,3 +241,22 @@ def activate_number():
     if pin:
         body["pin"] = pin
     return jsonify(body), 200 if ok else 400
+
+
+@bp.route("/admin/diagnostico-token", methods=["GET"])
+def token_diagnostics():
+    """Report what the server token can reach: scopes and asset IDs only, never the token."""
+    token, app_secret = os.getenv("WHATSAPP_TOKEN", ""), os.getenv("APP_SECRET", "")
+    if not (token and app_secret):
+        return jsonify({"ok": False, "message": "Falta WHATSAPP_TOKEN o APP_SECRET."}), 400
+    try:
+        debug = requests.get(f"{GRAPH}/debug_token", params={
+            "input_token": token, "access_token": f"{META_APP_ID}|{app_secret}"}, timeout=20)
+        data = debug.json().get("data", {}) if debug.ok else {}
+    except (requests.RequestException, ValueError):
+        return jsonify({"ok": False, "message": "No se pudo consultar a Meta."}), 502
+    return jsonify({"ok": bool(data), "app_id": data.get("app_id"), "type": data.get("type"),
+                    "is_valid": data.get("is_valid"), "expires_at": data.get("expires_at"),
+                    "scopes": data.get("scopes"),
+                    "granular_scopes": data.get("granular_scopes"),
+                    "error": (data.get("error") or {}).get("message")})
