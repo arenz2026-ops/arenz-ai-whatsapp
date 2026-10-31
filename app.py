@@ -345,9 +345,14 @@ def generate_reply(sender, text):
     if session["step"] == "district":
         session.update(district=text, step="budget"); user_sessions[sender] = session; return "¿Cuál es tu presupuesto aproximado?"
     if session["step"] == "budget":
+        if not re.search(r"\d", text):
+            return "Para continuar necesito el monto aproximado, por ejemplo: 100 mil dólares."
         session.update(budget=text, step="bedrooms"); user_sessions[sender] = session; return "¿Cuántos dormitorios necesitas?"
     if session["step"] == "bedrooms":
-        session.update(bedrooms=text, step="summary"); user_sessions[sender] = session
+        count = re.search(r"\b(\d{1,2})\b", text)
+        if not count:
+            return "¿Cuántos dormitorios necesitas? Responde con un número, por ejemplo: 3."
+        session.update(bedrooms=count.group(1), step="summary"); user_sessions[sender] = session
         return f"Tengo estos datos:\nOperación: {session['intent']}\nZona: {session['district']}\nPresupuesto: {session['budget']}\nDormitorios: {session['bedrooms']}\n\n¿La información es correcta? Responde Sí o No."
     if session["step"] == "summary":
         if text in ("sí","si"):
@@ -575,6 +580,8 @@ def persist_conversation_observation(sender, message_id, inbound, outbound, obse
 ALLOWED_OPERATIONS = {"compra", "alquiler", "venta"}
 OPERATION_ALIASES = {"comprar": "compra", "alquilar": "alquiler", "vender": "venta"}
 ALLOWED_CURRENCIES = {"USD", "PEN"}
+CURRENCY_ALIASES = {"dólares": "USD", "dolares": "USD", "dólar": "USD", "dolar": "USD", "$": "USD", "us$": "USD",
+                    "soles": "PEN", "sol": "PEN", "s/": "PEN", "s/.": "PEN"}
 PROPERTY_TYPE_ALIASES = {"apartamento": "departamento"}
 INVENTORY_RULES_VERSION = "p1-v1"
 INVENTORY_MAX_RESULTS = 3
@@ -686,8 +693,10 @@ def validated_slot_updates(slot_updates):
     if isinstance(budget, (int, float)) and 1000 <= budget <= 10000000:
         clean["budget_max"] = int(budget)
     currency = slot_updates.get("currency")
-    if isinstance(currency, str) and currency.upper() in ALLOWED_CURRENCIES:
-        clean["currency"] = currency.upper()
+    if isinstance(currency, str):
+        currency = CURRENCY_ALIASES.get(currency.strip().casefold(), currency.strip().upper())
+        if currency in ALLOWED_CURRENCIES:
+            clean["currency"] = currency
     bedrooms = slot_updates.get("bedrooms")
     if isinstance(bedrooms, int) and 0 <= bedrooms <= 20:
         clean["bedrooms"] = bedrooms
@@ -1167,11 +1176,23 @@ def handoff_request_type(text, reference):
     return None
 
 
+AFFIRMATIVE_PATTERN = re.compile(r"^(?:s[ií]|ok|okay|claro|dale|de acuerdo|por favor|ya|bueno|perfecto)\b[\s,.!]*(?:por favor|gracias|claro)?[\s.!]*$")
+
+
+def accepted_advisor_offer(previous, user_text):
+    """'Sí' right after the bot offered an advisor is a request for one."""
+    if "te contacte un asesor" not in last_assistant_message(previous):
+        return False
+    return bool(AFFIRMATIVE_PATTERN.match(" ".join((user_text or "").casefold().split())))
+
+
 def detected_handoff(previous, observation, user_text, inventory_matches=None):
     """Resolve one escalation per turn, or None to continue the qualification."""
     reference = mentioned_property_reference(user_text, presented_property_references(previous, inventory_matches))
     request_type = handoff_request_type(user_text, reference)
     if not request_type and isinstance(observation, dict) and (observation.get("handoff") or observation.get("intent") == "human_handoff"):
+        request_type = "advisor"
+    if not request_type and accepted_advisor_offer(previous, user_text):
         request_type = "advisor"
     if not request_type:
         return None
@@ -1235,8 +1256,63 @@ def inventory_conversation_reply(matches, criteria):
         if not question:
             question = "¿Cuál de estas unidades te gustaría revisar con más detalle?"
     else:
-        question = "¿Prefieres ampliar las zonas de búsqueda o revisar el presupuesto?"
+        question = "¿Prefieres ampliar las zonas de búsqueda, revisar el presupuesto o que te contacte un asesor?"
     return reply + "\n\n" + question
+
+
+NO_MATCH_PREFIX = "No encontré opciones verificadas"
+SHORT_NUMBER_PATTERN = re.compile(r"^\D{0,20}?(\d{1,2})\b(?!\s*(?:mil|k|m2|m²|metros|usd|soles|d[oó]lares))", re.IGNORECASE)
+
+
+def last_assistant_message(previous):
+    turns = [t for t in recent_conversation_turns(previous, limit=8) if t["direction"] == "assistant"]
+    return turns[-1]["content"] if turns else ""
+
+
+def answered_count_question(previous, user_text, criteria):
+    """A bare '3' right after the bot asked for bedrooms or bathrooms is that answer."""
+    asked = last_assistant_message(previous).casefold()
+    match = SHORT_NUMBER_PATTERN.match((user_text or "").strip())
+    if not match or len((user_text or "").strip()) > 40:
+        return criteria
+    value = int(match.group(1))
+    updated = dict(criteria)
+    if "dormitorio" in asked or "habitaci" in asked:
+        if 0 < value <= 20:
+            updated["bedrooms"] = value
+    elif "baño" in asked and 0 < value <= 30:
+        updated["bathrooms_min"] = value
+    return updated
+
+
+def criteria_summary(criteria):
+    parts = []
+    if criteria.get("property_type"):
+        parts.append(criteria["property_type"])
+    if criteria.get("districts"):
+        parts.append("en " + ", ".join(criteria["districts"]))
+    if criteria.get("budget_max"):
+        symbol = {"PEN": "S/", "USD": "US$"}.get(criteria.get("currency"), "")
+        parts.append(f"hasta {symbol} {criteria['budget_max']:,}".replace("  ", " ").strip())
+    if criteria.get("bedrooms"):
+        parts.append(f"{criteria['bedrooms']} dormitorios")
+    if criteria.get("area_min_m2"):
+        parts.append(f"desde {criteria['area_min_m2']:g} m²")
+    return ", ".join(parts)
+
+
+def no_match_followup(previous, criteria):
+    """After a first 'no matches', stop repeating it: summarise and offer the advisor."""
+    if not last_assistant_message(previous).startswith(NO_MATCH_PREFIX) and not (
+            last_assistant_message(previous).startswith("Revisé") or last_assistant_message(previous).startswith("Por ahora")):
+        return None
+    summary = criteria_summary(criteria)
+    changed = criteria != conversation_state(previous)
+    lead = (f"Revisé con tus nuevos criterios ({summary}) y por ahora no tengo unidades verificadas que coincidan."
+            if changed and summary else
+            f"Por ahora no tengo unidades verificadas para {summary or 'tu búsqueda'}.")
+    return (lead + " Un asesor de C2 Inmobiliaria puede buscarte opciones fuera de mi lista. "
+            "¿Quieres que te contacte un asesor, o prefieres cambiar el distrito o el presupuesto?")
 
 
 def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
@@ -1290,6 +1366,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if observation.get("criteria_change") and "preferences" in slots and not observation.get("criteria_actions"):
         criteria["preferences"] = list(dict.fromkeys(criteria.get("preferences", []) + slots.pop("preferences")))
     criteria.update(slots)
+    criteria = answered_count_question(previous, user_text, criteria)
     intent = observation.get("intent")
     if intent == "greeting" and not criteria and not conversation_state(previous):
         return INTRODUCTION, criteria, "qualification", "Apertura cálida; escuchar la necesidad antes de calificar."
@@ -1306,7 +1383,8 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if intent == "general_question":
         natural_reply = usable_assistant_reply(observation, "conversation")
         if inventory_matches is not None and inventory_ready(criteria):
-            return inventory_conversation_reply(inventory_matches, criteria), criteria, "qualified", "Consulta de inventario con siguiente paso comercial."
+            followup = None if inventory_matches else no_match_followup(previous, criteria)
+            return followup or inventory_conversation_reply(inventory_matches, criteria), criteria, "qualified", "Consulta de inventario con siguiente paso comercial."
         if natural_reply:
             return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
         return "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?", criteria, "conversation", "Consulta libre; criterios conservados."
@@ -1320,7 +1398,8 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
                 return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
     if inventory_matches is not None and inventory_ready(criteria):
-        reply = inventory_conversation_reply(inventory_matches, criteria)
+        followup = None if inventory_matches else no_match_followup(previous, criteria)
+        reply = followup or inventory_conversation_reply(inventory_matches, criteria)
         return reply, criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
     question = commercial_next_question(criteria)
     if question and criteria.get("operation") in {"compra", "alquiler"}:
