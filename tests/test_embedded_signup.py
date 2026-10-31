@@ -110,3 +110,9 @@ class ActivateNumberTests(unittest.TestCase):
     def test_refuses_other_waba(self, get):
         ok, _, _ = es.activate_owned_number("w-other", "p1", "tok")
         self.assertFalse(ok); get.assert_not_called()
+
+
+class CleanTokenTests(unittest.TestCase):
+    def test_strips_paste_damage(self):
+        for raw in (' EAAx\n', '"EAAx"', "Bearer EAAx", "EAA\nx"):
+            self.assertEqual(es.clean_token(raw), "EAAx")

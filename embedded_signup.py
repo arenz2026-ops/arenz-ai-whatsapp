@@ -229,12 +229,24 @@ def activate_owned_number(waba_id, phone_number_id, token):
     return True, "Número registrado y activo en el bot.", pin
 
 
+def clean_token(raw):
+    """Undo common paste damage: surrounding whitespace/quotes, a 'Bearer ' prefix, inner line breaks."""
+    t = (raw or "").strip().strip('"').strip("'").strip()
+    if t.lower().startswith("bearer "):
+        t = t[7:].strip()
+    return "".join(t.split())
+
+
+def server_token():
+    return clean_token(os.getenv("WHATSAPP_TOKEN", ""))
+
+
 @bp.route("/admin/activar-numero", methods=["POST"])
 def activate_number():
     data = request.get_json(silent=True) or {}
     try:
         ok, message, pin = activate_owned_number(str(data.get("waba_id") or ""), str(data.get("phone_number_id") or ""),
-                                                 os.getenv("WHATSAPP_TOKEN", ""))
+                                                 server_token())
     except requests.RequestException:
         logger.exception("Number activation network failure")
         ok, message, pin = False, "Fallo de red con Meta o Supabase.", None
@@ -247,7 +259,8 @@ def activate_number():
 @bp.route("/admin/diagnostico-token", methods=["GET"])
 def token_diagnostics():
     """Report what the server token can reach: scopes and asset IDs only, never the token."""
-    token, app_secret = os.getenv("WHATSAPP_TOKEN", ""), os.getenv("APP_SECRET", "")
+    raw = os.getenv("WHATSAPP_TOKEN", "")
+    token, app_secret = server_token(), os.getenv("APP_SECRET", "").strip()
     if not (token and app_secret):
         return jsonify({"ok": False, "message": "Falta WHATSAPP_TOKEN o APP_SECRET."}), 400
     try:
@@ -263,4 +276,5 @@ def token_diagnostics():
                     "is_valid": data.get("is_valid"), "expires_at": data.get("expires_at"),
                     "scopes": data.get("scopes"),
                     "granular_scopes": data.get("granular_scopes"),
-                    "error": (data.get("error") or {}).get("message")})
+                    "error": (data.get("error") or {}).get("message"),
+                    "paste_damage_fixed": raw != token, "starts_like_meta_token": token.startswith("EAA")})
