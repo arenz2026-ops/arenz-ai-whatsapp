@@ -93,17 +93,20 @@ class ActivateNumberTests(unittest.TestCase):
     @patch("embedded_signup.requests.post")
     @patch("embedded_signup.requests.get")
     def test_registers_owned_number(self, get, post):
-        get.side_effect = [resp(payload={"owner_business_info": {"id": es.ALLOWED_BUSINESS_ID}}),
-                           resp(payload={"data": [{"id": "p1"}]})]
+        get.side_effect = [resp(payload={"data": [{"id": "p1"}]})]
         post.side_effect = [resp(), resp(), resp()]
-        ok, _, pin = es.activate_owned_number("w1", "p1", "tok")
+        ok, _, pin = es.activate_owned_number("2121586058704568", "p1", "tok")
         self.assertTrue(ok); self.assertEqual(len(pin), 6)
         self.assertEqual(post.call_args_list[2].kwargs["json"]["phone_number_id"], "p1")
 
     @patch("embedded_signup.requests.post")
     @patch("embedded_signup.requests.get")
     def test_refuses_foreign_number(self, get, post):
-        get.side_effect = [resp(payload={"owner_business_info": {"id": es.ALLOWED_BUSINESS_ID}}),
-                           resp(payload={"data": [{"id": "other"}]})]
-        ok, _, _ = es.activate_owned_number("w1", "p1", "tok")
+        get.side_effect = [resp(payload={"data": [{"id": "other"}]})]
+        ok, _, _ = es.activate_owned_number("2121586058704568", "p1", "tok")
         self.assertFalse(ok); post.assert_not_called()
+
+    @patch("embedded_signup.requests.get")
+    def test_refuses_other_waba(self, get):
+        ok, _, _ = es.activate_owned_number("w-other", "p1", "tok")
+        self.assertFalse(ok); get.assert_not_called()

@@ -188,7 +188,7 @@ def activate_owned_number(waba_id, phone_number_id, token):
     """Register a number of our own WABA on Cloud API and make the bot send from it.
 
     Uses the server's WHATSAPP_TOKEN, never one from the request. Only numbers of a
-    WABA owned by ALLOWED_BUSINESS_ID are accepted. The two-step PIN is generated
+    WABA (ALLOWED_WABA_ID) are accepted. The two-step PIN is generated
     here; once set, Meta refuses re-registration without it, so repeat calls fail.
     """
     import secrets
@@ -197,13 +197,14 @@ def activate_owned_number(waba_id, phone_number_id, token):
     if not token:
         return False, "WHATSAPP_TOKEN no está configurado.", None
     auth = {"Authorization": f"Bearer {token}"}
-    owner = requests.get(f"{GRAPH}/{waba_id}", headers=auth, params={"fields": "owner_business_info"}, timeout=20)
-    if not owner.ok:
-        return False, f"El token del servidor no accede a la cuenta: {_graph_error(owner)}", None
-    if str((owner.json().get("owner_business_info") or {}).get("id")) != str(ALLOWED_BUSINESS_ID):
+    # Reading owner_business_info needs business_management, which a WhatsApp-only
+    # system-user token lacks, so only our own WABA ID is accepted instead.
+    if str(waba_id) != str(os.getenv("ALLOWED_WABA_ID", "2121586058704568")):
         return False, "La cuenta no pertenece al portafolio autorizado.", None
     numbers = requests.get(f"{GRAPH}/{waba_id}/phone_numbers", headers=auth, params={"fields": "id"}, timeout=20)
-    if not numbers.ok or phone_number_id not in [n.get("id") for n in numbers.json().get("data", [])]:
+    if not numbers.ok:
+        return False, f"El token del servidor no accede a la cuenta: {_graph_error(numbers)}", None
+    if phone_number_id not in [n.get("id") for n in numbers.json().get("data", [])]:
         return False, "El número no pertenece a esa cuenta.", None
     pin = f"{secrets.randbelow(10**6):06d}"
     register = requests.post(f"{GRAPH}/{phone_number_id}/register", headers=auth,
