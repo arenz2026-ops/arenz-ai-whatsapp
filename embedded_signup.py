@@ -252,7 +252,10 @@ def token_diagnostics():
     try:
         debug = requests.get(f"{GRAPH}/debug_token", params={
             "input_token": token, "access_token": f"{META_APP_ID}|{app_secret}"}, timeout=20)
-        data = debug.json().get("data", {}) if debug.ok else {}
+        body = debug.json()
+        data = body.get("data", {}) if debug.ok else {}
+        if not debug.ok:
+            data = {"error": body.get("error", {})}
     except (requests.RequestException, ValueError):
         return jsonify({"ok": False, "message": "No se pudo consultar a Meta."}), 502
     return jsonify({"ok": bool(data), "app_id": data.get("app_id"), "type": data.get("type"),
