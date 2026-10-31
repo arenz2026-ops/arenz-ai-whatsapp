@@ -148,13 +148,15 @@ class CommercialConversationTests(unittest.TestCase):
             observation = self.observe()
             observation["intent"] = intent
             reply, criteria, _, _ = app.progressive_reply(self.previous, observation, "fallback", "muéstrame opciones", inventory_matches=matches)
-            self.assertTrue(reply.endswith("¿Para cuándo necesitas tener el departamento?"))
-            self.assertIn("1er Tri 2029", reply)
+            # Five filters first: no unit is shown until cómo and cuándo are known.
+            self.assertNotIn("C2-TEST", reply)
+            self.assertIn("Antes de mostrártelas", reply)
             self.assertEqual(reply.count("?"), 1)
             known = {**self.criteria, "payment_method": "contado", "purchase_timeline": "sin urgencia"}
             previous = {"state": {"criteria": known}}
             reply, _, _, _ = app.progressive_reply(previous, observation, "fallback", "muéstrame opciones", inventory_matches=matches)
             self.assertTrue(reply.endswith("¿Cuál de estas unidades te gustaría revisar con más detalle?"))
+            self.assertIn("con entrega en 2029", reply)
             self.assertNotIn("¿Para cuándo", reply)
 
     def test_long_inventory_context_keeps_the_final_question_and_references(self):

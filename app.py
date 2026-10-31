@@ -748,7 +748,7 @@ def conversation_state(previous):
         criteria = searches[active].get("criteria", {})
     else:
         criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
-    keys = ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences", *COMMERCIAL_FIELDS)
+    keys = ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences", "delivery_preference", *COMMERCIAL_FIELDS)
     return {key: criteria.get(key) for key in keys if criteria.get(key) not in (None, [], "")}
 
 
@@ -967,12 +967,67 @@ def property_match_rank(property_row, criteria):
     return score
 
 
+DELIVERY_BUCKETS = ("inmediata", "futura", "por_confirmar")
+_MONTHS = {"ene": 1, "feb": 2, "mar": 3, "abr": 4, "may": 5, "jun": 6, "jul": 7, "ago": 8, "sep": 9, "set": 9, "oct": 10, "nov": 11, "dic": 12}
+_QUARTER_END = {"1er": 3, "2do": 6, "3er": 9, "4to": 12}
+
+
+def delivery_date(text):
+    """(year, month) from a source delivery label such as 'Oct-27', 'Dic 2027' or '1er Tri 2029'."""
+    label = (text or "").casefold()
+    year = re.search(r"(20\d\d)", label) or re.search(r"[-\s](\d\d)\b", label)
+    if not year:
+        return None
+    y = int(year.group(1)); y = y + 2000 if y < 100 else y
+    month = next((m for key, m in _MONTHS.items() if key in label), None)
+    quarter = re.search(r"(1er|2do|3er|4to)\s*tri", label)
+    if quarter:
+        month = _QUARTER_END[quarter.group(1)]
+    return y, month or 12
+
+
+def property_delivery(row, today=None):
+    """inmediata, futura or por_confirmar, from the delivery label C2's lists publish."""
+    today = today or datetime.now(timezone.utc).date()
+    label = re.search(r"Entrega según fuente: ([^.]+)\.", row.get("public_description") or "")
+    label = label.group(1).strip() if label else ""
+    if re.search(r"entregad|inmediat", label, re.IGNORECASE):
+        return "inmediata"
+    if not label:
+        # Second-hand units from Trello carry no delivery label: they already exist.
+        return "inmediata" if row.get("source_name") == "trello" else "por_confirmar"
+    when = delivery_date(label)
+    if not when:
+        return "por_confirmar"
+    return "inmediata" if when <= (today.year, today.month) else "futura"
+
+
+def delivery_summary(rows):
+    counts = {bucket: 0 for bucket in DELIVERY_BUCKETS}
+    years = []
+    for row in rows:
+        bucket = property_delivery(row)
+        counts[bucket] += 1
+        if bucket == "futura":
+            label = re.search(r"Entrega según fuente: ([^.]+)\.", row.get("public_description") or "")
+            when = delivery_date(label.group(1)) if label else None
+            if when:
+                years.append(when[0])
+    counts["years"] = (min(years), max(years)) if years else None
+    return counts
+
+
+class MatchList(list):
+    """Inventory matches plus the per-delivery counts of everything that matched."""
+    summary = None
+
+
 class InventoryStore:
     """Small REST adapter for canonical inventory; it never exposes internal fields."""
     property_fields = ("property_id,public_reference,operation,property_type,district,zone,public_location_reference,"
                       "price_amount,currency,bedrooms,bathrooms,area_m2,area_total_m2,area_built_m2,terrace_area_m2,"
                       "parking_spaces,features,public_description,lifecycle_state,availability_confirmed_at,approved_at,"
-                      "provenance,verification_status,collaboration_confirmed_at")
+                      "provenance,verification_status,collaboration_confirmed_at,source_name")
 
     def __init__(self, url, key):
         self.url = url.rstrip("/")
@@ -998,9 +1053,15 @@ class InventoryStore:
         candidates.sort(key=lambda row: (-property_match_rank(row, criteria),
                                          float(row["price_amount"]) / (budget_in_currency(criteria, row["currency"]) or 1),
                                          row["public_reference"]))
-        candidates = candidates[:INVENTORY_MAX_RESULTS]
-        media_by_property = self._approved_media([row["property_id"] for row in candidates])
-        return [{"property": row, "public": public_property_snapshot(row, media_by_property.get(row["property_id"], []))} for row in candidates], cutoff
+        summary = delivery_summary(candidates)
+        kept = []
+        for bucket in DELIVERY_BUCKETS:
+            kept += [row for row in candidates if property_delivery(row) == bucket][:INVENTORY_MAX_RESULTS]
+        media_by_property = self._approved_media([row["property_id"] for row in kept])
+        matches = MatchList({"property": row, "public": public_property_snapshot(row, media_by_property.get(row["property_id"], [])),
+                             "delivery": property_delivery(row)} for row in kept)
+        matches.summary = summary
+        return matches, cutoff
 
     def _approved_media(self, property_ids):
         if not property_ids:
@@ -1276,6 +1337,86 @@ def inventory_conversation_reply(matches, criteria):
     return reply + "\n\n" + question
 
 
+IMMEDIATE_WORDS = re.compile(r"inmediat|entregad|lo antes posible|cuanto antes|urgente|ya mismo|\bpronto\b|este a[ñn]o|\bya\b|para mudarme|\b\d+\s*mes", re.IGNORECASE)
+FUTURE_WORDS = re.compile(r"preventa|en plano|en construcci|futur|pr[oó]ximos a[ñn]os|pr[oó]ximo a[ñn]o|sin apuro|no tengo apuro|no hay apuro|20(2[7-9]|3\d)|a[ñn]os", re.IGNORECASE)
+BOTH_WORDS = re.compile(r"\bambas\b|\blas dos\b|\btodas\b|\bambos\b", re.IGNORECASE)
+DELIVERY_QUESTION = "¿Te muestro las de entrega inmediata o las de entrega en los próximos años?"
+
+
+def delivery_preference_from_text(text):
+    text = text or ""
+    if BOTH_WORDS.search(text):
+        return "ambas"
+    if IMMEDIATE_WORDS.search(text):
+        return "inmediata"
+    if FUTURE_WORDS.search(text):
+        return "futura"
+    return None
+
+
+def item_delivery(item):
+    return item.get("delivery") or property_delivery({**item.get("public", {}), "source_name": None})
+
+
+def matches_summary(matches):
+    summary = getattr(matches, "summary", None)
+    if summary:
+        return summary
+    counts = {bucket: 0 for bucket in DELIVERY_BUCKETS}
+    years = []
+    for item in matches:
+        bucket = item_delivery(item)
+        counts[bucket] += 1
+        label = re.search(r"Entrega según fuente: ([^.]+)\.", item.get("public", {}).get("public_description") or "")
+        when = delivery_date(label.group(1)) if label and bucket == "futura" else None
+        if when:
+            years.append(when[0])
+    counts["years"] = (min(years), max(years)) if years else None
+    return counts
+
+
+def delivery_reply(previous, matches, criteria, user_text):
+    """After the five filters: say what exists by delivery, then show only the bucket the client wants."""
+    counts = matches_summary(matches)
+    offered_future = "¿Te muestro las de entrega en los próximos años?" in last_assistant_message(previous)
+    offered_immediate = "¿Te muestro las de entrega inmediata?" in last_assistant_message(previous)
+    pref = delivery_preference_from_text(user_text)
+    if not pref and AFFIRMATIVE_PATTERN.match(" ".join((user_text or "").casefold().split())):
+        pref = "futura" if offered_future else "inmediata" if offered_immediate else None
+    pref = pref or criteria.get("delivery_preference") or delivery_preference_from_text(criteria.get("purchase_timeline"))
+    years = counts.get("years")
+    future_label = f"con entrega entre {years[0]} y {years[1]}" if years and years[0] != years[1] else (
+        f"con entrega en {years[0]}" if years else "con entrega en los próximos años")
+    immediate, future, unknown = counts["inmediata"], counts["futura"], counts["por_confirmar"]
+    parts = []
+    if immediate:
+        parts.append(f"{immediate} de entrega inmediata")
+    if future:
+        parts.append(f"{future} {future_label}")
+    if unknown:
+        parts.append(f"{unknown} con fecha de entrega por confirmar")
+    summary = criteria_summary(criteria)
+    lead = f"Con lo que me contaste ({summary}) tengo " + (", ".join(parts[:-1]) + " y " + parts[-1] if len(parts) > 1 else parts[0]) + "."
+    available = [b for b in ("inmediata", "futura", "por_confirmar") if counts[b]]
+    if not pref and len(available) == 1:
+        pref = available[0]
+    if not pref:
+        return lead + " " + DELIVERY_QUESTION, criteria
+    criteria = {**criteria, "delivery_preference": pref}
+    wanted = ("inmediata", "futura", "por_confirmar") if pref == "ambas" else (pref,)
+    shown = [item for item in matches if item_delivery(item) in wanted][:INVENTORY_MAX_RESULTS]
+    if not shown and pref == "inmediata" and future:
+        return lead + " Por ahora no tengo de entrega inmediata con esos criterios. ¿Te muestro las de entrega en los próximos años?", criteria
+    if not shown and pref == "futura" and immediate:
+        return lead + " Con esos criterios solo tengo de entrega inmediata. ¿Te muestro las de entrega inmediata?", criteria
+    if not shown:
+        shown = list(matches)[:INVENTORY_MAX_RESULTS]
+    label = {"inmediata": "las de entrega inmediata", "futura": "las de entrega en los próximos años",
+             "por_confirmar": "las que tienen fecha por confirmar", "ambas": "las mejores opciones"}[pref]
+    listing = inventory_reply(shown).split("\n", 1)[1]
+    return f"{lead} Te muestro {label}:\n{listing}\n\n¿Cuál de estas unidades te gustaría revisar con más detalle?", criteria
+
+
 NO_MATCH_PREFIX = "No encontré opciones verificadas"
 SHORT_NUMBER_PATTERN = re.compile(r"^\D{0,20}?(\d{1,2})\b(?!\s*(?:mil|k|m2|m²|metros|usd|soles|d[oó]lares))", re.IGNORECASE)
 
@@ -1329,6 +1470,18 @@ def no_match_followup(previous, criteria):
             f"Por ahora no tengo unidades verificadas para {summary or 'tu búsqueda'}.")
     return (lead + " Un asesor de C2 Inmobiliaria puede buscarte opciones fuera de mi lista. "
             "¿Quieres que te contacte un asesor, o prefieres cambiar el distrito o el presupuesto?")
+
+
+def qualified_inventory_reply(previous, matches, criteria, user_text):
+    """Complete the five filters (qué, dónde, cuánto, cómo, cuándo) before talking about units."""
+    if not matches:
+        return no_match_followup(previous, criteria) or inventory_conversation_reply(matches, criteria), criteria
+    question = commercial_next_question(criteria) if criteria.get("operation") == "compra" else (
+        None if criteria.get("purchase_timeline") else "¿Para cuándo te gustaría mudarte?")
+    if question:
+        question = question.replace("Para orientarte mejor, ", "")
+        return "Tengo opciones que podrían encajar con lo que buscas. Antes de mostrártelas, " + question, criteria
+    return delivery_reply(previous, matches, criteria, user_text)
 
 
 def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
@@ -1399,8 +1552,8 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if intent == "general_question":
         natural_reply = usable_assistant_reply(observation, "conversation")
         if inventory_matches is not None and inventory_ready(criteria):
-            followup = None if inventory_matches else no_match_followup(previous, criteria)
-            return followup or inventory_conversation_reply(inventory_matches, criteria), criteria, "qualified", "Consulta de inventario con siguiente paso comercial."
+            reply, criteria = qualified_inventory_reply(previous, inventory_matches, criteria, user_text)
+            return reply, criteria, "qualified", "Consulta de inventario con siguiente paso comercial."
         if natural_reply:
             return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
         return "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?", criteria, "conversation", "Consulta libre; criterios conservados."
@@ -1414,8 +1567,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
                 return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
     if inventory_matches is not None and inventory_ready(criteria):
-        followup = None if inventory_matches else no_match_followup(previous, criteria)
-        reply = followup or inventory_conversation_reply(inventory_matches, criteria)
+        reply, criteria = qualified_inventory_reply(previous, inventory_matches, criteria, user_text)
         return reply, criteria, "qualified", "Consulta de inventario respondida desde registros verificados."
     question = commercial_next_question(criteria)
     if question and criteria.get("operation") in {"compra", "alquiler"}:
