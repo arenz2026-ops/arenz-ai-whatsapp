@@ -81,3 +81,29 @@ class EmbeddedSignupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActivateNumberTests(unittest.TestCase):
+    def setUp(self):
+        self.env = patch.dict(os.environ, {"SUPABASE_URL": "https://db.example", "SUPABASE_KEY": "k"}); self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+
+    @patch("embedded_signup.requests.post")
+    @patch("embedded_signup.requests.get")
+    def test_registers_owned_number(self, get, post):
+        get.side_effect = [resp(payload={"owner_business_info": {"id": es.ALLOWED_BUSINESS_ID}}),
+                           resp(payload={"data": [{"id": "p1"}]})]
+        post.side_effect = [resp(), resp(), resp()]
+        ok, _, pin = es.activate_owned_number("w1", "p1", "tok")
+        self.assertTrue(ok); self.assertEqual(len(pin), 6)
+        self.assertEqual(post.call_args_list[2].kwargs["json"]["phone_number_id"], "p1")
+
+    @patch("embedded_signup.requests.post")
+    @patch("embedded_signup.requests.get")
+    def test_refuses_foreign_number(self, get, post):
+        get.side_effect = [resp(payload={"owner_business_info": {"id": es.ALLOWED_BUSINESS_ID}}),
+                           resp(payload={"data": [{"id": "other"}]})]
+        ok, _, _ = es.activate_owned_number("w1", "p1", "tok")
+        self.assertFalse(ok); post.assert_not_called()

@@ -182,3 +182,62 @@ def connect_callback():
         logger.exception("Embedded Signup network failure")
         ok, message = False, "Fallo de red al hablar con Meta o Supabase. Intenta de nuevo."
     return jsonify({"ok": ok, "message": message}), 200 if ok else 400
+
+
+def activate_owned_number(waba_id, phone_number_id, token):
+    """Register a number of our own WABA on Cloud API and make the bot send from it.
+
+    Uses the server's WHATSAPP_TOKEN, never one from the request. Only numbers of a
+    WABA owned by ALLOWED_BUSINESS_ID are accepted. The two-step PIN is generated
+    here; once set, Meta refuses re-registration without it, so repeat calls fail.
+    """
+    import secrets
+    if not (waba_id and phone_number_id):
+        return False, "Faltan waba_id o phone_number_id.", None
+    if not token:
+        return False, "WHATSAPP_TOKEN no está configurado.", None
+    auth = {"Authorization": f"Bearer {token}"}
+    owner = requests.get(f"{GRAPH}/{waba_id}", headers=auth, params={"fields": "owner_business_info"}, timeout=20)
+    if not owner.ok:
+        return False, f"El token del servidor no accede a la cuenta: {_graph_error(owner)}", None
+    if str((owner.json().get("owner_business_info") or {}).get("id")) != str(ALLOWED_BUSINESS_ID):
+        return False, "La cuenta no pertenece al portafolio autorizado.", None
+    numbers = requests.get(f"{GRAPH}/{waba_id}/phone_numbers", headers=auth, params={"fields": "id"}, timeout=20)
+    if not numbers.ok or phone_number_id not in [n.get("id") for n in numbers.json().get("data", [])]:
+        return False, "El número no pertenece a esa cuenta.", None
+    pin = f"{secrets.randbelow(10**6):06d}"
+    register = requests.post(f"{GRAPH}/{phone_number_id}/register", headers=auth,
+                             json={"messaging_product": "whatsapp", "pin": pin}, timeout=30)
+    if not register.ok:
+        return False, f"Meta rechazó el registro: {_graph_error(register)}", None
+    subscribe = requests.post(f"{GRAPH}/{waba_id}/subscribed_apps", headers=auth, timeout=20)
+    if not subscribe.ok:
+        return False, f"Registrado, pero falló la suscripción a webhooks: {_graph_error(subscribe)}", pin
+    url, headers = _supabase()
+    if not url:
+        return False, "Registrado, pero Supabase no está configurado.", pin
+    saved = requests.post(f"{url}/rest/v1/{TABLE}?on_conflict=id",
+                          headers={**headers, "Prefer": "resolution=merge-duplicates,return=minimal"},
+                          json={"id": 1, "waba_id": waba_id, "phone_number_id": phone_number_id,
+                                "access_token": token, "business_id": ALLOWED_BUSINESS_ID,
+                                "connected_at": datetime.now(timezone.utc).isoformat()}, timeout=10)
+    if not saved.ok:
+        return False, "Registrado, pero no se pudo guardar en Supabase.", pin
+    _CACHE.update(at=None, row=None)
+    logger.info("Owned number activated: waba=%s phone_number_id=%s", waba_id, phone_number_id)
+    return True, "Número registrado y activo en el bot.", pin
+
+
+@bp.route("/admin/activar-numero", methods=["POST"])
+def activate_number():
+    data = request.get_json(silent=True) or {}
+    try:
+        ok, message, pin = activate_owned_number(str(data.get("waba_id") or ""), str(data.get("phone_number_id") or ""),
+                                                 os.getenv("WHATSAPP_TOKEN", ""))
+    except requests.RequestException:
+        logger.exception("Number activation network failure")
+        ok, message, pin = False, "Fallo de red con Meta o Supabase.", None
+    body = {"ok": ok, "message": message}
+    if pin:
+        body["pin"] = pin
+    return jsonify(body), 200 if ok else 400
