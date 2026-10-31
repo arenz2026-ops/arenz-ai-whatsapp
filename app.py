@@ -25,6 +25,9 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
 APP_SECRET = os.getenv("APP_SECRET", "").strip().strip("\"'").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+# gpt-4.1-nano was shut down by OpenAI on 2026-10-23; a retired model must not
+# silently drop the bot to the scripted flow, so a model_not_found retries here.
+OPENAI_FALLBACK_MODEL = os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini")
 GRAPH_API_VERSION = "v26.0"
 # Render injects RENDER_GIT_COMMIT. Without it a deploy can only be assumed, never
 # verified, so /health reports the short SHA it is actually running.
@@ -355,11 +358,30 @@ def generate_reply(sender, text):
     return "Tu solicitud ya fue registrada. Si deseas iniciar una nueva búsqueda, escribe NUEVA BÚSQUEDA."
 
 
+
+def post_openai_response(payload):
+    """POST to the Responses API; on model_not_found, switch once to the fallback model for good."""
+    global OPENAI_MODEL
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    response = requests.post("https://api.openai.com/v1/responses", headers=headers, json=payload, timeout=15)
+    if response.status_code == 404 and payload.get("model") != OPENAI_FALLBACK_MODEL:
+        try:
+            code = response.json().get("error", {}).get("code")
+        except ValueError:
+            code = None
+        if code == "model_not_found":
+            logger.warning("OpenAI model %s not found; switching to %s", payload.get("model"), OPENAI_FALLBACK_MODEL)
+            OPENAI_MODEL = OPENAI_FALLBACK_MODEL
+            payload = {**payload, "model": OPENAI_FALLBACK_MODEL}
+            response = requests.post("https://api.openai.com/v1/responses", headers=headers, json=payload, timeout=15)
+    return response
+
+
 def generate_ai_reply(sender, text, fallback):
     if not OPENAI_API_KEY: return fallback
     payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":f"Eres {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
     try:
-        response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization":f"Bearer {OPENAI_API_KEY}","Content-Type":"application/json"}, json=payload, timeout=15)
+        response = post_openai_response(payload)
         response.raise_for_status()
         return response.json().get("output_text", "").strip() or fallback
     except requests.HTTPError as error:
@@ -493,7 +515,7 @@ def observe_conversation(sender, text, deterministic_reply, timings=None, previo
         timings["context_ms"] = round((time.monotonic() - context_started_at) * 1000)
     started_at = time.monotonic()
     try:
-        response = requests.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}, json=payload, timeout=15)
+        response = post_openai_response(payload)
         response.raise_for_status()
         response_body = response.json()
         telemetry = response_usage_metadata(response_body, started_at)
