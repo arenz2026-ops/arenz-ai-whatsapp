@@ -586,6 +586,19 @@ PROPERTY_TYPE_ALIASES = {"apartamento": "departamento"}
 INVENTORY_RULES_VERSION = "p1-v1"
 INVENTORY_MAX_RESULTS = 3
 INVENTORY_VERIFICATION_DAYS = 7
+# Most of the C2 list is priced in soles, while clients often state budgets in dollars;
+# matching only same-currency listings hid nearly all of it. Update when the rate moves.
+USD_PEN_RATE = float(os.getenv("USD_PEN_RATE", "3.45"))
+
+
+def budget_in_currency(criteria, currency):
+    """The client's budget expressed in a listing's currency, or None if not convertible."""
+    budget, own = criteria.get("budget_max"), criteria.get("currency")
+    if budget is None or own not in ALLOWED_CURRENCIES or currency not in ALLOWED_CURRENCIES:
+        return None
+    if own == currency:
+        return float(budget)
+    return float(budget) * USD_PEN_RATE if own == "USD" else float(budget) / USD_PEN_RATE
 THIRD_PARTY = "third_party"
 
 
@@ -920,8 +933,6 @@ def property_matches_criteria(property_row, criteria):
         return False
     if property_row.get("district", "").casefold() not in districts:
         return False
-    if property_row.get("currency") != criteria.get("currency"):
-        return False
     if canonical_property_type(property_row.get("property_type")) != criteria.get("property_type"):
         return False
     if criteria.get("parking_required") is True and not property_row.get("parking_spaces"):
@@ -935,7 +946,8 @@ def property_matches_criteria(property_row, criteria):
                 actual = property_row.get("area_m2")
             if minimum is not None and (actual is None or float(actual) < float(minimum)):
                 return False
-        return float(property_row["price_amount"]) <= float(criteria["budget_max"])
+        limit = budget_in_currency(criteria, property_row.get("currency"))
+        return limit is not None and float(property_row["price_amount"]) <= limit
     except (KeyError, TypeError, ValueError):
         return False
 
@@ -973,15 +985,17 @@ class InventoryStore:
             "lifecycle_state": "eq.active_confirmed",
             "approved_at": "not.is.null",
             "availability_confirmed_at": f"gte.{cutoff.isoformat()}",
-            "currency": f"eq.{criteria['currency']}",
-            "price_amount": f"lte.{criteria['budget_max']}",
+            "or": "(" + ",".join(f"and(currency.eq.{c},price_amount.lte.{budget_in_currency(criteria, c):.2f})"
+                                 for c in sorted(ALLOWED_CURRENCIES)) + ")",
             "property_type": f"eq.{criteria['property_type']}",
             "district": "in.(" + ",".join(criteria["districts"]) + ")",
         }
         response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers, params=params, timeout=10)
         response.raise_for_status()
         candidates = [row for row in response.json() if property_is_eligible(row, now) and property_matches_criteria(row, criteria)]
-        candidates.sort(key=lambda row: (-property_match_rank(row, criteria), float(row["price_amount"]), row["public_reference"]))
+        candidates.sort(key=lambda row: (-property_match_rank(row, criteria),
+                                         float(row["price_amount"]) / (budget_in_currency(criteria, row["currency"]) or 1),
+                                         row["public_reference"]))
         candidates = candidates[:INVENTORY_MAX_RESULTS]
         media_by_property = self._approved_media([row["property_id"] for row in candidates])
         return [{"property": row, "public": public_property_snapshot(row, media_by_property.get(row["property_id"], []))} for row in candidates], cutoff

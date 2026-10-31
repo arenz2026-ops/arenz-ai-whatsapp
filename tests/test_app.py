@@ -660,7 +660,12 @@ class AppTests(unittest.TestCase):
 
     def test_matching_excludes_another_district_and_currency(self):
         self.assertEqual(self._matches_for([{**INVENTORY_ROW,"district":"Miraflores"}], self._criteria()), [])
-        self.assertEqual(self._matches_for([{**INVENTORY_ROW,"currency":"PEN"}], self._criteria()), [])
+        budget_pen = self._criteria()["budget_max"] * app.USD_PEN_RATE
+        self.assertEqual(self._matches_for([{**INVENTORY_ROW,"currency":"PEN","price_amount":budget_pen + 1}], self._criteria()), [])
+
+    def test_matching_converts_a_soles_listing_to_a_dollar_budget(self):
+        row = {**INVENTORY_ROW,"currency":"PEN","price_amount":self._criteria()["budget_max"] * app.USD_PEN_RATE - 1}
+        self.assertEqual(len(self._matches_for([row], self._criteria())), 1)
 
     def test_matching_excludes_a_property_over_budget(self):
         self.assertEqual(self._matches_for([{**INVENTORY_ROW,"price_amount":300000}], self._criteria()), [])
