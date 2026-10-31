@@ -270,9 +270,12 @@ def token_diagnostics():
         data = body.get("data", {}) if debug.ok else {}
         if not debug.ok:
             data = {"error": body.get("error", {})}
+        me = requests.get(f"{GRAPH}/me", headers={"Authorization": f"Bearer {token}"},
+                          params={"fields": "id,name"}, timeout=20).json()
     except (requests.RequestException, ValueError):
         return jsonify({"ok": False, "message": "No se pudo consultar a Meta."}), 502
-    return jsonify({"ok": bool(data), "app_id": data.get("app_id"), "type": data.get("type"),
+    return jsonify({"token_owner": {"id": me.get("id"), "name": me.get("name"),
+                                    "error": (me.get("error") or {}).get("message")},"ok": bool(data), "app_id": data.get("app_id"), "type": data.get("type"),
                     "is_valid": data.get("is_valid"), "expires_at": data.get("expires_at"),
                     "scopes": data.get("scopes"),
                     "granular_scopes": data.get("granular_scopes"),
