@@ -14,9 +14,11 @@ from flask import Flask, jsonify, request
 
 import advisor_notify
 import embedded_signup
+import inventory_staging
 
 app = Flask(__name__)
 app.register_blueprint(embedded_signup.bp)
+app.register_blueprint(inventory_staging.bp)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("arenz")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
