@@ -160,3 +160,19 @@ class SelectionAfterListingTests(unittest.TestCase):
     def test_model_handoff_flag_alone_does_not_hand_off(self):
         obs = {"intent": "general_question", "handoff": True, "slot_updates": {}}
         self.assertIsNone(app.detected_handoff(None, obs, "Que pasó"))
+
+
+class FichaFollowUpTests(unittest.TestCase):
+    def prev_with_ficha(self, closing):
+        ficha = f"🏠 DEPARTAMENTO EN VENTA – UNIVERSO\n...\n{closing}\n\nRef. C2-D5ACE8F77103"
+        return {"stage": "property_detail", "state": {"recent_turns": [{"direction": "assistant", "content": ficha}]}}
+
+    def test_yes_after_visit_offer_hands_off_a_visit(self):
+        prev = self.prev_with_ficha("¿Quieres que coordinemos una visita al departamento?")
+        self.assertIsNone(app.selected_option(prev, "Si"))
+        h = app.detected_handoff(prev, {"intent": "confirmation", "handoff": False}, "Si")
+        self.assertEqual((h["request_type"], h["property_reference"]), ("visit", "C2-D5ACE8F77103"))
+
+    def test_yes_after_brochure_offer_hands_off_interest(self):
+        prev = self.prev_with_ficha("¿Quieres que un asesor te envíe los planos y el brochure del proyecto?")
+        self.assertEqual(app.detected_handoff(prev, {"handoff": False}, "sí")["request_type"], "property_interest")

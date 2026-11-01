@@ -1246,7 +1246,7 @@ def selected_option(previous, text):
         if loose and not re.search(r"\d\s*(dorm|m2|m²|mil|k\b|soles|d[oó]lares|ba[ñn]o)", normalized):
             index = int(loose.group(1))
             return {"index": index, "reference": references[index - 1] if index <= len(references) else None, "count": len(references)}
-        if len(references) == 1 and AFFIRMATIVE_PATTERN.match(" ".join(normalized.split())):
+        if len(references) == 1 and "Responde con el número" in last and AFFIRMATIVE_PATTERN.match(" ".join(normalized.split())):
             return {"index": 1, "reference": references[0], "count": 1}
     match = re.fullmatch(r"(?:la\s+|el\s+)?(?:opci[oó]n\s*)?([1-9])", normalized)
     ordinal = {"la primera": 1, "el primero": 1, "primera": 1,
@@ -1360,6 +1360,7 @@ FICHA_RULES = (
     "Los datos de la UNIDAD (precio, dormitorios, área, piso, entrega) mandan sobre la tarjeta del proyecto. "
     "PROHIBIDO mencionar el nombre de la inmobiliaria, constructora, desarrolladora o empresa comercializadora, titulares, "
     "nombres de contactos internos, teléfonos, 'XXXXX', precios de cierre u observaciones internas. "
+    "Escribe los montos como 'S/ 295,000' para soles y 'US$ 150,000' para dólares (nunca PEN ni USD). "
     "Termina con una sola pregunta de cierre: {closing} Máximo 2500 caracteres. Solo el texto de la ficha."
 )
 
@@ -1432,11 +1433,22 @@ def handoff_request_type(text, reference):
 AFFIRMATIVE_PATTERN = re.compile(r"^(?:s[ií]|ok|okay|claro|dale|de acuerdo|por favor|ya|bueno|perfecto)\b[\s,.!]*(?:por favor|gracias|claro)?[\s.!]*$")
 
 
+VISIT_OFFER = "coordinemos una visita"
+BROCHURE_OFFER = "envíe los planos"
+
+
 def accepted_advisor_offer(previous, user_text):
-    """'Sí' right after the bot offered an advisor is a request for one."""
-    if "te contacte un asesor" not in last_assistant_message(previous):
-        return False
-    return bool(AFFIRMATIVE_PATTERN.match(" ".join((user_text or "").casefold().split())))
+    """'Sí' right after the bot offered an advisor, a visit or the brochure: which offer was accepted, or None."""
+    if not AFFIRMATIVE_PATTERN.match(" ".join((user_text or "").casefold().split())):
+        return None
+    last = last_assistant_message(previous)
+    if VISIT_OFFER in last:
+        return "visit"
+    if BROCHURE_OFFER in last:
+        return "property_interest"
+    if "te contacte un asesor" in last:
+        return "advisor"
+    return None
 
 
 def detected_handoff(previous, observation, user_text, inventory_matches=None):
@@ -1447,8 +1459,14 @@ def detected_handoff(previous, observation, user_text, inventory_matches=None):
             and re.search(r"asesor|humano|persona|ll[aá]m|contact|visita|agend|hablar con", user_text or "", re.IGNORECASE)):
         # The model's handoff flag alone is not enough: it tends to stick once a handoff happened.
         request_type = "advisor"
-    if not request_type and accepted_advisor_offer(previous, user_text):
-        request_type = "advisor"
+    accepted = None if request_type else accepted_advisor_offer(previous, user_text)
+    if accepted:
+        request_type = accepted
+        if accepted in REFERENCED_HANDOFF_TYPES and not reference:
+            shown = latest_presented_references(previous)
+            reference = shown[0] if len(shown) == 1 else None
+            if not reference:
+                request_type = "advisor"
     if not request_type:
         return None
     return {"request_type": request_type, "property_reference": reference if request_type in REFERENCED_HANDOFF_TYPES else None}
