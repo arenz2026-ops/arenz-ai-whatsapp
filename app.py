@@ -1204,7 +1204,8 @@ def inventory_reply(matches):
     return "\n".join(lines)
 
 
-PRESENTED_REFERENCE_PATTERN = re.compile(r"\bref\.?\s*([a-z0-9][a-z0-9-]{1,23})\b", re.IGNORECASE)
+# "referencia" goes first and the code must contain a digit, so "referencia" is never read as "ref" + "erencia".
+PRESENTED_REFERENCE_PATTERN = re.compile(r"\b(?:referencia|ref\.?)\s*((?=[a-z-]*\d)[a-z0-9][a-z0-9-]{1,23})\b", re.IGNORECASE)
 CALLBACK_REQUEST_PATTERN = re.compile(r"\bll[aá]mame\b|\bll[aá]menme\b|\bque me llamen\b|\bprefiero (?:una )?llamada\b|\bcont[aá]ct(?:enme|ame) por tel[eé]fono\b")
 VISIT_REQUEST_PATTERN = re.compile(r"\bvisita\b|\bvisitar\b|\bver (?:la|el) (?:propiedad|departamento|casa)\b")
 PROPERTY_INTEREST_PATTERN = re.compile(r"\bme interesa\b|\bm[aá]s informaci[oó]n\b|\bquiero informaci[oó]n\b")
@@ -1394,7 +1395,7 @@ def unit_facts(item):
 
 FICHA_RULES = (
     "Eres la asesora de {brand}. Redacta la ficha de UN departamento para WhatsApp en español, con este formato y orden "
-    "(omite una sección si no hay datos; nunca inventes): "
+    "(omite una sección o línea si no hay datos: nunca escribas 'no especificado', 'no indicado' ni similares; nunca inventes): "
     "'🏠 DEPARTAMENTO EN VENTA – <PROYECTO>, <DISTRITO>' en mayúsculas; '✨' resumen de 1-2 líneas; "
     "'💰 PRECIO DE VENTA: <moneda y monto>'; '🚗' estacionamiento (si no está confirmado: 'Estacionamiento: por confirmar'); "
     "'🏡 CARACTERÍSTICAS DEL DEPARTAMENTO' (área, piso, dormitorios, baños, vista, acabados) con un emoji por línea; "
@@ -1860,8 +1861,11 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if PHOTO_WORDS.search(user_text or ""):
         shown = latest_presented_references(previous)
         if len(shown) == 1:
-            return (f"En este momento no tengo las fotos cargadas en el chat. Un asesor de {COMMERCIAL_BRAND} te las enviará "
-                    f"de la referencia {shown[0]}. {ADVISOR_OFFER}"), criteria, "property_detail", "Pedido de fotos."
+            if (previous or {}).get("stage") == "handoff":
+                return (f"Por ahora no tengo las fotos cargadas en el chat. Ya registré tu solicitud: el asesor de {COMMERCIAL_BRAND} "
+                        f"que te contactará te enviará las fotos de la Ref. {shown[0]}."), criteria, "handoff", "Pedido de fotos tras derivación."
+            return (f"Por ahora no tengo las fotos cargadas en el chat. Un asesor de {COMMERCIAL_BRAND} puede enviarte las fotos "
+                    f"de la Ref. {shown[0]}. {ADVISOR_OFFER}"), criteria, "property_detail", "Pedido de fotos."
         if shown:
             return "Con gusto. ¿De cuál opción quieres las fotos? Respóndeme con su número.", criteria, "qualified", "Pedido de fotos sin unidad."
     if ((previous or {}).get("stage") == "property_detail" and inventory_matches is not None and not is_more_request(user_text)
