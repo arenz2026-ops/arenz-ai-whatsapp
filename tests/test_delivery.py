@@ -75,3 +75,19 @@ class TimelineAndUnitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FichaTests(unittest.TestCase):
+    def test_card_header_with_company_and_contacts_is_dropped(self):
+        card = "# INFO\n🔴EMPRESA DESARROLLADORA\n- Real Inmobiliaria SAC\n🔴NÚMERO DE CONTACTO DE VISITAS.\n- Danna\n📍DIRECCIÓN: Ca. Los Tulipanes 250, Lince"
+        cleaned = app.clean_card_text(card)
+        self.assertNotIn("Real Inmobiliaria", cleaned); self.assertNotIn("Danna", cleaned)
+        self.assertIn("Tulipanes", cleaned)
+
+    def test_full_ficha_keeps_reference_and_falls_back(self):
+        it = item("C2-X1", "Abril 2028")
+        from unittest.mock import patch
+        with patch("app.project_card_text", return_value=""), patch("app.ai_text", return_value="🏠 DEPARTAMENTO EN VENTA"):
+            self.assertTrue(app.full_unit_reply(it).endswith("Ref. C2-X1"))
+        with patch("app.project_card_text", return_value=""), patch("app.ai_text", return_value=None):
+            self.assertIn("Revisemos esta unidad", app.full_unit_reply(it))

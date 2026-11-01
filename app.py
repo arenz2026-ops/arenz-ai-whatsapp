@@ -1063,6 +1063,16 @@ class InventoryStore:
         matches.summary = summary
         return matches, cutoff
 
+    def project_card(self, project):
+        """Trello card text for a project (address, nearby places, amenities), or ''."""
+        if not project:
+            return ""
+        response = requests.get(f"{self.url}/rest/v1/inventory_project_card_v", headers=self.headers,
+                                params={"select": "card_desc", "proyecto": f"eq.{project}"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        return (rows[0].get("card_desc") or "") if rows else ""
+
     def _approved_media(self, property_ids):
         if not property_ids:
             return {}
@@ -1223,6 +1233,17 @@ def unit_question_reply(previous, item, user_text, observation):
     public = item["public"]
     found = re.match(r"^Proyecto (.*?); unidad (.*?)\.", public.get("public_description") or "")
     name = f"{found.group(1)} (unidad {found.group(2)})" if found else f"La unidad Ref. {public['public_reference']}"
+    card = clean_card_text(project_card_text(item))
+    if card:
+        brief = ai_text(
+            f"Eres la asesora de {COMMERCIAL_BRAND}. Responde SOLO lo que el cliente pregunta sobre este departamento, en 1 a 3 "
+            "líneas para WhatsApp, usando únicamente la tarjeta del proyecto y los datos de la unidad. Si pregunta por ubicación, "
+            "da la dirección, 2-3 referencias cercanas y el enlace de Google Maps si existe. Nunca menciones inmobiliaria, "
+            "constructora, desarrolladora, contactos ni teléfonos. Si el dato no está, dilo y ofrece que un asesor lo confirme. "
+            "Termina con una pregunta breve para continuar.",
+            f"Pregunta: {user_text}\nDatos de la unidad: {unit_facts(item)}\nTarjeta del proyecto:\n{card}", 400)
+        if brief and brief.strip() != last_assistant_message(previous).strip():
+            return brief
     if LOCATION_WORDS.search(user_text or ""):
         extra = public.get("public_location_reference") or public.get("zone")
         where = f"en {public['district']}" + (f", {extra}" if extra else "")
@@ -1240,6 +1261,86 @@ def unit_question_reply(previous, item, user_text, observation):
     if reply.strip() == last_assistant_message(previous).strip():
         reply = f"Para darte ese detalle con precisión, lo mejor es que te contacte un asesor de {COMMERCIAL_BRAND}. {ADVISOR_OFFER}"
     return reply
+
+
+def unit_project_name(item):
+    found = re.match(r"^Proyecto (.*?); unidad", item["public"].get("public_description") or "")
+    return found.group(1) if found else None
+
+
+def project_card_text(item):
+    store = get_inventory_store()
+    if not store:
+        return ""
+    try:
+        return store.project_card(unit_project_name(item))
+    except (requests.RequestException, ValueError):
+        logger.warning("Project card unavailable")
+        return ""
+
+
+def clean_card_text(card):
+    """Drop the internal header of a Trello card (owner, contacts, internal comments) before the model sees it."""
+    text = card or ""
+    for marker in ("📍", "DIRECCI", "UBICACI", "TITULO DEL INMUEBLE", "DESCRIPCI"):
+        position = text.find(marker)
+        if position > 0:
+            text = text[position:]
+            break
+    text = re.sub(r"(?im)^.*(n[uú]mero de contacto|contacto de visitas|t[ií]tulares?|empresa desarrolladora|precio al cierre).*$", "", text)
+    return text[:6000]
+
+
+def unit_facts(item):
+    public = item["public"]
+    facts = {key: public.get(key) for key in ("public_reference", "district", "property_type", "price_amount", "currency",
+                                              "bedrooms", "bathrooms", "area_total_m2", "area_m2", "parking_spaces",
+                                              "public_description")}
+    facts["entrega"] = {"inmediata": "entrega inmediata", "futura": "en construcción / planos",
+                        "por_confirmar": "fecha por confirmar"}[item_delivery(item)]
+    return json.dumps(facts, ensure_ascii=False, default=str)
+
+
+FICHA_RULES = (
+    "Eres la asesora de {brand}. Redacta la ficha de UN departamento para WhatsApp en español, con este formato y orden "
+    "(omite una sección si no hay datos; nunca inventes): "
+    "'🏠 DEPARTAMENTO EN VENTA – <PROYECTO>, <DISTRITO>' en mayúsculas; '✨' resumen de 1-2 líneas; "
+    "'💰 PRECIO DE VENTA: <moneda y monto>'; '🚗' estacionamiento (si no está confirmado: 'Estacionamiento: por confirmar'); "
+    "'🏡 CARACTERÍSTICAS DEL DEPARTAMENTO' (área, piso, dormitorios, baños, vista, acabados) con un emoji por línea; "
+    "'🏗️ CARACTERÍSTICAS DEL EDIFICIO' (pisos, antigüedad o etapa y fecha de entrega, financiamiento bancario si lo hay); "
+    "'🌟 ÁREAS COMUNES'; '📍 UBICACIÓN' (dirección); '📌 ENTORNO Y CONECTIVIDAD' (avenidas, colegios, comercios); "
+    "'🗺️ GOOGLE MAPS' (solo el enlace si existe); '📑 FINANCIAMIENTO' (crédito hipotecario, AFP si aplica). "
+    "Los datos de la UNIDAD (precio, dormitorios, área, piso, entrega) mandan sobre la tarjeta del proyecto. "
+    "PROHIBIDO mencionar el nombre de la inmobiliaria, constructora, desarrolladora o empresa comercializadora, titulares, "
+    "nombres de contactos internos, teléfonos, 'XXXXX', precios de cierre u observaciones internas. "
+    "Termina con una sola pregunta de cierre: {closing} Máximo 2500 caracteres. Solo el texto de la ficha."
+)
+
+
+def ai_text(instructions, content, max_tokens):
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        response = post_openai_response({"model": OPENAI_MODEL, "store": False, "max_output_tokens": max_tokens,
+                                         "instructions": instructions, "input": content})
+        response.raise_for_status()
+        return (response_output_text(response.json()) or "").strip() or None
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        logger.warning("AI text unavailable; deterministic reply used")
+        return None
+
+
+def full_unit_reply(item):
+    """The complete ficha, sent once the client picks a unit; the brief card stays as fallback."""
+    reference = item["public"]["public_reference"]
+    closing = ("'¿Quieres que coordinemos una visita al departamento?'" if item_delivery(item) == "inmediata"
+               else "'¿Quieres que un asesor te envíe los planos y el brochure del proyecto?'")
+    card = clean_card_text(project_card_text(item))
+    text = ai_text(FICHA_RULES.format(brand=COMMERCIAL_BRAND, closing=closing),
+                   f"Datos de la unidad: {unit_facts(item)}\nTarjeta del proyecto:\n{card or '(sin tarjeta)'}", 1400)
+    if not text:
+        return selected_unit_reply(item)
+    return f"{text}\n\nRef. {reference}"
 
 
 def parking_question_reply(item):
@@ -1406,6 +1507,25 @@ def matches_summary(matches):
     return counts
 
 
+def brief_listing(items):
+    """Two short lines per unit; the full ficha is sent only after the client picks one."""
+    lines = []
+    for index, item in enumerate(items, 1):
+        public = item["public"]
+        project = unit_project_name(item) or public["property_type"].capitalize()
+        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
+        parts = [f"{symbol} {float(public['price_amount']):,.0f}"]
+        if public.get("bedrooms") is not None:
+            parts.append(f"{public['bedrooms']:g} dorm")
+        area = public.get("area_total_m2") or public.get("area_m2")
+        if area:
+            parts.append(f"{float(area):g} m²")
+        label = re.search(r"Entrega según fuente: ([^.]+)\.", public.get("public_description") or "")
+        parts.append("entrega inmediata" if item_delivery(item) == "inmediata" else f"entrega {label.group(1)}" if label else "entrega por confirmar")
+        lines.append(f"\n{index}. {project} · {public['district']}\n{' · '.join(parts)} · Ref. {public['public_reference']}")
+    return "\n".join(lines)
+
+
 def delivery_reply(previous, matches, criteria, user_text):
     """After the five filters: say what exists by delivery, then show only the bucket the client wants."""
     counts = matches_summary(matches)
@@ -1444,8 +1564,8 @@ def delivery_reply(previous, matches, criteria, user_text):
         shown = list(matches)[:INVENTORY_MAX_RESULTS]
     label = {"inmediata": "las de entrega inmediata", "futura": "las de entrega en los próximos años",
              "por_confirmar": "las que tienen fecha por confirmar", "ambas": "las mejores opciones"}[pref]
-    listing = inventory_reply(shown).split("\n", 1)[1]
-    return f"{lead} Te muestro {label}:\n{listing}\n\n¿Cuál de estas unidades te gustaría revisar con más detalle?", criteria
+    listing = brief_listing(shown)
+    return f"{lead} Te muestro {label}:\n{listing}\n\nResponde con el número de la opción que te interesa y te envío la ficha completa.", criteria
 
 
 NO_MATCH_PREFIX = "No encontré opciones verificadas"
@@ -1551,7 +1671,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
             return "Revisaré la unidad que seleccionaste.", criteria, "property_detail", f"Selección de la referencia {selection['reference']}."
         item = next((m for m in inventory_matches if m["public"]["public_reference"] == selection["reference"]), None)
         if item:
-            return selected_unit_reply(item), criteria, "property_detail", f"Detalle de la referencia seleccionada {selection['reference']}."
+            return full_unit_reply(item), criteria, "property_detail", f"Detalle de la referencia seleccionada {selection['reference']}."
         return "No pude reconfirmar la unidad que elegiste entre las opciones actuales. ¿Quieres revisar las alternativas vigentes?", criteria, "conversation", "Unidad anterior no reconfirmada; no se sustituye por otra posición."
     if not observation:
         if is_new_search_request(user_text):
