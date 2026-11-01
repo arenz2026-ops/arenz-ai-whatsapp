@@ -8,6 +8,8 @@ import unicodedata
 import sqlite3
 import time
 import uuid
+
+from text_normalizer import closest_district, normalize_client_text
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -502,7 +504,7 @@ def build_observation_payload(previous, text):
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
     payload = {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
-        "instructions": "Analiza una conversación inmobiliaria en Lima. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. property_type debe usar solo valores canónicos: departamento es el valor para departamento y apartamento; nunca devuelvas apartamento. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, exclusivamente sobre búsqueda inmobiliaria, criterios, aclaraciones, compra, alquiler, venta o derivación a un asesor. No introduzcas humor, temas generales, recomendaciones no inmobiliarias ni contenido accesorio; nunca afirmes disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
+        "instructions": "Analiza una conversación inmobiliaria en Lima. Los clientes escriben rápido, con faltas de ortografía, sin tildes, con abreviaturas y jerga peruana (depa = departamento, lucas = soles, k = mil, 'cuartos' o 'habitaciones' = dormitorios): interpreta lo que quieren decir según el contexto de la conversación y la última pregunta del asesor, como lo haría una persona. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. property_type debe usar solo valores canónicos: departamento es el valor para departamento y apartamento; nunca devuelvas apartamento. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, exclusivamente sobre búsqueda inmobiliaria, criterios, aclaraciones, compra, alquiler, venta o derivación a un asesor. No introduzcas humor, temas generales, recomendaciones no inmobiliarias ni contenido accesorio; nunca afirmes disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
         "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
@@ -710,7 +712,7 @@ DISTRICT_ALIASES = {
 
 def canonical_district(value):
     text = re.sub(r"^(en|el|la|distrito de|distrito)\s+", "", (value or "").strip(), flags=re.IGNORECASE)
-    return DISTRICT_ALIASES.get(fold_text(text), text.title())
+    return DISTRICT_ALIASES.get(fold_text(text)) or closest_district(text) or text.title()
 
 
 def district_variants(district):
@@ -2114,7 +2116,8 @@ def receive_webhook():
                 previous = None
                 logger.warning("Conversation memory unavailable; using in-process fallback")
             timings["session_read_ms"] = round((time.monotonic() - started_at) * 1000)
-            text = resume_answer_as_command(previous, text)
+            # Clients type fast, with typos and slang; every rule below reads the cleaned message.
+            text = resume_answer_as_command(previous, normalize_client_text(text))
             observation = observe_conversation(sender, text, fallback, timings, previous, True)
             # One effective observation governs reply, search selection, and persistence.
             # This prevents an explicit operation from updating the prior search only in
