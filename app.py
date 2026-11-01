@@ -1165,6 +1165,32 @@ class InventoryStore:
             grouped.setdefault(row["property_id"], []).append(row)
         return grouped
 
+    def photos_for_reference(self, reference, limit=5):
+        """Approved photo URLs of one unit, in display order."""
+        response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers,
+                                params={"select": "property_id", "public_reference": f"eq.{reference}"}, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            return []
+        media = self._approved_media([rows[0]["property_id"]]).get(rows[0]["property_id"], [])
+        return [row["media_url"] for row in media if row.get("media_type") == "photo"][:limit]
+
+    def sent_media(self, phone, urls):
+        """Which of these URLs this phone already received."""
+        if not urls:
+            return set()
+        response = requests.get(f"{self.url}/rest/v1/media_deliveries", headers=self.headers,
+                                params={"select": "media_url", "phone": f"eq.{phone}",
+                                        "media_url": "in.(" + ",".join(f'"{u}"' for u in urls) + ")"}, timeout=10)
+        response.raise_for_status()
+        return {row["media_url"] for row in response.json()}
+
+    def record_media_delivery(self, phone, search_key, url):
+        response = requests.post(f"{self.url}/rest/v1/media_deliveries", headers={**self.headers, "Prefer": "return=minimal"},
+                                 json={"phone": phone, "search_key": search_key, "media_url": url}, timeout=10)
+        response.raise_for_status()
+
     def record_query(self, search_id, message_id, criteria, cutoff, matches):
         payload = {"search_id": search_id, "request_message_id": message_id, "criteria_snapshot": criteria, "eligibility_cutoff_at": cutoff.isoformat(), "rules_version": INVENTORY_RULES_VERSION, "result_status": "executed" if matches else "no_eligible", "eligible_count": len(matches)}
         response = requests.post(f"{self.url}/rest/v1/inventory_query_log", headers={**self.headers, "Prefer": "return=representation"}, json=payload, timeout=10)
@@ -1234,9 +1260,6 @@ def inventory_reply(matches):
                 value = re.search(pattern, description)
                 if value:
                     lines.append(f"{label}: {value.group(1)}.")
-        if public["media"]:
-            first_media = public["media"][0]
-            lines.append(f"{first_media['media_type'].capitalize()}: {first_media['media_url']}")
     if borrowed:
         lines.append(THIRD_PARTY_NOTE)
     return "\n".join(lines)
@@ -2040,6 +2063,68 @@ def send_whatsapp_message(to, message):
     return response
 
 
+MAX_LISTING_PHOTOS = 3
+MAX_REQUESTED_PHOTOS = 5
+PHOTOS_UNAVAILABLE_PREFIX = "Por ahora no tengo las fotos cargadas en el chat."
+
+
+def listing_photos(reply, matches):
+    """Cover photo of each unit actually listed in this reply (one per distinct image, max 3)."""
+    if not matches:
+        return []
+    by_reference = {item["public"]["public_reference"]: item for item in matches}
+    photos, seen = [], set()
+    for reference in re.findall(r"\bRef\.\s*([A-Za-z0-9-]+)", reply or ""):
+        item = by_reference.get(reference)
+        media = [m for m in (item or {}).get("public", {}).get("media", []) if m.get("media_type") == "photo"]
+        if media and media[0]["media_url"] not in seen:
+            seen.add(media[0]["media_url"])
+            photos.append({"reference": reference, "url": media[0]["media_url"], "caption": photo_caption(item, len(photos) + 1)})
+        if len(photos) >= MAX_LISTING_PHOTOS:
+            break
+    return photos
+
+
+def photo_caption(item, index):
+    description = (item or {}).get("public", {}).get("public_description") or ""
+    identity = re.match(r"^Proyecto (.*?); unidad", description)
+    place = (item or {}).get("public", {}).get("district") or ""
+    name = identity.group(1) if identity else "Opción"
+    return f"Opción {index}: {name}" + (f" · {place}" if place else "") + " (imagen referencial)"
+
+
+def requested_photos_reply(stage):
+    reply = "Te envío las fotos de esta opción 📷 (son imágenes referenciales del proyecto)."
+    if stage == "handoff":
+        return reply + " El asesor que te contactará puede resolver cualquier detalle."
+    return reply + " ¿Quieres que coordinemos una visita o prefieres que te contacte un asesor?"
+
+
+def send_property_photos(to, photos, store=None, skip_already_sent=True):
+    """Best effort: images go after the text reply and never break the turn."""
+    if not photos:
+        return 0
+    try:
+        already = store.sent_media(to, [p["url"] for p in photos]) if (store and skip_already_sent) else set()
+    except requests.RequestException:
+        already = set()
+    sent = 0
+    for photo in photos:
+        if photo["url"] in already:
+            continue
+        try:
+            image = {"link": photo["url"]}
+            if photo.get("caption"):
+                image["caption"] = photo["caption"]
+            post_graph_message({"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "image", "image": image})
+            sent += 1
+            if store:
+                store.record_media_delivery(to, photo.get("reference") or "", photo["url"])
+        except requests.RequestException:
+            logger.warning("Property photo not delivered")
+    return sent
+
+
 def post_graph_message(payload):
     """POST one messages payload to the Graph API with the active credentials; raise on rejection."""
     token, phone_number_id = embedded_signup.active_credentials(WHATSAPP_TOKEN, PHONE_NUMBER_ID)
@@ -2139,6 +2224,19 @@ def receive_webhook():
             if inventory_store and inventory_ready(criteria):
                 inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
                 reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
+            photos, photos_requested = [], False
+            if inventory_store:
+                try:
+                    shown = latest_presented_references(previous)
+                    if reply.startswith(PHOTOS_UNAVAILABLE_PREFIX) and len(shown) == 1:
+                        urls = inventory_store.photos_for_reference(shown[0], MAX_REQUESTED_PHOTOS)
+                        if urls:
+                            reply, photos_requested = requested_photos_reply(stage), True
+                            photos = [{"reference": shown[0], "url": url} for url in urls]
+                    elif inventory_matches:
+                        photos = listing_photos(reply, inventory_matches)
+                except requests.RequestException:
+                    photos = []
             started_at = time.monotonic()
             if memory:
                 # All mandatory internal state commits before attempting Meta.
@@ -2154,6 +2252,7 @@ def receive_webhook():
             try:
                 send_whatsapp_message(sender, reply)
                 if memory: memory.record_delivery(message_id, "sent")
+                send_property_photos(sender, photos, inventory_store, skip_already_sent=not photos_requested)
             except requests.RequestException as error:
                 # Internal commit remains processed. Never retry Meta automatically.
                 if memory:
