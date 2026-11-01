@@ -1624,6 +1624,25 @@ def customer_pause_reply(text):
     return None
 
 
+NEGATIVE_PATTERN = re.compile(r"^(?:no|nop|nel|no gracias|no,? gracias|por ahora no|ahora no|todav[ií]a no|no quiero|no deseo|no necesito|no es necesario|nada m[aá]s|eso es todo|as[ií] est[aá] bien)\b", re.IGNORECASE)
+THANKS_PATTERN = re.compile(r"^(?:ok|okay|gracias|muchas gracias|ok,? gracias|listo|perfecto|vale|genial|bien|entendido)\b[\s,.!👍🙏]*(?:gracias)?[\s.!👍🙏]*$", re.IGNORECASE)
+OFFER_DECLINED_REPLY = ("Entendido, no te contactará un asesor. Si más adelante quieres revisar otra opción, ver más fotos "
+                        "o cambiar tu búsqueda, escríbeme por aquí. ¡Gracias por escribir a {brand}!")
+CLOSING_THANKS_REPLY = "¡Con gusto! Aquí estaré cuando quieras retomar tu búsqueda."
+
+
+def declined_offer_reply(previous, text):
+    """'No' to the advisor, brochure or visit offer closes the conversation instead of re-describing the unit."""
+    normalized = " ".join((text or "").casefold().split()).strip(".!¡")
+    last = last_assistant_message(previous)
+    offered = BROCHURE_OFFER in last or VISIT_OFFER in last or "te contacte un asesor" in last
+    if offered and NEGATIVE_PATTERN.match(normalized) and not re.search(r"\b(?:pero|otra|otro|m[aá]s opciones|cambi)", normalized):
+        return OFFER_DECLINED_REPLY.format(brand=COMMERCIAL_BRAND)
+    if last.startswith("Entendido, no te contactará un asesor") and THANKS_PATTERN.match(normalized):
+        return CLOSING_THANKS_REPLY
+    return None
+
+
 PAYMENT_QUESTION = "¿cómo piensas pagarlo: al contado, con crédito hipotecario o aún lo estás evaluando?"
 TIMELINE_QUESTION = "¿para cuándo necesitas el departamento? Por ejemplo: lo antes posible, en los próximos meses o sin apuro."
 
@@ -1882,6 +1901,10 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
             criteria = apply_criteria_actions(criteria, observation.get("criteria_actions"))
             criteria.update(validated_slot_updates(observation.get("slot_updates")))
         return pause[0], criteria, pause[1], "Cliente solicita espacio o finalizar la consulta; sin seguimiento automático."
+    declined = declined_offer_reply(previous, user_text)
+    if declined:
+        criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
+        return declined, criteria, "awaiting_customer", "Cliente no desea asesor por ahora; conversación cerrada sin seguimiento automático."
     if is_selected_parking_question(previous, user_text):
         criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
         reference = latest_presented_references(previous)[0]
