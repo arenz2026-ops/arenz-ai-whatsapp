@@ -1097,11 +1097,20 @@ class InventoryStore:
         """Trello card text for a unit (its own card for second-hand units, else its project's), or ''."""
         if not reference:
             return ""
+        return self.card_row(reference).get("card_desc") or ""
+
+    def card_row(self, reference):
+        """{'card_desc', 'client_notice'} for a unit, or {}."""
+        if not reference:
+            return {}
         response = requests.get(f"{self.url}/rest/v1/inventory_card_by_ref", headers=self.headers,
-                                params={"select": "card_desc", "public_reference": f"eq.{reference}"}, timeout=10)
+                                params={"select": "card_desc,client_notice", "public_reference": f"eq.{reference}"}, timeout=10)
         response.raise_for_status()
         rows = response.json()
-        return (rows[0].get("card_desc") or "") if rows else ""
+        return rows[0] if rows else {}
+
+    def unit_notice(self, reference):
+        return self.card_row(reference).get("client_notice") or ""
 
     def _approved_media(self, property_ids):
         if not property_ids:
@@ -1338,6 +1347,29 @@ def project_card_text(item):
         return ""
 
 
+CHARGE_NOTICE = ("⚠️ Importante: este inmueble registra una carga que se encuentra en proceso de levantamiento. "
+                 f"Para conocer el detalle y cómo afecta la compra, consúltalo con un asesor de {COMMERCIAL_BRAND}.")
+NOTICE_TEXTS = {"carga": CHARGE_NOTICE}
+
+
+def unit_notice_text(item):
+    """General client-facing notice for a unit (e.g. a legal charge), '' if none. The internal detail is never shown."""
+    store = get_inventory_store()
+    if not store:
+        return ""
+    try:
+        code = store.unit_notice(item["public"]["public_reference"])
+    except (requests.RequestException, ValueError, AttributeError):
+        logger.warning("Unit notice unavailable")
+        return ""
+    return NOTICE_TEXTS.get(code.strip().casefold(), code.strip()) if code else ""
+
+
+def with_notice(text, item):
+    notice = unit_notice_text(item)
+    return f"{text}\n\n{notice}" if notice and notice not in text else text
+
+
 def clean_card_text(card):
     """Drop the internal header of a Trello card (owner, contacts, internal comments) before the model sees it."""
     text = card or ""
@@ -1346,7 +1378,7 @@ def clean_card_text(card):
         if position > 0:
             text = text[position:]
             break
-    text = re.sub(r"(?im)^.*(n[uú]mero de contacto|contacto de visitas|t[ií]tulares?|empresa desarrolladora|precio al cierre).*$", "", text)
+    text = re.sub(r"(?im)^.*(n[uú]mero de contacto|contacto de visitas|t[ií]tulares?|empresa desarrolladora|precio al cierre|embargo).*$", "", text)
     return text[:6000]
 
 
@@ -1371,7 +1403,8 @@ FICHA_RULES = (
     "'🗺️ GOOGLE MAPS' (solo el enlace si existe); '📑 FINANCIAMIENTO' (crédito hipotecario, AFP si aplica). "
     "Los datos de la UNIDAD (precio, dormitorios, área, piso, entrega) mandan sobre la tarjeta del proyecto. "
     "PROHIBIDO mencionar el nombre de la inmobiliaria, constructora, desarrolladora o empresa comercializadora, titulares, "
-    "nombres de contactos internos, teléfonos, 'XXXXX', precios de cierre u observaciones internas. "
+    "nombres de contactos internos, teléfonos, 'XXXXX', precios de cierre u observaciones internas, "
+    "ni embargos, cargas, hipotecas o situación legal (eso lo informa el sistema aparte). "
     "Escribe los montos como 'S/ 295,000' para soles y 'US$ 150,000' para dólares (nunca PEN ni USD). "
     "Termina con una sola pregunta de cierre: {closing} Máximo 2500 caracteres. Solo el texto de la ficha."
 )
@@ -1399,8 +1432,9 @@ def full_unit_reply(item):
     text = ai_text(FICHA_RULES.format(brand=COMMERCIAL_BRAND, closing=closing),
                    f"Datos de la unidad: {unit_facts(item)}\nTarjeta del proyecto:\n{card or '(sin tarjeta)'}", 1400)
     if not text:
-        return selected_unit_reply(item)
-    return f"{text}\n\nRef. {reference}"
+        return with_notice(selected_unit_reply(item), item)
+    # The general notice goes last, after the closing question, as the operator asked.
+    return with_notice(f"{text}\n\nRef. {reference}", item)
 
 
 def parking_question_reply(item):

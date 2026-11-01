@@ -149,4 +149,6 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
    **Vendido** o **Descartado** retiran su unidad (`sold_rented` / `inactive`).
 3. Se aplican las correcciones fijas de `inventory_overrides` (dormitorios, estacionamiento, vendidos) para que la nueva
    carga no reintroduzca errores de origen.
+   - `inventory_unit_info.client_notice = 'carga'` hace que el bot cierre la ficha con un aviso general (sin detalle) de que
+     el inmueble tiene una carga y que lo consulte con un asesor. No se borra en la recarga; quitarlo cuando se levante.
 4. Se revisa el resultado en el buscador web y con una conversación de prueba.
