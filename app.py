@@ -473,7 +473,7 @@ def bounded_turn_content(content, direction):
     return prefix + " … " + content[-(277 - len(prefix)):]
 
 
-def recent_conversation_turns(previous, limit=4):
+def recent_conversation_turns(previous, limit=4, raw=False):
     """Return a small durable dialogue window, without internal observation data."""
     state = previous.get("state", {}) if isinstance(previous, dict) else {}
     searches = state.get("searches", {}) if isinstance(state, dict) else {}
@@ -487,7 +487,7 @@ def recent_conversation_turns(previous, limit=4):
             continue
         direction, content = turn.get("direction"), turn.get("content")
         if direction in ("user", "assistant") and isinstance(content, str) and content.strip():
-            clean.append({"direction": direction, "content": bounded_turn_content(content, direction)})
+            clean.append({"direction": direction, "content": content if raw else bounded_turn_content(content, direction)})
     if not clean and isinstance(state, dict):
         for direction, key in (("user", "last_user_message"), ("assistant", "last_assistant_message")):
             content = state.get(key)
@@ -1093,12 +1093,12 @@ class InventoryStore:
         matches.summary = summary
         return matches, cutoff
 
-    def project_card(self, project):
-        """Trello card text for a project (address, nearby places, amenities), or ''."""
-        if not project:
+    def project_card(self, reference):
+        """Trello card text for a unit (its own card for second-hand units, else its project's), or ''."""
+        if not reference:
             return ""
-        response = requests.get(f"{self.url}/rest/v1/inventory_project_card_v", headers=self.headers,
-                                params={"select": "card_desc", "proyecto": f"eq.{project}"}, timeout=10)
+        response = requests.get(f"{self.url}/rest/v1/inventory_card_by_ref", headers=self.headers,
+                                params={"select": "card_desc", "public_reference": f"eq.{reference}"}, timeout=10)
         response.raise_for_status()
         rows = response.json()
         return (rows[0].get("card_desc") or "") if rows else ""
@@ -1236,6 +1236,15 @@ SELECTION_PATTERN = re.compile(r"(?:^|\b(?:opci[oó]n|departamento|depa|dpto|uni
 QUALIFYING_QUESTION = re.compile(r"dormitorios necesitas|pagarlo|para cu[aá]ndo|presupuesto|distrito", re.IGNORECASE)
 
 
+def numbered_references(previous):
+    """{número mostrado: referencia} from the latest listing, so '4' works on the second page."""
+    for turn in reversed(recent_conversation_turns(previous, limit=8, raw=True)):
+        if turn["direction"] == "assistant" and PRESENTED_REFERENCE_PATTERN.search(turn["content"]):
+            pairs = re.findall(r"(?m)^(\d{1,2})\.\s[^\n]*\n[^\n]*?\bRef\.\s*([A-Za-z0-9-]+)", turn["content"])
+            return {int(n): ref for n, ref in pairs}
+    return {}
+
+
 def selected_option(previous, text):
     normalized = (text or "").casefold().strip().strip(".!¡¿?")
     turns = recent_conversation_turns(previous)
@@ -1245,7 +1254,9 @@ def selected_option(previous, text):
         loose = SELECTION_PATTERN.search(normalized)
         if loose and not re.search(r"\d\s*(dorm|m2|m²|mil|k\b|soles|d[oó]lares|ba[ñn]o)", normalized):
             index = int(loose.group(1))
-            return {"index": index, "reference": references[index - 1] if index <= len(references) else None, "count": len(references)}
+            numbered = numbered_references(previous)
+            reference = numbered.get(index) or (references[index - 1] if index <= len(references) else None)
+            return {"index": index, "reference": reference, "count": len(references)}
         if len(references) == 1 and "Responde con el número" in last and AFFIRMATIVE_PATTERN.match(" ".join(normalized.split())):
             return {"index": 1, "reference": references[0], "count": 1}
     match = re.fullmatch(r"(?:la\s+|el\s+)?(?:opci[oó]n\s*)?([1-9])", normalized)
@@ -1271,6 +1282,7 @@ def selected_unit_reply(item):
     return "Revisemos esta unidad:\n\n" + details + "\n\n¿Qué característica te gustaría confirmar de esta unidad?"
 
 
+PHOTO_WORDS = re.compile(r"\bfotos?\b|\bim[aá]genes\b|\bvideos?\b", re.IGNORECASE)
 LOCATION_WORDS = re.compile(r"ubica|direcci|d[oó]nde|cerca|referencia|lugares|mapa|avenida|calle", re.IGNORECASE)
 ADVISOR_OFFER = "¿Quieres que te contacte un asesor?"
 
@@ -1320,7 +1332,7 @@ def project_card_text(item):
     if not store:
         return ""
     try:
-        return store.project_card(unit_project_name(item))
+        return store.project_card(item["public"]["public_reference"])
     except (requests.RequestException, ValueError):
         logger.warning("Project card unavailable")
         return ""
@@ -1578,12 +1590,16 @@ def matches_summary(matches):
     return counts
 
 
-MORE_WORDS = re.compile(r"\bm[aá]s\b|otras|siguientes|resto|las dem[aá]s|todas", re.IGNORECASE)
+MORE_WORDS = re.compile(r"\bm[aá]s opciones\b|\bver m[aá]s\b|^m[aá]s\b|\botr[oa]s?\b|siguientes|\bresto\b|dem[aá]s|\btodas\b|\btodos\b", re.IGNORECASE)
+
+
+def is_more_request(text):
+    return bool(MORE_WORDS.search(text or "")) and not re.search(r"b[uú]squeda|distrito|presupuesto", text or "", re.IGNORECASE)
 
 
 def shown_references(previous):
     refs = []
-    for turn in recent_conversation_turns(previous, limit=12):
+    for turn in recent_conversation_turns(previous, limit=12, raw=True):
         if turn["direction"] == "assistant":
             refs += [m.group(1).upper() for m in PRESENTED_REFERENCE_PATTERN.finditer(turn["content"])]
     return list(dict.fromkeys(refs))
@@ -1638,7 +1654,7 @@ def delivery_reply(previous, matches, criteria, user_text):
     criteria = {**criteria, "delivery_preference": pref}
     wanted = ("inmediata", "futura", "por_confirmar") if pref == "ambas" else (pref,)
     pool = [item for item in matches if item_delivery(item) in wanted]
-    if MORE_WORDS.search(user_text or ""):
+    if is_more_request(user_text):
         already = shown_references(previous)
         rest = [item for item in pool if item["public"]["public_reference"] not in already]
         if rest:
@@ -1807,7 +1823,14 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
             reply = (f"Ya registré tu solicitud y un asesor de {COMMERCIAL_BRAND} te escribirá. Mientras tanto, puedo enviarte la "
                      "ficha de alguna opción o buscar con otros criterios. ¿Qué prefieres?")
         return reply, criteria, "handoff", summary
-    if ((previous or {}).get("stage") == "property_detail" and inventory_matches is not None
+    if PHOTO_WORDS.search(user_text or ""):
+        shown = latest_presented_references(previous)
+        if len(shown) == 1:
+            return (f"En este momento no tengo las fotos cargadas en el chat. Un asesor de {COMMERCIAL_BRAND} te las enviará "
+                    f"de la referencia {shown[0]}. {ADVISOR_OFFER}"), criteria, "property_detail", "Pedido de fotos."
+        if shown:
+            return "Con gusto. ¿De cuál opción quieres las fotos? Respóndeme con su número.", criteria, "qualified", "Pedido de fotos sin unidad."
+    if ((previous or {}).get("stage") == "property_detail" and inventory_matches is not None and not is_more_request(user_text)
             and not observation.get("criteria_change") and intent not in ("new_search", "change_criteria")):
         references = latest_presented_references(previous)
         if len(references) == 1:
@@ -1829,9 +1852,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         if criteria.get(key) in (None, [], ""):
             if (is_new_search_request(user_text) or intent == "new_search") and key == "districts" and not criteria.get("districts"):
                 return "Nueva búsqueda iniciada. ¿En qué distrito o distritos te gustaría tu departamento?", criteria, "qualification", "Nueva búsqueda creada con criterios vacíos."
-            natural_reply = usable_assistant_reply(observation, "qualification")
-            if natural_reply:
-                return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
+            # Fixed questions: free model replies drifted (re-asking known districts, asking parking out of order).
             return question, criteria, "qualification", "Continuar calificación con el siguiente criterio faltante."
     if inventory_matches is not None and inventory_ready(criteria):
         reply, criteria = qualified_inventory_reply(previous, inventory_matches, criteria, user_text)
@@ -2028,6 +2049,9 @@ def receive_webhook():
             # This prevents an explicit operation from updating the prior search only in
             # the response layer while persistence still sees the unnormalized input.
             effective_observation = with_explicit_operation(observation, text)
+            if is_more_request(text) and isinstance(effective_observation, dict) and effective_observation.get("intent") == "new_search":
+                # "Muéstrame otro departamento" continues the same search; the model reads it as a new one.
+                effective_observation = {**effective_observation, "intent": "property_search", "criteria_actions": []}
             if selected_option(previous, text) or is_selected_parking_question(previous, text):
                 effective_observation = {**(effective_observation or {}), "intent": "confirmation",
                                          "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}

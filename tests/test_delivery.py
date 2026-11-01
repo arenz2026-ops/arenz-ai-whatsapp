@@ -176,3 +176,19 @@ class FichaFollowUpTests(unittest.TestCase):
     def test_yes_after_brochure_offer_hands_off_interest(self):
         prev = self.prev_with_ficha("¿Quieres que un asesor te envíe los planos y el brochure del proyecto?")
         self.assertEqual(app.detected_handoff(prev, {"handoff": False}, "sí")["request_type"], "property_interest")
+
+
+class PagingSelectionTests(unittest.TestCase):
+    def test_number_on_second_page_maps_to_its_reference(self):
+        matches = [item(f"R{i}", "1er Tri 2029") for i in range(1, 8)]
+        first, crit = app.delivery_reply(None, matches, CRITERIA, "ok")
+        prev = {"state": {"recent_turns": [{"direction": "assistant", "content": first}]}}
+        more, _ = app.delivery_reply(prev, matches, crit, "muéstrame los otros")
+        prev2 = {"state": {"recent_turns": [{"direction": "assistant", "content": first}, {"direction": "user", "content": "otros"},
+                                            {"direction": "assistant", "content": more}]}}
+        self.assertEqual(app.selected_option(prev2, "4")["reference"], "R4")
+
+    def test_otros_is_a_more_request_but_otra_busqueda_is_not(self):
+        self.assertTrue(app.is_more_request("Muestrame los otros"))
+        self.assertTrue(app.is_more_request("Quiero que me muestres otro departamento"))
+        self.assertFalse(app.is_more_request("otra búsqueda"))
