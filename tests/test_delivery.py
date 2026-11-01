@@ -52,5 +52,22 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("Ref. A", reply); self.assertNotIn("Ref. B", reply)
 
 
+class TimelineAndUnitTests(unittest.TestCase):
+    def test_month_means_immediate_and_future_year_means_future(self):
+        self.assertEqual(app.delivery_preference_from_text("Dentro del mes de noviembre"), "inmediata")
+        self.assertEqual(app.delivery_preference_from_text("para diciembre de 2028"), "futura")
+
+    def test_location_question_does_not_resend_the_card(self):
+        it = item("607", "Abril 2028")
+        it["public"]["public_description"] = "Proyecto Unico Canevaro; unidad 607. Piso 6. Entrega según fuente: Abril 2028."
+        card = app.selected_unit_reply(it)
+        previous = {"stage": "property_detail", "state": {"recent_turns": [{"direction": "assistant", "content": card}]}}
+        obs = {"intent": "general_question", "slot_updates": {}, "criteria_change": False, "criteria_actions": [],
+               "user_question": "ubicación", "next_action": "reply", "handoff": False, "assistant_reply": None}
+        reply = app.unit_question_reply(previous, it, "Cerca a qué lugares está?", obs)
+        self.assertIn("Lince", reply); self.assertIn("te contacte un asesor", reply)
+        self.assertNotEqual(reply, card)
+
+
 if __name__ == "__main__":
     unittest.main()

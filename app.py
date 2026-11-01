@@ -1214,6 +1214,29 @@ def selected_unit_reply(item):
     return "Revisemos esta unidad:\n\n" + details + "\n\n¿Qué característica te gustaría confirmar de esta unidad?"
 
 
+LOCATION_WORDS = re.compile(r"ubica|direcci|d[oó]nde|cerca|referencia|lugares|mapa|avenida|calle", re.IGNORECASE)
+ADVISOR_OFFER = "¿Quieres que te contacte un asesor?"
+
+
+def unit_question_reply(previous, item, user_text, observation):
+    """Answer a question about the unit already shown, instead of resending its card."""
+    public = item["public"]
+    found = re.match(r"^Proyecto (.*?); unidad (.*?)\.", public.get("public_description") or "")
+    name = f"{found.group(1)} (unidad {found.group(2)})" if found else f"La unidad Ref. {public['public_reference']}"
+    if LOCATION_WORDS.search(user_text or ""):
+        extra = public.get("public_location_reference") or public.get("zone")
+        where = f"en {public['district']}" + (f", {extra}" if extra else "")
+        reply = (f"{name} está {where}. En mi ficha no tengo la dirección exacta ni los lugares cercanos. "
+                 f"Un asesor de {COMMERCIAL_BRAND} puede enviarte la ubicación exacta y coordinar una visita. {ADVISOR_OFFER}")
+    else:
+        natural = usable_assistant_reply(observation, "conversation") if isinstance(observation, dict) else None
+        reply = natural or (f"De {name} tengo el precio, dormitorios, área, piso y fecha de entrega que te mostré. "
+                            f"Para otros detalles, un asesor de {COMMERCIAL_BRAND} puede ayudarte. {ADVISOR_OFFER}")
+    if reply.strip() == last_assistant_message(previous).strip():
+        reply = f"Para darte ese detalle con precisión, lo mejor es que te contacte un asesor de {COMMERCIAL_BRAND}. {ADVISOR_OFFER}"
+    return reply
+
+
 def parking_question_reply(item):
     public = item["public"]
     spaces = public.get("parking_spaces")
@@ -1337,7 +1360,8 @@ def inventory_conversation_reply(matches, criteria):
     return reply + "\n\n" + question
 
 
-IMMEDIATE_WORDS = re.compile(r"inmediat|entregad|lo antes posible|cuanto antes|urgente|ya mismo|\bpronto\b|este a[ñn]o|\bya\b|para mudarme|\b\d+\s*mes", re.IGNORECASE)
+IMMEDIATE_WORDS = re.compile(r"inmediat|entregad|lo antes posible|cuanto antes|lo m[aá]s pronto|urgente|ya mismo|\bpronto\b|este a[ñn]o|este mes|pr[oó]ximo mes|\bsemanas?\b|fin de a[ñn]o|\bya\b|para mudarme|\b\d+\s*mes|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre", re.IGNORECASE)
+FUTURE_YEAR = re.compile(r"20(2[7-9]|3\d)")
 FUTURE_WORDS = re.compile(r"preventa|en plano|en construcci|futur|pr[oó]ximos a[ñn]os|pr[oó]ximo a[ñn]o|sin apuro|no tengo apuro|no hay apuro|20(2[7-9]|3\d)|a[ñn]os", re.IGNORECASE)
 BOTH_WORDS = re.compile(r"\bambas\b|\blas dos\b|\btodas\b|\bambos\b", re.IGNORECASE)
 DELIVERY_QUESTION = "¿Te muestro las de entrega inmediata o las de entrega en los próximos años?"
@@ -1347,6 +1371,8 @@ def delivery_preference_from_text(text):
     text = text or ""
     if BOTH_WORDS.search(text):
         return "ambas"
+    if FUTURE_YEAR.search(text):
+        return "futura"
     if IMMEDIATE_WORDS.search(text):
         return "inmediata"
     if FUTURE_WORDS.search(text):
@@ -1543,12 +1569,13 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if handoff:
         reply, summary = handoff_reply(handoff)
         return reply, criteria, "handoff", summary
-    if (previous or {}).get("stage") == "property_detail" and intent == "general_question" and inventory_matches is not None and criteria == conversation_state(previous):
+    if ((previous or {}).get("stage") == "property_detail" and inventory_matches is not None
+            and not observation.get("criteria_change") and intent not in ("new_search", "change_criteria")):
         references = latest_presented_references(previous)
         if len(references) == 1:
             item = next((m for m in inventory_matches if m["public"]["public_reference"] == references[0]), None)
             if item:
-                return selected_unit_reply(item), criteria, "property_detail", f"Consulta sobre la unidad seleccionada {references[0]}."
+                return unit_question_reply(previous, item, user_text, observation), criteria, "property_detail", f"Consulta sobre la unidad seleccionada {references[0]}."
     if intent == "general_question":
         natural_reply = usable_assistant_reply(observation, "conversation")
         if inventory_matches is not None and inventory_ready(criteria):
