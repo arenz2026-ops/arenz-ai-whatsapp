@@ -2124,6 +2124,13 @@ def wants_more_photos(previous, text):
     return bool(YES_MORE_PHOTOS.match(cleaned) or PHOTO_WORDS.search(cleaned))
 
 
+def declines_more_photos(previous, text):
+    if MORE_PHOTOS_QUESTION not in last_assistant_message(previous):
+        return False
+    normalized = " ".join((text or "").casefold().split()).strip(".!¡")
+    return bool(NEGATIVE_PATTERN.match(normalized)) and not re.search(r"\b(?:pero|otra|otro|m[aá]s opciones|cambi)", normalized)
+
+
 def pending_photos(store, phone, reference):
     urls = store.photos_for_reference(reference, MAX_PROJECT_PHOTOS)
     already = store.sent_media(phone, urls) if urls else set()
@@ -2164,6 +2171,11 @@ def photo_turn(store, phone, previous, text, reply, stage):
                     photos=[{"reference": reference, "url": pending[0], "caption": offer}])
         return plan
     shown = latest_presented_references(previous)
+    if len(shown) == 1 and declines_more_photos(previous, text):
+        # "No" to more photos ends the photo flow with the ficha's own closing question.
+        closing = ("Perfecto. El asesor que te contactará puede resolver cualquier detalle." if stage == "handoff"
+                   else "Perfecto. " + store.closing_question(shown[0]))
+        return {"stored": closing + photo_reference_marker(shown[0]), "text": closing, "photos": []}
     if len(shown) == 1 and (reply.startswith(PHOTOS_UNAVAILABLE_PREFIX) or wants_more_photos(previous, text)):
         reference = shown[0]
         urls, pending = pending_photos(store, phone, reference)
