@@ -67,6 +67,10 @@ class TimelineAndUnitTests(unittest.TestCase):
         reply = app.unit_question_reply(previous, it, "Cerca a qué lugares está?", obs)
         self.assertIn("Lince", reply); self.assertIn("te contacte un asesor", reply)
         self.assertNotEqual(reply, card)
+        self.assertNotIn("visita", reply)
+        self.assertIn("planos", reply)
+        ready = item("A", "Entregado")
+        self.assertIn("visita", app.unit_question_reply(previous, ready, "dónde está", obs))
 
 
 if __name__ == "__main__":

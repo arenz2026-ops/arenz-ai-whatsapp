@@ -1226,8 +1226,13 @@ def unit_question_reply(previous, item, user_text, observation):
     if LOCATION_WORDS.search(user_text or ""):
         extra = public.get("public_location_reference") or public.get("zone")
         where = f"en {public['district']}" + (f", {extra}" if extra else "")
-        reply = (f"{name} está {where}. En mi ficha no tengo la dirección exacta ni los lugares cercanos. "
-                 f"Un asesor de {COMMERCIAL_BRAND} puede enviarte la ubicación exacta y coordinar una visita. {ADVISOR_OFFER}")
+        if item_delivery(item) == "inmediata":
+            follow = f"Un asesor de {COMMERCIAL_BRAND} puede enviarte la ubicación exacta y coordinar una visita al departamento."
+        else:
+            # Under construction or on plans: there is no unit to visit yet.
+            follow = (f"Como el proyecto aún está en construcción, un asesor de {COMMERCIAL_BRAND} puede enviarte la ubicación exacta, "
+                      "los planos y el brochure del proyecto, y resolver tus dudas por llamada.")
+        reply = f"{name} está {where}. En mi ficha no tengo la dirección exacta ni los lugares cercanos. {follow} {ADVISOR_OFFER}"
     else:
         natural = usable_assistant_reply(observation, "conversation") if isinstance(observation, dict) else None
         reply = natural or (f"De {name} tengo el precio, dormitorios, área, piso y fecha de entrega que te mostré. "
