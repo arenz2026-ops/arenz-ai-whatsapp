@@ -26,47 +26,58 @@ class PhotoTurnTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def store(self, sent=()):
+        s = store(sent)
+        s.closing_question.return_value = "¿Quieres que un asesor te envíe los planos y el brochure del proyecto?"
+        return s
+
     def test_listing_sends_no_photos(self):
         listing = "Opciones:\n1. Libertador\nRef. C2-AAA111\n2. Otra\nRef. C2-BBB222\nResponde con el número"
-        reply, photos, first = app.photo_turn(store(), "51", history("¿Para cuándo?"), "sí", listing, "qualified")
-        self.assertEqual((reply, photos, first), (listing, [], False))
+        plan = app.photo_turn(self.store(), "51", history("¿Para cuándo?"), "sí", listing, "qualified")
+        self.assertEqual(plan, {"stored": listing, "text": listing, "photos": []})
 
-    def test_choosing_unit_sends_cover_and_offers_more(self):
+    def test_choosing_unit_ficha_first_then_cover_with_offer(self):
         previous = history("Opciones:\n1. Libertador\nRef. C2-AAA111\n2. Otra\nRef. C2-BBB222\nResponde con el número de la opción")
+        ficha = "🏠 Ficha\n\n¿Quieres que un asesor te envíe los planos y el brochure del proyecto?\n\nRef. C2-AAA111"
         with mock.patch.object(app, "selected_option", return_value={"index": 1, "reference": "C2-AAA111", "count": 2}):
-            reply, photos, first = app.photo_turn(store(), "51", previous, "1", "Ficha de la unidad", "property_detail")
-        self.assertEqual([p["url"] for p in photos], [URLS[0]])
-        self.assertTrue(first)
-        self.assertIn("Tengo 11 fotos más", reply)
-        self.assertIn(app.MORE_PHOTOS_QUESTION, reply)
-        self.assertNotIn("C2-AAA111", app.customer_visible_reply(reply))
+            plan = app.photo_turn(self.store(), "51", previous, "1", ficha, "property_detail")
+        self.assertNotIn("brochure", plan["text"])
+        self.assertEqual([p["url"] for p in plan["photos"]], [URLS[0]])
+        self.assertEqual(plan["photos"][0]["caption"], "📷 Tengo 11 fotos más de este proyecto. ¿Quieres que te envíe más fotos?")
+        self.assertIn(app.MORE_PHOTOS_QUESTION, plan["stored"])
+        self.assertNotIn("C2-AAA111", app.customer_visible_reply(plan["text"]))
 
-    def test_yes_sends_next_five_and_keeps_offering(self):
+    def test_yes_sends_next_five_question_on_last_photo(self):
         previous = history("Ficha\n📷 Tengo 11 fotos más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
-        reply, photos, first = app.photo_turn(store(sent=URLS[:1]), "51", previous, "Sí", "otra cosa", "property_detail")
-        self.assertEqual([p["url"] for p in photos], URLS[1:6])
-        self.assertIn("Tengo 6 fotos más", reply)
+        plan = app.photo_turn(self.store(sent=URLS[:1]), "51", previous, "Sí", "otra cosa", "property_detail")
+        self.assertIsNone(plan["text"])
+        self.assertEqual([p["url"] for p in plan["photos"]], URLS[1:6])
+        self.assertNotIn("caption", plan["photos"][3])
+        self.assertIn("Tengo 6 fotos más", plan["photos"][-1]["caption"])
 
-    def test_last_batch_closes_with_next_step(self):
-        previous = history("📷 Tengo 6 fotos más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
-        reply, photos, _ = app.photo_turn(store(sent=URLS[:6]), "51", previous, "dale", "x", "property_detail")
-        self.assertEqual(len(photos), 5)
-        self.assertIn("Tengo 1 foto más", reply)
-        reply, photos, _ = app.photo_turn(store(sent=URLS[:11]), "51", previous, "sí", "x", "property_detail")
-        self.assertEqual([p["url"] for p in photos], URLS[11:])
-        self.assertIn("Esas son todas", reply)
-        self.assertNotIn(app.MORE_PHOTOS_QUESTION, reply)
+    def test_last_batch_ends_with_brochure_question(self):
+        previous = history("📷 Tengo 1 foto más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
+        plan = app.photo_turn(self.store(sent=URLS[:11]), "51", previous, "dale", "x", "property_detail")
+        self.assertEqual([p["url"] for p in plan["photos"]], URLS[11:])
+        caption = plan["photos"][-1]["caption"]
+        self.assertTrue(caption.startswith("Esas son todas las fotos"))
+        self.assertIn("brochure", caption)
 
     def test_nothing_left(self):
         previous = history("📷 Tengo 1 foto más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
-        reply, photos, _ = app.photo_turn(store(sent=URLS), "51", previous, "sí", "x", "handoff")
-        self.assertEqual(photos, [])
-        self.assertIn("Ya te envié todas", reply)
+        plan = app.photo_turn(self.store(sent=URLS), "51", previous, "sí", "x", "handoff")
+        self.assertEqual(plan["photos"], [])
+        self.assertIn("Ya te envié todas", plan["text"])
 
     def test_yes_without_offer_does_nothing(self):
         previous = history("Ficha sin oferta\nRef. C2-AAA111")
-        reply, photos, _ = app.photo_turn(store(), "51", previous, "sí", "respuesta normal", "property_detail")
-        self.assertEqual((reply, photos), ("respuesta normal", []))
+        plan = app.photo_turn(self.store(), "51", previous, "sí", "respuesta normal", "property_detail")
+        self.assertEqual(plan["photos"], [])
+        self.assertEqual(plan["text"], "respuesta normal")
+
+    def test_listing_cta_mentions_photos(self):
+        import inspect
+        self.assertIn("ficha completa y fotografías del proyecto", inspect.getsource(app))
 
 
 class SendPhotosTest(unittest.TestCase):

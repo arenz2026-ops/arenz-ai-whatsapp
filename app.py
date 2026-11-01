@@ -1165,16 +1165,27 @@ class InventoryStore:
             grouped.setdefault(row["property_id"], []).append(row)
         return grouped
 
-    def photos_for_reference(self, reference, limit=5):
-        """Approved photo URLs of one unit, in display order."""
+    def unit_row(self, reference):
         response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers,
-                                params={"select": "property_id", "public_reference": f"eq.{reference}"}, timeout=10)
+                                params={"select": self.property_fields, "public_reference": f"eq.{reference}"}, timeout=10)
         response.raise_for_status()
         rows = response.json()
-        if not rows:
+        return rows[0] if rows else None
+
+    def photos_for_reference(self, reference, limit=5):
+        """Approved photo URLs of one unit, in display order."""
+        row = self.unit_row(reference)
+        if not row:
             return []
-        media = self._approved_media([rows[0]["property_id"]]).get(rows[0]["property_id"], [])
-        return [row["media_url"] for row in media if row.get("media_type") == "photo"][:limit]
+        media = self._approved_media([row["property_id"]]).get(row["property_id"], [])
+        return [m["media_url"] for m in media if m.get("media_type") == "photo"][:limit]
+
+    def closing_question(self, reference):
+        """The same closing the ficha would use: visit for immediate delivery, brochure otherwise."""
+        row = self.unit_row(reference)
+        if row and property_delivery(row) == "inmediata":
+            return "¿Quieres que coordinemos una visita al departamento?"
+        return "¿Quieres que un asesor te envíe los planos y el brochure del proyecto?"
 
     def sent_media(self, phone, urls):
         """Which of these URLs this phone already received."""
@@ -1758,7 +1769,7 @@ def delivery_reply(previous, matches, criteria, user_text):
             left = len(rest) - len(page)
             tail = (f"Me quedan {left} opciones más; escribe 'más' para verlas." if left else "Esas son todas las que tengo con tus criterios.")
             return (f"Aquí tienes {len(page)} opciones más:\n{brief_listing(page, start=len(already) + 1)}\n\n{tail} "
-                    "Responde con el número de la opción que te interesa y te envío la ficha completa."), criteria
+                    "Responde con el número de la opción que te interesa y te envío la ficha completa y fotografías del proyecto."), criteria
         return ("Ya te mostré todas las opciones que tengo con tus criterios. Si quieres, amplío el distrito o el presupuesto. "
                 "¿Qué prefieres?"), criteria
     shown = pool[:INVENTORY_MAX_RESULTS]
@@ -1771,7 +1782,7 @@ def delivery_reply(previous, matches, criteria, user_text):
     label = {"inmediata": "las de entrega inmediata", "futura": "las de entrega en los próximos años",
              "por_confirmar": "las que tienen fecha por confirmar", "ambas": "las mejores opciones"}[pref]
     listing = brief_listing(shown)
-    return f"{lead} Te muestro {label}:\n{listing}\n\nResponde con el número de la opción que te interesa y te envío la ficha completa.", criteria
+    return f"{lead} Te muestro {label}:\n{listing}\n\nResponde con el número de la opción que te interesa y te envío la ficha completa y fotografías del proyecto.", criteria
 
 
 NO_MATCH_PREFIX = "No encontré opciones verificadas"
@@ -1849,7 +1860,7 @@ def qualified_inventory_reply(previous, matches, criteria, user_text):
     reply, criteria = delivery_reply(previous, matches, criteria, user_text)
     if reply.strip() == last_assistant_message(previous).strip():
         reply = ("Esas son las opciones que tengo con tus criterios. Responde con el número de la que te interese para enviarte "
-                 "la ficha completa, o dime si prefieres cambiar el distrito, el presupuesto o los dormitorios.")
+                 "la ficha completa y fotografías del proyecto, o dime si prefieres cambiar el distrito, el presupuesto o los dormitorios.")
     return reply, criteria
 
 
@@ -2067,7 +2078,6 @@ MAX_REQUESTED_PHOTOS = 5
 MAX_PROJECT_PHOTOS = 15
 PHOTOS_UNAVAILABLE_PREFIX = "Por ahora no tengo las fotos cargadas en el chat."
 MORE_PHOTOS_QUESTION = "¿Quieres que te envíe más fotos?"
-NEXT_STEP_QUESTION = "¿Quieres que coordinemos una visita o prefieres que te contacte un asesor?"
 YES_MORE_PHOTOS = re.compile(r"^(?:s[ií]|sip|ok|okay|claro|dale|ya|bueno|perfecto|por favor|env[ií]a(?:me|las)?|m[aá]nda(?:me|las)?|m[aá]s)\b", re.IGNORECASE)
 
 
@@ -2081,8 +2091,7 @@ def photo_reference_marker(reference):
     return f"\nRef. {reference}"
 
 
-def next_step(stage):
-    return "El asesor que te contactará puede resolver cualquier detalle." if stage == "handoff" else NEXT_STEP_QUESTION
+FICHA_CLOSING = re.compile(r"\n*[^\n]*(?:env[ií]e los planos|coordinemos una visita)[^\n]*\?\s*(?=\n|$)", re.IGNORECASE)
 
 
 def wants_more_photos(previous, text):
@@ -2098,38 +2107,54 @@ def pending_photos(store, phone, reference):
     return urls, [url for url in urls if url not in already]
 
 
-def photo_turn(store, phone, previous, text, reply, stage):
-    """Decide which photos go with this turn. Returns (reply, photos, photos_first).
+def final_photos_text(store, reference, stage):
+    if stage == "handoff":
+        return "Esas son todas las fotos que tengo de este proyecto. El asesor que te contactará puede resolver cualquier detalle."
+    return "Esas son todas las fotos que tengo de este proyecto. " + store.closing_question(reference)
 
-    - Listing of options: text only.
-    - Unit chosen (ficha): its cover photo, then the ficha, ending with an offer of more photos.
-    - "Sí" to that offer, or any photo request: the next 5 unsent photos, then the offer again
-      while photos remain, or the next step when none are left.
+
+def photo_turn(store, phone, previous, text, reply, stage):
+    """Plan the photos of this turn: {'stored', 'text', 'photos'}.
+
+    'stored' is committed to memory, 'text' is sent first (None = no text message) and the last
+    photo carries the follow-up as caption, so the question always lands under the last image.
+    - Listing: text only.
+    - Unit chosen: ficha (its closing question held back), then the cover photo with
+      "Tengo N fotos más… ¿Quieres que te envíe más fotos?" as caption.
+    - "Sí" to that offer: the next 5 photos, the last one asking again while photos remain;
+      the final batch ends with the ficha's closing question (brochure or visit).
     """
+    plan = {"stored": reply, "text": reply, "photos": []}
     selection = selected_option(previous, text)
     if selection and selection.get("reference") and not reply.startswith(PHOTOS_UNAVAILABLE_PREFIX):
         reference = selection["reference"]
-        urls, pending = pending_photos(store, phone, reference)
+        _, pending = pending_photos(store, phone, reference)
         if not pending:
-            return reply, [], False
+            return plan
         rest = len(pending) - 1
-        reply = reply.rstrip() + ("\n\n" + remaining_photos_line(rest) if rest else "") + photo_reference_marker(reference)
-        return reply, [{"reference": reference, "url": pending[0], "caption": "Imagen referencial del proyecto"}], True
+        if not rest:
+            plan["photos"] = [{"reference": reference, "url": pending[0], "caption": "Imagen referencial del proyecto"}]
+            return plan
+        ficha = FICHA_CLOSING.sub("", reply).rstrip()
+        offer = remaining_photos_line(rest)
+        plan.update(stored=f"{ficha}\n\n{offer}" + photo_reference_marker(reference), text=ficha,
+                    photos=[{"reference": reference, "url": pending[0], "caption": offer}])
+        return plan
     shown = latest_presented_references(previous)
     if len(shown) == 1 and (reply.startswith(PHOTOS_UNAVAILABLE_PREFIX) or wants_more_photos(previous, text)):
         reference = shown[0]
         urls, pending = pending_photos(store, phone, reference)
         if not urls:
-            return reply, [], False
+            return plan
         if not pending:
-            return f"Ya te envié todas las fotos que tengo de esta opción. {next_step(stage)}" + photo_reference_marker(reference), [], False
+            closing = final_photos_text(store, reference, stage).replace("Esas son todas las fotos", "Ya te envié todas las fotos")
+            return {"stored": closing + photo_reference_marker(reference), "text": closing, "photos": []}
         batch, rest = pending[:MAX_REQUESTED_PHOTOS], len(pending) - MAX_REQUESTED_PHOTOS
-        if rest > 0:
-            text_reply = remaining_photos_line(rest)
-        else:
-            text_reply = f"Esas son todas las fotos que tengo de esta opción. {next_step(stage)}"
-        return text_reply + photo_reference_marker(reference), [{"reference": reference, "url": url} for url in batch], True
-    return reply, [], False
+        follow_up = remaining_photos_line(rest) if rest > 0 else final_photos_text(store, reference, stage)
+        photos = [{"reference": reference, "url": url} for url in batch]
+        photos[-1]["caption"] = follow_up
+        return {"stored": follow_up + photo_reference_marker(reference), "text": None, "photos": photos}
+    return plan
 
 
 def send_property_photos(to, photos, store=None, skip_already_sent=True):
@@ -2256,12 +2281,13 @@ def receive_webhook():
             if inventory_store and inventory_ready(criteria):
                 inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
                 reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
-            photos, photos_first = [], False
+            plan = {"stored": reply, "text": reply, "photos": []}
             if inventory_store:
                 try:
-                    reply, photos, photos_first = photo_turn(inventory_store, sender, previous, text, reply, stage)
+                    plan = photo_turn(inventory_store, sender, previous, text, reply, stage)
                 except requests.RequestException:
-                    photos, photos_first = [], False
+                    plan = {"stored": reply, "text": reply, "photos": []}
+            reply = plan["stored"]
             started_at = time.monotonic()
             if memory:
                 # All mandatory internal state commits before attempting Meta.
@@ -2275,10 +2301,13 @@ def receive_webhook():
             timings["internal_commit_ms"] = round((time.monotonic() - started_at) * 1000)
             started_at = time.monotonic()
             try:
-                if photos_first:
-                    # The client sees the images and then the text that asks about the next batch.
-                    send_property_photos(sender, photos, inventory_store, skip_already_sent=False)
-                send_whatsapp_message(sender, reply)
+                if plan["text"]:
+                    send_whatsapp_message(sender, plan["text"])
+                if plan["photos"]:
+                    sent = send_property_photos(sender, plan["photos"], inventory_store, skip_already_sent=False)
+                    # The follow-up rides on the last photo; if that photo did not go out, send it as text.
+                    if sent < len(plan["photos"]) and plan["photos"][-1].get("caption") and not plan["text"]:
+                        send_whatsapp_message(sender, plan["photos"][-1]["caption"])
                 if memory: memory.record_delivery(message_id, "sent")
             except requests.RequestException as error:
                 # Internal commit remains processed. Never retry Meta automatically.
