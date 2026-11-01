@@ -9,7 +9,7 @@ import sqlite3
 import time
 import uuid
 
-from text_normalizer import closest_district, normalize_client_text
+from text_normalizer import closest_district, is_known_district, normalize_client_text
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -680,7 +680,8 @@ def with_explicit_operation(observation, text):
         # A single explicit amount next to its currency is safe even without AI.
         amount = explicit_money_amount(normalized)
         if amount is not None:
-            slots["budget_max"] = amount
+            # Nobody buys a flat for 500: "500 cocos" or "450 lucas" means thousands.
+            slots["budget_max"] = amount * 1000 if 10 <= amount < 1000 else amount
         # Discard a stale generated question about a currency just supplied.
         if re.search(r"moneda|usd|pen|d[oó]lares|soles", str(result.get("assistant_reply", "")), re.I):
             result["assistant_reply"] = None
@@ -712,7 +713,9 @@ DISTRICT_ALIASES = {
 
 def canonical_district(value):
     text = re.sub(r"^(en|el|la|distrito de|distrito)\s+", "", (value or "").strip(), flags=re.IGNORECASE)
-    return DISTRICT_ALIASES.get(fold_text(text)) or closest_district(text) or text.title()
+    """Known Lima district for a name, or None: an unknown word ("Once", "Lima centro?") never becomes a district."""
+    found = DISTRICT_ALIASES.get(fold_text(text)) or closest_district(text)
+    return found if found and is_known_district(found) else None
 
 
 def district_variants(district):
@@ -738,8 +741,8 @@ def validated_slot_updates(slot_updates):
             clean["operation"] = operation
     districts = slot_updates.get("districts")
     if isinstance(districts, list):
-        districts = list(dict.fromkeys(canonical_district(value) for value in districts
-                                       if isinstance(value, str) and 1 <= len(value.strip()) <= 60))[:3]
+        districts = [d for d in dict.fromkeys(canonical_district(value) for value in districts
+                                              if isinstance(value, str) and 1 <= len(value.strip()) <= 60) if d][:3]
         if districts:
             clean["districts"] = districts
     budget = slot_updates.get("budget_max")
@@ -1110,7 +1113,7 @@ class InventoryStore:
             "or": "(" + ",".join(f"and(currency.eq.{c},price_amount.lte.{budget_in_currency(criteria, c):.2f})"
                                  for c in sorted(ALLOWED_CURRENCIES)) + ")",
             "property_type": f"eq.{criteria['property_type']}",
-            "district": "in.(" + ",".join(f'"{v}"' for d in criteria["districts"] for v in district_variants(canonical_district(d))) + ")",
+            "district": "in.(" + ",".join(f'"{v}"' for d in criteria["districts"] for v in district_variants(canonical_district(d) or d)) + ")",
         }
         response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers, params=params, timeout=10)
         response.raise_for_status()

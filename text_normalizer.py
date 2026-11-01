@@ -23,18 +23,30 @@ LIMA_DISTRICTS = [
     "Santa Anita", "Surco", "Surquillo", "Villa El Salvador", "Villa María del Triunfo", "Bellavista", "Chaclacayo",
 ]
 _FOLDED_DISTRICTS = {fold(d): d for d in LIMA_DISTRICTS}
+# Nicknames and frequent mistypings that string similarity alone does not catch.
+DISTRICT_SLANG = {"once": "Lince", "sjl": "San Juan de Lurigancho", "sjm": "San Juan de Miraflores", "smp": "San Martín de Porres",
+                  "jm": "Jesús María", "jesus": "Jesús María", "pueblo": "Pueblo Libre", "magda": "Magdalena",
+                  "magdalena del mar": "Magdalena", "santiago de surco": "Surco", "cercado": "Cercado Lima",
+                  "cercado de lima": "Cercado Lima", "lima cercado": "Cercado Lima", "la vic": "La Victoria",
+                  "mira": "Miraflores", "chorri": "Chorrillos", "barran": "Barranco", "villa": "Villa El Salvador"}
 
 
-def closest_district(value):
+def is_known_district(value):
+    return value in LIMA_DISTRICTS
+
+
+def closest_district(value, cutoff=0.8):
     """Canonical district for a misspelled name ('miraflorez', 'jesus mria', 'chorillos'), or None."""
     key = re.sub(r"\s+", " ", fold(value)).strip()
     if key in _FOLDED_DISTRICTS:
         return _FOLDED_DISTRICTS[key]
+    if key in DISTRICT_SLANG:
+        return DISTRICT_SLANG[key]
     if len(key) < 4:
         return None
     # Compare only with districts of the same word count, so "la molina o" never swallows the "o".
     same_size = [d for d in _FOLDED_DISTRICTS if len(d.split()) == len(key.split())]
-    found = difflib.get_close_matches(key, same_size, n=1, cutoff=0.8)
+    found = difflib.get_close_matches(key, same_size, n=1, cutoff=cutoff)
     return _FOLDED_DISTRICTS[found[0]] if found else None
 
 
@@ -44,7 +56,8 @@ WORD_FIXES = {
     "dolares": "dólares", "dolar": "dólares", "dolare": "dólares", "dolars": "dólares", "dollar": "dólares",
     "dollars": "dólares", "dolraes": "dólares", "dolarse": "dólares", "dolaress": "dólares", "dls": "dólares",
     "dlls": "dólares", "dolaes": "dólares", "dorales": "dólares",
-    "sole": "soles", "soless": "soles", "solez": "soles", "lucas": "soles", "luca": "soles",
+    "sole": "soles", "soless": "soles", "solez": "soles", "lucas": "soles", "luca": "soles", "lukas": "soles",
+    "cocos": "dólares", "coco": "dólares", "cocosos": "dólares", "verdes": "dólares", "verdecitos": "dólares",
     "millon": "millón", "millnes": "millones", "millone": "millones", "milones": "millones", "miyones": "millones",
     "miyon": "millón", "mill": "mil",
     # property
@@ -76,6 +89,29 @@ WORD_FIXES = {
     "kiero": "quiero", "qiero": "quiero", "quero": "quiero", 
 }
 
+PHRASE_FIXES = [
+    (r"\bal\s*to(?:qu|k)e(?:\s+to(?:qu|k)e)*\b", "lo antes posible"),
+    (r"\bya\s+mismo\b", "lo antes posible"), (r"\bcuanto\s+antes\b", "lo antes posible"),
+    (r"\bpara\s+ayer\b", "lo antes posible"), (r"\bsin\s+prisa\b", "sin apuro"),
+    (r"\bno\s+hay\s+prisa\b", "sin apuro"), (r"\bmas\s+adelante\b", "en los próximos años"),
+]
+
+# Key words of this conversation; a word that is close to one of them (one or two letters off) is read as it.
+# Words that look alike but mean something else here ("vista"/"visita", "ascensor"/"asesor") are left out on purpose.
+VOCABULARY = ["contado", "crédito", "hipotecario", "inmediata", "inmediato", "dormitorios", "dormitorio", "departamento",
+              "departamentos", "estacionamiento", "estacionamientos", "dólares", "presupuesto", "financiamiento",
+              "construcción", "opción", "opciones"]
+_FOLDED_VOCABULARY = {fold(w): w for w in VOCABULARY}
+
+
+def fuzzy_word(token):
+    key = fold(token)
+    if len(key) < 6 or key in _FOLDED_VOCABULARY:
+        return None
+    found = difflib.get_close_matches(key, list(_FOLDED_VOCABULARY), n=1, cutoff=0.82)
+    return _FOLDED_VOCABULARY[found[0]] if found else None
+
+
 AFFIRMATIVE = re.compile(r"^(?:s+i+|s+i+p+|si+s+|se+|se+p+|simon|sii+|ok+|oki+|okey|okay|oka|va+|vale|ya pues|"
                          r"ps\s*s+i+|pues\s*s+i+|claro|claro que si|claro q si|de una|dale+|correcto|exacto|afirmativo|asi es)"
                          r"[\s!.,]*(?:gracias|por favor|porfa)?[\s!.,]*$")
@@ -85,7 +121,7 @@ NUMBER_WORDS = {"uno": "1", "un": "1", "una": "1", "dos": "2", "tres": "3", "cua
 
 def _fix_money(text):
     # "1.5millones", "1,5 millones", "medio millon" and "300k" become plain amounts the parsers read.
-    text = re.sub(r"(\d)(mil|millon|millón|millones|k|soles|dolares|dólares)\b", r"\1 \2", text, flags=re.I)
+    text = re.sub(r"(\d)(mil|millon|millón|millones|k|soles|dolares|dólares|cocos|lucas|lukas|verdes)\b", r"\1 \2", text, flags=re.I)
     text = re.sub(r"\bmedio\s+mill[oó]n\b", "500000", text, flags=re.I)
 
     def millions(match):
@@ -108,10 +144,12 @@ def normalize_client_text(text):
     if fold(original).strip(" .!") in NUMBER_WORDS:
         return NUMBER_WORDS[fold(original).strip(" .!")]
     cleaned = _fix_money(original)
+    for pattern, replacement in PHRASE_FIXES:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.I)
 
     def word(match):
         token = match.group(0)
-        fixed = WORD_FIXES.get(fold(token))
+        fixed = WORD_FIXES.get(fold(token)) or fuzzy_word(token)
         if fixed is None:
             return token
         return fixed.capitalize() if token[:1].isupper() and len(token) > 1 else fixed
@@ -123,10 +161,13 @@ def normalize_client_text(text):
     # A message that is just a district, misspelled ("miraflorez", "en jesus mria") gets its canonical name.
     bare = re.sub(r"^(?:en|por|de|el|la|distrito de|distrito)\s+", "", cleaned.strip(" .!¿?"), flags=re.I)
     parts = [p.strip() for p in re.split(r",|\s+y\s+|\s+o\s+|/", bare) if p.strip()]
-    if parts and len(parts) <= 3 and all(len(p.split()) <= 5 for p in parts):
-        districts = [closest_district(p) for p in parts]
-        if all(districts):
-            return " y ".join(dict.fromkeys(districts))
+    if parts and len(parts) <= 4 and all(len(p.split()) <= 5 for p in parts):
+        strict = [closest_district(p) for p in parts]
+        if any(strict):
+            # In a list of districts, a badly typed name ("chrrills", "once") is read more loosely.
+            loose = [d or closest_district(p, cutoff=0.6) for d, p in zip(strict, parts)]
+            if all(loose):
+                return " y ".join(dict.fromkeys(loose))
     cleaned = _fix_districts_in_sentence(cleaned)
     return re.sub(r"\s{2,}", " ", cleaned).strip()
 

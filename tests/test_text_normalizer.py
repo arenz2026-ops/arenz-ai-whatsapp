@@ -11,10 +11,12 @@ CASES = {
     "tres": "3", "sii": "Sí", "okey": "Sí", "Ahora": "Lo antes posible", "imediata": "inmediata",
     "Quiero ver los otrs": "Quiero ver los otros", "mandame fotitos porfa": "mándame fotos por favor",
     "kontado": "contado", "quiero un depa de 3 cuartos en surquiyo": "quiero un departamento de 3 dormitorios en Surquillo",
-    "en la molina o en surco": "en La Molina o en Surco", "nesecito hablar con un acesor": "necesito hablar con un asesor",
+    "en la molina o en surco": "en La Molina o en Surco", "Surko, chrrills, once": "Surco y Chorrillos y Lince",
+    "500cocos": "500 dólares", "Al montado": "Al contado", "Al toque toke": "lo antes posible", "nesecito hablar con un acesor": "necesito hablar con un asesor",
 }
 UNCHANGED = ["Surco", "3", "80 m2", "Ya", "departamento de estreno", "dame la ficha de la opcion 2", "450 mil soles",
-             "Quiero que me muestres otro departamento", "vista exterior"]
+             "Quiero que me muestres otro departamento", "vista exterior",
+             "ascensor", "contacto", "Estoy evaluando"]
 
 
 class NormalizerTests(unittest.TestCase):
@@ -32,6 +34,13 @@ class NormalizerTests(unittest.TestCase):
         obs = app.with_explicit_operation({"intent": "change_criteria", "slot_updates": {}}, n("Hasta 1.5millones de soles"))
         self.assertEqual(obs["slot_updates"]["currency"], "PEN")
         self.assertEqual(obs["slot_updates"]["budget_max"], 1500000)
+
+    def test_cocos_are_thousands_of_dollars(self):
+        obs = app.with_explicit_operation({"intent": "change_criteria", "slot_updates": {}}, n("500cocos"))
+        self.assertEqual((obs["slot_updates"]["currency"], obs["slot_updates"]["budget_max"]), ("USD", 500000))
+
+    def test_unknown_word_is_never_a_district(self):
+        self.assertEqual(app.validated_slot_updates({"districts": ["Surco", "Xyzw"]})["districts"], ["Surco"])
 
     def test_misspelled_district_from_model_is_canonical(self):
         self.assertEqual(app.validated_slot_updates({"districts": ["miraflorez", "jesus mria"]})["districts"],
