@@ -2065,6 +2065,7 @@ def send_whatsapp_message(to, message):
 
 MAX_LISTING_PHOTOS = 3
 MAX_REQUESTED_PHOTOS = 5
+MAX_PROJECT_PHOTOS = 15
 PHOTOS_UNAVAILABLE_PREFIX = "Por ahora no tengo las fotos cargadas en el chat."
 
 
@@ -2093,10 +2094,18 @@ def photo_caption(item, index):
     return f"Opción {index}: {name}" + (f" · {place}" if place else "") + " (imagen referencial)"
 
 
-def requested_photos_reply(stage):
-    reply = "Te envío las fotos de esta opción 📷 (son imágenes referenciales del proyecto)."
+def requested_photos_reply(stage, more=False):
+    reply = ("Te envío más fotos de esta opción 📷" if more else "Te envío las fotos de esta opción 📷") + \
+            " (son imágenes referenciales del proyecto)."
     if stage == "handoff":
         return reply + " El asesor que te contactará puede resolver cualquier detalle."
+    return reply + " ¿Quieres que coordinemos una visita o prefieres que te contacte un asesor?"
+
+
+def all_photos_sent_reply(stage):
+    reply = "Ya te envié todas las fotos que tengo de esta opción."
+    if stage == "handoff":
+        return reply + " El asesor que te contactará puede compartirte más material."
     return reply + " ¿Quieres que coordinemos una visita o prefieres que te contacte un asesor?"
 
 
@@ -2229,10 +2238,14 @@ def receive_webhook():
                 try:
                     shown = latest_presented_references(previous)
                     if reply.startswith(PHOTOS_UNAVAILABLE_PREFIX) and len(shown) == 1:
-                        urls = inventory_store.photos_for_reference(shown[0], MAX_REQUESTED_PHOTOS)
-                        if urls:
-                            reply, photos_requested = requested_photos_reply(stage), True
-                            photos = [{"reference": shown[0], "url": url} for url in urls]
+                        urls = inventory_store.photos_for_reference(shown[0], MAX_PROJECT_PHOTOS)
+                        already = inventory_store.sent_media(sender, urls) if urls else set()
+                        pending = [url for url in urls if url not in already][:MAX_REQUESTED_PHOTOS]
+                        if pending:
+                            reply, photos_requested = requested_photos_reply(stage, more=bool(already)), True
+                            photos = [{"reference": shown[0], "url": url} for url in pending]
+                        elif urls:
+                            reply = all_photos_sent_reply(stage)
                     elif inventory_matches:
                         photos = listing_photos(reply, inventory_matches)
                 except requests.RequestException:

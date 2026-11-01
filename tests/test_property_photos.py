@@ -52,3 +52,10 @@ class SendPhotosTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequestedBatchTest(unittest.TestCase):
+    def test_more_reply_and_all_sent_reply(self):
+        self.assertTrue(app.requested_photos_reply("property_detail", more=True).startswith("Te envío más fotos"))
+        self.assertIn("Ya te envié todas", app.all_photos_sent_reply("property_detail"))
+        self.assertNotIn("visita", app.all_photos_sent_reply("handoff"))
