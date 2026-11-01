@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 import sqlite3
 import time
 import uuid
@@ -692,6 +693,37 @@ def canonical_property_type(value):
     return PROPERTY_TYPE_ALIASES.get(normalized, normalized)
 
 
+def fold_text(value):
+    """Lowercase without accents: 'Jesús Maria' and 'jesus maría' fold to the same key."""
+    return "".join(c for c in unicodedata.normalize("NFD", value or "") if unicodedata.category(c) != "Mn").casefold().strip()
+
+
+DISTRICT_ALIASES = {
+    "santiago de surco": "Surco", "surco": "Surco", "jesus maria": "Jesús María", "cercado": "Cercado Lima",
+    "cercado de lima": "Cercado Lima", "lima cercado": "Cercado Lima", "lima": "Cercado Lima", "magdalena del mar": "Magdalena",
+    "brena": "Breña", "san martin de porres": "San Martín de Porres", "smp": "San Martín de Porres",
+    "san juan de lurigancho": "San Juan de Lurigancho", "sjl": "San Juan de Lurigancho",
+    "san juan de miraflores": "San Juan de Miraflores", "sjm": "San Juan de Miraflores", "la molina": "La Molina",
+    "rimac": "Rímac", "lurin": "Lurín", "san isidro": "San Isidro", "san borja": "San Borja", "san miguel": "San Miguel",
+}
+
+
+def canonical_district(value):
+    text = re.sub(r"^(en|el|la|distrito de|distrito)\s+", "", (value or "").strip(), flags=re.IGNORECASE)
+    return DISTRICT_ALIASES.get(fold_text(text), text.title())
+
+
+def district_variants(district):
+    """Spellings the inventory may use for one district (accented and not), for the exact-match PostgREST filter."""
+    words = district.split()
+    variants = {""}
+    for word in words:
+        plain = fold_text(word)
+        options = {word, plain.capitalize() if word[:1].isupper() else plain}
+        variants = {f"{v} {o}".strip() for v in variants for o in options}
+    return sorted(variants)
+
+
 def validated_slot_updates(slot_updates):
     """Accept only non-empty, bounded criteria from the structured AI contract."""
     if not isinstance(slot_updates, dict):
@@ -704,7 +736,8 @@ def validated_slot_updates(slot_updates):
             clean["operation"] = operation
     districts = slot_updates.get("districts")
     if isinstance(districts, list):
-        districts = [value.strip().title() for value in districts if isinstance(value, str) and 1 <= len(value.strip()) <= 60][:3]
+        districts = list(dict.fromkeys(canonical_district(value) for value in districts
+                                       if isinstance(value, str) and 1 <= len(value.strip()) <= 60))[:3]
         if districts:
             clean["districts"] = districts
     budget = slot_updates.get("budget_max")
@@ -959,10 +992,10 @@ def property_is_eligible(property_row, now=None):
 
 def property_matches_criteria(property_row, criteria):
     """P1 hard filters; preferences are intentionally only a small deterministic rank."""
-    districts = {district.casefold() for district in criteria.get("districts", []) if isinstance(district, str)}
+    districts = {fold_text(district) for district in criteria.get("districts", []) if isinstance(district, str)}
     if property_row.get("operation") != criteria.get("operation"):
         return False
-    if property_row.get("district", "").casefold() not in districts:
+    if fold_text(property_row.get("district", "")) not in districts:
         return False
     if canonical_property_type(property_row.get("property_type")) != criteria.get("property_type"):
         return False
@@ -1075,7 +1108,7 @@ class InventoryStore:
             "or": "(" + ",".join(f"and(currency.eq.{c},price_amount.lte.{budget_in_currency(criteria, c):.2f})"
                                  for c in sorted(ALLOWED_CURRENCIES)) + ")",
             "property_type": f"eq.{criteria['property_type']}",
-            "district": "in.(" + ",".join(criteria["districts"]) + ")",
+            "district": "in.(" + ",".join(f'"{v}"' for d in criteria["districts"] for v in district_variants(canonical_district(d))) + ")",
         }
         response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers, params=params, timeout=10)
         response.raise_for_status()
