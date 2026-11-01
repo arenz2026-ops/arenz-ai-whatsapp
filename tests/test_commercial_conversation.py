@@ -155,7 +155,7 @@ class CommercialConversationTests(unittest.TestCase):
             known = {**self.criteria, "payment_method": "contado", "purchase_timeline": "sin urgencia"}
             previous = {"state": {"criteria": known}}
             reply, _, _, _ = app.progressive_reply(previous, observation, "fallback", "muéstrame opciones", inventory_matches=matches)
-            self.assertTrue(reply.endswith("te envío la ficha completa."))
+            self.assertTrue(reply.endswith("te envío la ficha completa y fotografías del proyecto."))
             self.assertIn("con entrega en 2029", reply)
             self.assertIn("Ref. C2-TEST", reply)
             self.assertNotIn("¿Para cuándo", reply)
