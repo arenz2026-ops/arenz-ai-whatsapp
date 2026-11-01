@@ -518,7 +518,7 @@ class AppTests(unittest.TestCase):
         reply, criteria, stage, _ = app.progressive_reply(previous, question, "fallback")
         self.assertEqual(stage,"conversation"); self.assertEqual(criteria,previous["state"]["criteria"]); self.assertEqual(reply,question["assistant_reply"])
         handoff={"intent":"human_handoff","slot_updates":{},"handoff":True}
-        _, _, stage, _ = app.progressive_reply(previous, handoff, "fallback")
+        _, _, stage, _ = app.progressive_reply(previous, handoff, "fallback", "quiero hablar con alguien de contacto")
         self.assertEqual(stage,"handoff")
 
     def test_progressive_controller_uses_deterministic_fallback_when_observation_fails(self):

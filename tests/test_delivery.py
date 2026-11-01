@@ -136,3 +136,27 @@ class ResumeAnswerTests(unittest.TestCase):
         self.assertEqual(app.resume_answer_as_command(prev, "Otra búsqueda"), "nueva búsqueda")
         self.assertEqual(app.resume_answer_as_command(prev, "Retomar"), "Retomar")
         self.assertEqual(app.resume_answer_as_command(None, "No"), "No")
+
+
+class SelectionAfterListingTests(unittest.TestCase):
+    def listing_prev(self, refs, extra=None):
+        listing = "Te muestro:\n" + "\n".join(f"{i}. X · Lince\nS/ 1 · Ref. {r}" for i, r in enumerate(refs, 1)) + "\n\nResponde con el número de la opción que te interesa."
+        turns = [{"direction": "assistant", "content": listing}]
+        if extra:
+            turns += [{"direction": "user", "content": "si"}, {"direction": "assistant", "content": extra}]
+        return {"stage": "qualified", "state": {"recent_turns": turns}}
+
+    def test_yes_with_single_option_selects_it(self):
+        sel = app.selected_option(self.listing_prev(["C2-AAA"]), "Si")
+        self.assertEqual(sel["reference"], "C2-AAA")
+
+    def test_free_text_number_selects_even_after_advisor_note(self):
+        prev = self.listing_prev(["C2-AAA", "C2-BBB"], "Perfecto. Registraré tu solicitud para que un asesor continúe contigo.")
+        self.assertEqual(app.selected_option(prev, "Dame la Info del departamento 2")["reference"], "C2-BBB")
+
+    def test_bedroom_count_is_not_a_selection(self):
+        self.assertIsNone(app.selected_option(self.listing_prev(["C2-AAA"]), "3 dormitorios"))
+
+    def test_model_handoff_flag_alone_does_not_hand_off(self):
+        obs = {"intent": "general_question", "handoff": True, "slot_updates": {}}
+        self.assertIsNone(app.detected_handoff(None, obs, "Que pasó"))

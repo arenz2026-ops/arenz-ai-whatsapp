@@ -1223,14 +1223,31 @@ def mentioned_property_reference(text, presented):
 
 
 def latest_presented_references(previous):
-    for turn in reversed(recent_conversation_turns(previous)):
+    """References of the most recent assistant message that listed units (an advisor note in between does not erase them)."""
+    for turn in reversed(recent_conversation_turns(previous, limit=8)):
         if turn["direction"] == "assistant":
-            return list(dict.fromkeys(PRESENTED_REFERENCE_PATTERN.findall(turn["content"])))
+            found = list(dict.fromkeys(PRESENTED_REFERENCE_PATTERN.findall(turn["content"])))
+            if found:
+                return found
     return []
+
+
+SELECTION_PATTERN = re.compile(r"(?:^|\b(?:opci[oó]n|departamento|depa|dpto|unidad|n[uú]mero|la|el|nro|#)\s*)([1-9])\b")
+QUALIFYING_QUESTION = re.compile(r"dormitorios necesitas|pagarlo|para cu[aá]ndo|presupuesto|distrito", re.IGNORECASE)
 
 
 def selected_option(previous, text):
     normalized = (text or "").casefold().strip().strip(".!¡¿?")
+    turns = recent_conversation_turns(previous)
+    last = next((t["content"] for t in reversed(turns) if t["direction"] == "assistant"), "")
+    references = latest_presented_references(previous)
+    if references and not QUALIFYING_QUESTION.search(last) and len(normalized) <= 80:
+        loose = SELECTION_PATTERN.search(normalized)
+        if loose and not re.search(r"\d\s*(dorm|m2|m²|mil|k\b|soles|d[oó]lares|ba[ñn]o)", normalized):
+            index = int(loose.group(1))
+            return {"index": index, "reference": references[index - 1] if index <= len(references) else None, "count": len(references)}
+        if len(references) == 1 and AFFIRMATIVE_PATTERN.match(" ".join(normalized.split())):
+            return {"index": 1, "reference": references[0], "count": 1}
     match = re.fullmatch(r"(?:la\s+|el\s+)?(?:opci[oó]n\s*)?([1-9])", normalized)
     ordinal = {"la primera": 1, "el primero": 1, "primera": 1,
                "la segunda": 2, "el segundo": 2, "segunda": 2,
@@ -1426,7 +1443,9 @@ def detected_handoff(previous, observation, user_text, inventory_matches=None):
     """Resolve one escalation per turn, or None to continue the qualification."""
     reference = mentioned_property_reference(user_text, presented_property_references(previous, inventory_matches))
     request_type = handoff_request_type(user_text, reference)
-    if not request_type and isinstance(observation, dict) and (observation.get("handoff") or observation.get("intent") == "human_handoff"):
+    if (not request_type and isinstance(observation, dict) and (observation.get("handoff") or observation.get("intent") == "human_handoff")
+            and re.search(r"asesor|humano|persona|ll[aá]m|contact|visita|agend|hablar con", user_text or "", re.IGNORECASE)):
+        # The model's handoff flag alone is not enough: it tends to stick once a handoff happened.
         request_type = "advisor"
     if not request_type and accepted_advisor_offer(previous, user_text):
         request_type = "advisor"
@@ -1766,6 +1785,9 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     handoff = detected_handoff(previous, observation, user_text, inventory_matches)
     if handoff:
         reply, summary = handoff_reply(handoff)
+        if reply.strip() == last_assistant_message(previous).strip():
+            reply = (f"Ya registré tu solicitud y un asesor de {COMMERCIAL_BRAND} te escribirá. Mientras tanto, puedo enviarte la "
+                     "ficha de alguna opción o buscar con otros criterios. ¿Qué prefieres?")
         return reply, criteria, "handoff", summary
     if ((previous or {}).get("stage") == "property_detail" and inventory_matches is not None
             and not observation.get("criteria_change") and intent not in ("new_search", "change_criteria")):
