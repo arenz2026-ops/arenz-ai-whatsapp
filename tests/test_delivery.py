@@ -91,3 +91,39 @@ class FichaTests(unittest.TestCase):
             self.assertTrue(app.full_unit_reply(it).endswith("Ref. C2-X1"))
         with patch("app.project_card_text", return_value=""), patch("app.ai_text", return_value=None):
             self.assertIn("Revisemos esta unidad", app.full_unit_reply(it))
+
+
+class SaleOnlyFlowTests(unittest.TestCase):
+    OBS = {"intent": "property_search", "slot_updates": {}, "criteria_change": False, "criteria_actions": [],
+           "user_question": None, "next_action": "reply", "handoff": False, "assistant_reply": None}
+
+    def test_never_asks_operation_or_type(self):
+        reply, *_ = app.progressive_reply(None, self.OBS, "fb", "quiero un depa")
+        self.assertNotIn("alquilar", reply); self.assertIn("distrito", reply)
+
+    def test_budget_question_mentions_both_currencies(self):
+        obs = {**self.OBS, "slot_updates": {"districts": ["Lince"]}}
+        reply, *_ = app.progressive_reply(None, obs, "fb", "Lince")
+        self.assertIn("soles o en dólares", reply)
+
+    def test_rental_request_is_redirected(self):
+        obs = {**self.OBS, "slot_updates": {"operation": "alquiler"}}
+        reply, criteria, *_ = app.progressive_reply(None, obs, "fb", "quiero alquilar")
+        self.assertIn("solo ofrecemos departamentos en venta", reply)
+        self.assertNotIn("operation", criteria)
+
+    def test_payment_and_timeline_questions_are_worded_differently(self):
+        matches = [item("A", "Entregado")]
+        first, _ = app.qualified_inventory_reply(None, matches, dict(CRITERIA, payment_method=None, purchase_timeline=None), "3")
+        prev = {"state": {"recent_turns": [{"direction": "assistant", "content": first}]}}
+        second, _ = app.qualified_inventory_reply(prev, matches, dict(CRITERIA, payment_method="credito", purchase_timeline=None), "crédito")
+        self.assertIn("pagarlo", first); self.assertIn("Último dato", second)
+        self.assertNotIn("Tengo opciones", second)
+
+    def test_more_shows_the_next_units(self):
+        matches = [item(f"R{i}", "1er Tri 2029") for i in range(1, 8)]
+        first, crit = app.delivery_reply(None, matches, CRITERIA, "ok")
+        prev = {"state": {"recent_turns": [{"direction": "assistant", "content": first}]}}
+        more, _ = app.delivery_reply(prev, matches, crit, "muéstrame las otras")
+        self.assertIn("Ref. R4", more); self.assertNotIn("Ref. R1 ", more)
+        self.assertIn("4.", more)

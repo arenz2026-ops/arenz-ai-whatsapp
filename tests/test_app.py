@@ -53,7 +53,7 @@ class AppTests(unittest.TestCase):
     def test_post_graph_mock_and_lead(self):
         payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-1","from":"51999999999","type":"text","text":{"body":"hola"}}]}}]}]}; raw,headers=self.signed(payload); response=Mock(); response.raise_for_status.return_value=None
         with patch.object(app.requests,"post",return_value=response) as post: result=self.client.post("/webhook",data=raw,headers=headers)
-        self.assertEqual(result.get_json(),{"status":"received","processed":1}); self.assertEqual(post.call_count,1); lead=app.get_lead_store().get_lead("51999999999"); self.assertEqual(lead["status"],"en_calificacion"); self.assertIn("consulta inmobiliaria",lead["interest"])
+        self.assertEqual(result.get_json(),{"status":"received","processed":1}); self.assertEqual(post.call_count,1); lead=app.get_lead_store().get_lead("51999999999"); self.assertEqual(lead["status"],"en_calificacion"); self.assertIn("compra",lead["interest"])
     def test_duplicate_is_not_sent_twice(self):
         payload={"object":"whatsapp_business_account","entry":[{"changes":[{"value":{"messages":[{"id":"wamid-2","from":"51999999999","type":"text","text":{"body":"hola"}}]}}]}]}; raw,headers=self.signed(payload); response=Mock(); response.raise_for_status.return_value=None
         with patch.object(app.requests,"post",return_value=response) as post: self.client.post("/webhook",data=raw,headers=headers); duplicate=self.client.post("/webhook",data=raw,headers=headers)
@@ -187,6 +187,7 @@ class AppTests(unittest.TestCase):
         _, criteria, _, _ = app.progressive_reply(None, observation, "fallback", "Quiero comprar un departamento")
         self.assertEqual(criteria["operation"],"compra")
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_explicit_rental_text_sets_alquiler(self):
         observation={"intent":"property_search","slot_updates":{},"criteria_actions":[],"handoff":False}
         _, criteria, _, _ = app.progressive_reply(None, observation, "fallback", "Ahora quiero alquilar")
@@ -202,6 +203,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(criteria["operation"],"compra")
         self.assertEqual(criteria.get("districts"),None)
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_explicit_operation_switches_compra_to_alquiler(self):
         previous={"state":{"criteria":{"operation":"compra","districts":["Surco"]}}}
         observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
@@ -209,6 +211,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(criteria["operation"],"alquiler")
         self.assertEqual(criteria.get("districts"),None)
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_partial_message_preserves_previous_operation(self):
         previous={"state":{"criteria":{"operation":"alquiler","districts":["Surco"]}}}
         observation={"intent":"general_question","slot_updates":{},"criteria_actions":[],"handoff":False}
@@ -239,6 +242,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(state["searches"]["buy"]["criteria"]["operation"],"compra")
         self.assertEqual(state["searches"][active]["criteria"],{})
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_first_criteria_after_explicit_new_search_populates_only_new_search(self):
         previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":3}}}}}
         reset, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
@@ -247,6 +251,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(criteria,{"operation":"alquiler","districts":["Surco"]})
         self.assertEqual(previous["state"]["searches"]["buy"]["criteria"],{"operation":"compra","districts":["Lince"],"bedrooms":3})
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_new_search_separates_purchase_lince_from_rental_miraflores(self):
         previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"budget_max":200000,"bedrooms":2}}}}}
         reset, _ = app.search_state_for_turn(previous, {"intent":"new_search","slot_updates":{},"criteria_actions":[],"handoff":False}, "NUEVA BÚSQUEDA")
@@ -255,6 +260,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(criteria,{"operation":"alquiler","districts":["Miraflores"]})
         self.assertEqual(previous["state"]["searches"]["buy"]["criteria"]["districts"],["Lince"])
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_explicit_sale_creates_independent_search(self):
         previous={"state":{"active_search_id":"rent","searches":{"rent":{"criteria":{"operation":"alquiler","districts":["Miraflores"]}}}}}
         observation={"intent":"change_criteria","slot_updates":{},"criteria_actions":[],"handoff":False}
@@ -295,6 +301,7 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("operation",state["searches"][active]["criteria"])
         self.assertNotIn("bedrooms",state["searches"][active]["criteria"])
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_effective_sale_operation_creates_new_search_and_preserves_purchase(self):
         class Memory:
             def record_turn(self, *args): self.call=args
@@ -454,6 +461,7 @@ class AppTests(unittest.TestCase):
         state=memory.call[5]
         self.assertIn("old",state["searches"]); self.assertIn(state["active_search_id"],state["searches"]); self.assertNotEqual(state["active_search_id"],"old"); self.assertEqual(state["searches"][state["active_search_id"]]["criteria"],{})
 
+    @unittest.skip('C2 solo vende departamentos: alquiler y venta del cliente ya no abren búsquedas propias')
     def test_regression_operation_switch_isolated_by_search_id(self):
         previous={"state":{"active_search_id":"buy","searches":{"buy":{"criteria":{"operation":"compra","districts":["Lince"],"bedrooms":2,"preferences":["balcón"]}}}}}
         observation={"intent":"property_search","slot_updates":{"operation":"venta","districts":["San Miguel"],"bedrooms":3},"criteria_actions":[],"handoff":False}
@@ -481,15 +489,16 @@ class AppTests(unittest.TestCase):
     def test_assistant_reply_is_used_for_partial_search_and_fallback_remains_safe(self):
         observation={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Perfecto, te ayudo a comprar. ¿Qué tipo de inmueble buscas?"}
         reply, criteria, stage, _ = app.progressive_reply(None, observation, "fallback")
-        self.assertEqual((criteria["operation"],stage),("compra","qualification")); self.assertIn("tipo de inmueble",reply)
+        # Asking the property type is no longer allowed: the deterministic district question is used instead.
+        self.assertEqual((criteria["operation"],stage),("compra","qualification")); self.assertIn("distrito",reply)
         unavailable={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False,"assistant_reply":"Tenemos disponible un departamento."}
-        self.assertEqual(app.progressive_reply(None, unavailable, "fallback")[0],"¿Qué tipo de inmueble buscas?")
+        self.assertEqual(app.progressive_reply(None, unavailable, "fallback")[0],"¿En qué distrito o distritos te gustaría tu departamento?")
 
     def test_assistant_reply_domain_guard_uses_safe_fallbacks(self):
         partial={"intent":"property_search","slot_updates":{"operation":"compra"},"handoff":False}
         for reply in ("Busco departamentos en Surco. Humor y beneficios, por ejemplo.", "El clima está agradable hoy."):
             with self.subTest(reply=reply):
-                self.assertEqual(app.progressive_reply(None, {**partial,"assistant_reply":reply}, "fallback")[0], "¿Qué tipo de inmueble buscas?")
+                self.assertEqual(app.progressive_reply(None, {**partial,"assistant_reply":reply}, "fallback")[0], "¿En qué distrito o distritos te gustaría tu departamento?")
         question={"intent":"general_question","slot_updates":{},"handoff":False,"assistant_reply":"Claro, puedo ayudarte con tu búsqueda inmobiliaria. ¿Qué deseas consultar?"}
         self.assertEqual(app.progressive_reply(None, question, "fallback")[0], question["assistant_reply"])
         accessory={**question,"assistant_reply":"Puedo ayudarte con tu búsqueda. También puedo contar un chiste."}
@@ -686,8 +695,8 @@ class AppTests(unittest.TestCase):
         first=[m["public"]["public_reference"] for m in self._matches_for(rows, self._criteria())]
         second=[m["public"]["public_reference"] for m in self._matches_for(list(reversed(rows)), self._criteria())]
         self.assertEqual(first, second)
-        self.assertEqual(len(first), app.INVENTORY_MAX_RESULTS)
-        self.assertEqual(first, ["ARZ-001","ARZ-002","ARZ-003"])
+        # Up to 10 pages of 3 per delivery group are kept so the client can ask for "más".
+        self.assertEqual(first, ["ARZ-001","ARZ-002","ARZ-003","ARZ-004","ARZ-005"])
 
     def test_zero_matches_never_fabricates_a_property(self):
         matches=self._matches_for([], self._criteria())

@@ -36,7 +36,7 @@ GRAPH_API_VERSION = "v26.0"
 SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
 COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "C2 Inmobiliaria")
-INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. Te ayudo a orientar tu búsqueda inmobiliaria. ¿Qué inmueble estás buscando?"
+INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. Te ayudo a encontrar tu departamento ideal. ¿En qué distrito o distritos lo buscas?"
 user_sessions = {}
 
 OBSERVATION_SCHEMA = {
@@ -85,7 +85,10 @@ COMMERCIAL_POLICY = (
     "no añadas preguntas, no prometas seguimientos automáticos ni afirmes que hay una cita agendada. "
     "No uses ejemplos de clientes del contexto como inventario ni como datos de otro cliente. "
     "Solo presenta propiedades devueltas por el inventario autorizado; nunca inventes fotos, precios o disponibilidad. "
-    "Para una visita o un asesor, registra una solicitud sin prometer una fecha confirmada."
+    "Para una visita o un asesor, registra una solicitud sin prometer una fecha confirmada. "
+    "C2 Inmobiliaria solo comercializa departamentos en VENTA (flat, dúplex, loft): la operación siempre es compra y el "
+    "tipo siempre es departamento; nunca preguntes si desea comprar, alquilar o vender, ni qué tipo de inmueble busca. "
+    "Pide el presupuesto aclarando que puede indicarlo en soles o en dólares."
 )
 
 
@@ -333,8 +336,8 @@ def generate_reply(sender, text):
     text = text.lower().strip()
     session = user_sessions.get(sender, {"step":"start", "intent":None, "district":None, "budget":None, "bedrooms":None})
     if session["step"] == "start":
-        session["step"] = "intent"; user_sessions[sender] = session
-        return INTRODUCTION if any(w in text for w in ("hola", "buenos días", "buenas tardes", "buenas noches")) else f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. ¿Deseas comprar, alquilar o vender?"
+        session.update(step="district", intent="compra"); user_sessions[sender] = session
+        return INTRODUCTION
     if session["step"] == "intent":
         for intent, words in (("compra",("1","compr")), ("alquiler",("2","alquil")), ("venta",("3","vend"))):
             if any(w in text for w in words):
@@ -360,7 +363,7 @@ def generate_reply(sender, text):
         if text in ("sí","si"):
             session["step"]="done"; user_sessions[sender]=session; return f"Excelente ✅. Un asesor de {COMMERCIAL_BRAND} podrá continuar contigo."
         if "no" in text:
-            session["step"]="intent"; user_sessions[sender]=session; return "De acuerdo. ¿Deseas comprar, alquilar o vender una propiedad?"
+            session.update(step="district", intent="compra"); user_sessions[sender]=session; return "De acuerdo, empecemos de nuevo. ¿En qué distrito o distritos buscas tu departamento?"
         return "Por favor responde Sí o No."
     return "Tu solicitud ya fue registrada. Si deseas iniciar una nueva búsqueda, escribe NUEVA BÚSQUEDA."
 
@@ -850,12 +853,22 @@ def usable_assistant_reply(observation, route):
     reply = reply.strip()
     if not reply or len(reply) > 280 or reply.count("?") > 1:
         return None
+    if re.search(r"alquil|vender|venta o|tipo de (inmueble|propiedad)|casa|terreno|oficina|local comercial", reply, re.IGNORECASE):
+        return None
     prohibited = ("tenemos disponible", "encontré", "encontre", "hay disponibilidad", "opción recomendada", "opcion recomendada", "la recomendada", "revisando disponibilidad", "cuenta con", "te mostraré las opciones", "te mostrare las opciones")
     return None if any(term in reply.lower() for term in prohibited) or not assistant_reply_is_real_estate_scoped(reply) else reply
 
 
+def with_sale_defaults(criteria):
+    """C2 only sells apartments: operation and type are implied when the client did not say them."""
+    if not isinstance(criteria, dict):
+        return criteria
+    return {**criteria, "operation": criteria.get("operation") or "compra", "property_type": criteria.get("property_type") or "departamento"}
+
+
 def inventory_ready(criteria):
     """Only run a concrete inventory search after the P0 qualification is complete."""
+    criteria = with_sale_defaults(criteria)
     required = ("operation", "property_type", "districts", "budget_max", "currency", "bedrooms")
     return (
         isinstance(criteria, dict)
@@ -1056,7 +1069,7 @@ class InventoryStore:
         summary = delivery_summary(candidates)
         kept = []
         for bucket in DELIVERY_BUCKETS:
-            kept += [row for row in candidates if property_delivery(row) == bucket][:INVENTORY_MAX_RESULTS]
+            kept += [row for row in candidates if property_delivery(row) == bucket][:INVENTORY_MAX_RESULTS * 10]
         media_by_property = self._approved_media([row["property_id"] for row in kept])
         matches = MatchList({"property": row, "public": public_property_snapshot(row, media_by_property.get(row["property_id"], [])),
                              "delivery": property_delivery(row)} for row in kept)
@@ -1438,11 +1451,15 @@ def customer_pause_reply(text):
     return None
 
 
+PAYMENT_QUESTION = "¿cómo piensas pagarlo: al contado, con crédito hipotecario o aún lo estás evaluando?"
+TIMELINE_QUESTION = "¿para cuándo necesitas el departamento? Por ejemplo: lo antes posible, en los próximos meses o sin apuro."
+
+
 def commercial_next_question(criteria):
     if criteria.get("operation") == "compra" and not criteria.get("payment_method"):
-        return "Para orientarte mejor, ¿piensas comprar al contado, con crédito o aún estás evaluando cómo financiarlo?"
+        return "Para orientarte mejor, " + PAYMENT_QUESTION
     if not criteria.get("purchase_timeline"):
-        return "¿Para cuándo te gustaría concretarlo, o por ahora estás evaluando opciones sin urgencia?"
+        return TIMELINE_QUESTION[0].upper() + TIMELINE_QUESTION[1:]
     return None
 
 
@@ -1507,10 +1524,21 @@ def matches_summary(matches):
     return counts
 
 
-def brief_listing(items):
+MORE_WORDS = re.compile(r"\bm[aá]s\b|otras|siguientes|resto|las dem[aá]s|todas", re.IGNORECASE)
+
+
+def shown_references(previous):
+    refs = []
+    for turn in recent_conversation_turns(previous, limit=12):
+        if turn["direction"] == "assistant":
+            refs += [m.group(1).upper() for m in PRESENTED_REFERENCE_PATTERN.finditer(turn["content"])]
+    return list(dict.fromkeys(refs))
+
+
+def brief_listing(items, start=1):
     """Two short lines per unit; the full ficha is sent only after the client picks one."""
     lines = []
-    for index, item in enumerate(items, 1):
+    for index, item in enumerate(items, start):
         public = item["public"]
         project = unit_project_name(item) or public["property_type"].capitalize()
         symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
@@ -1555,7 +1583,19 @@ def delivery_reply(previous, matches, criteria, user_text):
         return lead + " " + DELIVERY_QUESTION, criteria
     criteria = {**criteria, "delivery_preference": pref}
     wanted = ("inmediata", "futura", "por_confirmar") if pref == "ambas" else (pref,)
-    shown = [item for item in matches if item_delivery(item) in wanted][:INVENTORY_MAX_RESULTS]
+    pool = [item for item in matches if item_delivery(item) in wanted]
+    if MORE_WORDS.search(user_text or ""):
+        already = shown_references(previous)
+        rest = [item for item in pool if item["public"]["public_reference"] not in already]
+        if rest:
+            page = rest[:INVENTORY_MAX_RESULTS]
+            left = len(rest) - len(page)
+            tail = (f"Me quedan {left} opciones más; escribe 'más' para verlas." if left else "Esas son todas las que tengo con tus criterios.")
+            return (f"Aquí tienes {len(page)} opciones más:\n{brief_listing(page, start=len(already) + 1)}\n\n{tail} "
+                    "Responde con el número de la opción que te interesa y te envío la ficha completa."), criteria
+        return ("Ya te mostré todas las opciones que tengo con tus criterios. Si quieres, amplío el distrito o el presupuesto. "
+                "¿Qué prefieres?"), criteria
+    shown = pool[:INVENTORY_MAX_RESULTS]
     if not shown and pref == "inmediata" and future:
         return lead + " Por ahora no tengo de entrega inmediata con esos criterios. ¿Te muestro las de entrega en los próximos años?", criteria
     if not shown and pref == "futura" and immediate:
@@ -1627,12 +1667,18 @@ def qualified_inventory_reply(previous, matches, criteria, user_text):
     """Complete the five filters (qué, dónde, cuánto, cómo, cuándo) before talking about units."""
     if not matches:
         return no_match_followup(previous, criteria) or inventory_conversation_reply(matches, criteria), criteria
-    question = commercial_next_question(criteria) if criteria.get("operation") == "compra" else (
-        None if criteria.get("purchase_timeline") else "¿Para cuándo te gustaría mudarte?")
-    if question:
-        question = question.replace("Para orientarte mejor, ", "")
-        return "Tengo opciones que podrían encajar con lo que buscas. Antes de mostrártelas, " + question, criteria
-    return delivery_reply(previous, matches, criteria, user_text)
+    teaser_sent = "Tengo opciones que podrían encajar" in last_assistant_message(previous)
+    if not criteria.get("payment_method"):
+        return "Tengo opciones que podrían encajar con lo que buscas. Antes de mostrártelas, " + PAYMENT_QUESTION, criteria
+    if not criteria.get("purchase_timeline"):
+        if teaser_sent:
+            return "Perfecto, gracias. Último dato antes de mostrarte las opciones: " + TIMELINE_QUESTION, criteria
+        return "Tengo opciones que podrían encajar con lo que buscas. Antes de mostrártelas, " + TIMELINE_QUESTION, criteria
+    reply, criteria = delivery_reply(previous, matches, criteria, user_text)
+    if reply.strip() == last_assistant_message(previous).strip():
+        reply = ("Esas son las opciones que tengo con tus criterios. Responde con el número de la que te interese para enviarte "
+                 "la ficha completa, o dime si prefieres cambiar el distrito, el presupuesto o los dormitorios.")
+    return reply, criteria
 
 
 def progressive_reply(previous, observation, fallback, user_text=None, prior_criteria=None, inventory_matches=None):
@@ -1675,7 +1721,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         return "No pude reconfirmar la unidad que elegiste entre las opciones actuales. ¿Quieres revisar las alternativas vigentes?", criteria, "conversation", "Unidad anterior no reconfirmada; no se sustituye por otra posición."
     if not observation:
         if is_new_search_request(user_text):
-            return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
+            return "Nueva búsqueda iniciada. ¿En qué distrito o distritos te gustaría tu departamento?", {}, "qualification", "Nueva búsqueda creada con criterios vacíos."
         if (user_text or "").strip().casefold() in {"hola", "buenos días", "buenas tardes", "buenas noches"} and not conversation_state(previous):
             return INTRODUCTION, {}, "qualification", "Apertura cálida sin cuestionario."
         return fallback, conversation_state(previous), "fallback", "IA no disponible; flujo determinista aplicado."
@@ -1687,6 +1733,10 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         criteria["preferences"] = list(dict.fromkeys(criteria.get("preferences", []) + slots.pop("preferences")))
     criteria.update(slots)
     criteria = answered_count_question(previous, user_text, criteria)
+    if criteria.get("operation") in ("alquiler", "venta"):
+        criteria = {k: v for k, v in criteria.items() if k != "operation"}
+        return (f"Por ahora en {COMMERCIAL_BRAND} solo ofrecemos departamentos en venta (flat, dúplex y otros). "
+                "Si te interesa comprar uno, te ayudo a encontrarlo. ¿En qué distrito o distritos lo buscas?"), criteria, "qualification", "Solo venta de departamentos."
     intent = observation.get("intent")
     if intent == "greeting" and not criteria and not conversation_state(previous):
         return INTRODUCTION, criteria, "qualification", "Apertura cálida; escuchar la necesidad antes de calificar."
@@ -1709,11 +1759,13 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
         if natural_reply:
             return natural_reply, criteria, "conversation", "Consulta atendida; criterios conservados."
         return "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?", criteria, "conversation", "Consulta libre; criterios conservados."
-    missing = [("operation", "¿Deseas comprar, alquilar o vender?"), ("property_type", "¿Qué tipo de inmueble buscas?"), ("districts", "¿En qué distrito o zona estás interesado?"), ("budget_max", "¿Cuál es tu presupuesto máximo aproximado?"), ("currency", "¿Tu presupuesto es en USD o PEN?"), ("bedrooms", "¿Cuántos dormitorios necesitas?")]
+    missing = [("districts", "¿En qué distrito o distritos te gustaría tu departamento?"),
+               ("budget_max", "¿Cuál es tu presupuesto máximo aproximado? Puedes indicarlo en soles o en dólares."),
+               ("currency", "¿Ese monto es en soles o en dólares?"), ("bedrooms", "¿Cuántos dormitorios necesitas?")]
     for key, question in missing:
         if criteria.get(key) in (None, [], ""):
-            if (is_new_search_request(user_text) or intent == "new_search") and key == "operation":
-                return "Nueva búsqueda iniciada. ¿Deseas comprar, alquilar o vender?", criteria, "qualification", "Nueva búsqueda creada con criterios vacíos."
+            if (is_new_search_request(user_text) or intent == "new_search") and key == "districts" and not criteria.get("districts"):
+                return "Nueva búsqueda iniciada. ¿En qué distrito o distritos te gustaría tu departamento?", criteria, "qualification", "Nueva búsqueda creada con criterios vacíos."
             natural_reply = usable_assistant_reply(observation, "qualification")
             if natural_reply:
                 return natural_reply, criteria, "qualification", "Respuesta IA validada; faltan criterios por completar."
@@ -1920,7 +1972,7 @@ def receive_webhook():
             inventory_store = get_inventory_store()
             inventory_matches, inventory_cutoff = None, None
             if inventory_store and inventory_ready(criteria):
-                inventory_matches, inventory_cutoff = inventory_store.find_matches(criteria)
+                inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
                 reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
             started_at = time.monotonic()
             if memory:
