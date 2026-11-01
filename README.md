@@ -131,3 +131,22 @@ Solicitud: {{2}}
 Inmueble: {{3}}
 Criterios: {{4}}
 ```
+
+## Actualización semanal del inventario
+
+Cada semana (la vigencia de una unidad es de 7 días) se renueva todo el inventario; no solo se reconfirman las unidades
+existentes, también se **agregan las nuevas** y se retiran las que ya no figuran. Jerarquía de precios cuando una unidad
+aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
+
+1. **Lista de Precios C2** (Looker Studio) y **Power BI Tale**: se leen completas desde el navegador y se envían a
+   `inventory_staging` con un token de un solo uso (`inventory_import_tokens`). En SQL se comparan con
+   `inventory_properties`: se reconfirman y actualizan precios de las existentes, se **insertan las nuevas**, y las que ya
+   no figuran pasan a `inactive`. Cocheras y depósitos no se cargan como departamentos.
+2. **Trello** (tablero Intermediación Inmobiliaria): se envían todas las tarjetas abiertas a `inventory_trello_cards`
+   (vía `/admin/inventario-receptor`). Toda tarjeta de **Departamentos segundo uso**, **Captación** o **P. Entrega
+   inmediata** que no tenga unidad en el inventario se **crea** como unidad (`source_name = trello`), con su antigüedad,
+   estacionamiento y nota en `inventory_unit_info`, y se vincula en `inventory_project_cards`. Las tarjetas que pasan a
+   **Vendido** o **Descartado** retiran su unidad (`sold_rented` / `inactive`).
+3. Se aplican las correcciones fijas de `inventory_overrides` (dormitorios, estacionamiento, vendidos) para que la nueva
+   carga no reintroduzca errores de origen.
+4. Se revisa el resultado en el buscador web y con una conversación de prueba.
