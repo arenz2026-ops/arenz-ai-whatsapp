@@ -2063,50 +2063,73 @@ def send_whatsapp_message(to, message):
     return response
 
 
-MAX_LISTING_PHOTOS = 3
 MAX_REQUESTED_PHOTOS = 5
 MAX_PROJECT_PHOTOS = 15
 PHOTOS_UNAVAILABLE_PREFIX = "Por ahora no tengo las fotos cargadas en el chat."
+MORE_PHOTOS_QUESTION = "¿Quieres que te envíe más fotos?"
+NEXT_STEP_QUESTION = "¿Quieres que coordinemos una visita o prefieres que te contacte un asesor?"
+YES_MORE_PHOTOS = re.compile(r"^(?:s[ií]|sip|ok|okay|claro|dale|ya|bueno|perfecto|por favor|env[ií]a(?:me|las)?|m[aá]nda(?:me|las)?|m[aá]s)\b", re.IGNORECASE)
 
 
-def listing_photos(reply, matches):
-    """Cover photo of each unit actually listed in this reply (one per distinct image, max 3)."""
-    if not matches:
-        return []
-    by_reference = {item["public"]["public_reference"]: item for item in matches}
-    photos, seen = [], set()
-    for reference in re.findall(r"\bRef\.\s*([A-Za-z0-9-]+)", reply or ""):
-        item = by_reference.get(reference)
-        media = [m for m in (item or {}).get("public", {}).get("media", []) if m.get("media_type") == "photo"]
-        if media and media[0]["media_url"] not in seen:
-            seen.add(media[0]["media_url"])
-            photos.append({"reference": reference, "url": media[0]["media_url"], "caption": photo_caption(item, len(photos) + 1)})
-        if len(photos) >= MAX_LISTING_PHOTOS:
-            break
-    return photos
+def remaining_photos_line(count):
+    noun = "foto más" if count == 1 else "fotos más"
+    return f"📷 Tengo {count} {noun} de este proyecto. {MORE_PHOTOS_QUESTION}"
 
 
-def photo_caption(item, index):
-    description = (item or {}).get("public", {}).get("public_description") or ""
-    identity = re.match(r"^Proyecto (.*?); unidad", description)
-    place = (item or {}).get("public", {}).get("district") or ""
-    name = identity.group(1) if identity else "Opción"
-    return f"Opción {index}: {name}" + (f" · {place}" if place else "") + " (imagen referencial)"
+def photo_reference_marker(reference):
+    """Kept in memory so the next turn knows the unit; customer_visible_reply strips it."""
+    return f"\nRef. {reference}"
 
 
-def requested_photos_reply(stage, more=False):
-    reply = ("Te envío más fotos de esta opción 📷" if more else "Te envío las fotos de esta opción 📷") + \
-            " (son imágenes referenciales del proyecto)."
-    if stage == "handoff":
-        return reply + " El asesor que te contactará puede resolver cualquier detalle."
-    return reply + " ¿Quieres que coordinemos una visita o prefieres que te contacte un asesor?"
+def next_step(stage):
+    return "El asesor que te contactará puede resolver cualquier detalle." if stage == "handoff" else NEXT_STEP_QUESTION
 
 
-def all_photos_sent_reply(stage):
-    reply = "Ya te envié todas las fotos que tengo de esta opción."
-    if stage == "handoff":
-        return reply + " El asesor que te contactará puede compartirte más material."
-    return reply + " ¿Quieres que coordinemos una visita o prefieres que te contacte un asesor?"
+def wants_more_photos(previous, text):
+    if MORE_PHOTOS_QUESTION not in last_assistant_message(previous):
+        return False
+    cleaned = " ".join((text or "").casefold().split())
+    return bool(YES_MORE_PHOTOS.match(cleaned) or PHOTO_WORDS.search(cleaned))
+
+
+def pending_photos(store, phone, reference):
+    urls = store.photos_for_reference(reference, MAX_PROJECT_PHOTOS)
+    already = store.sent_media(phone, urls) if urls else set()
+    return urls, [url for url in urls if url not in already]
+
+
+def photo_turn(store, phone, previous, text, reply, stage):
+    """Decide which photos go with this turn. Returns (reply, photos, photos_first).
+
+    - Listing of options: text only.
+    - Unit chosen (ficha): its cover photo, then the ficha, ending with an offer of more photos.
+    - "Sí" to that offer, or any photo request: the next 5 unsent photos, then the offer again
+      while photos remain, or the next step when none are left.
+    """
+    selection = selected_option(previous, text)
+    if selection and selection.get("reference") and not reply.startswith(PHOTOS_UNAVAILABLE_PREFIX):
+        reference = selection["reference"]
+        urls, pending = pending_photos(store, phone, reference)
+        if not pending:
+            return reply, [], False
+        rest = len(pending) - 1
+        reply = reply.rstrip() + ("\n\n" + remaining_photos_line(rest) if rest else "") + photo_reference_marker(reference)
+        return reply, [{"reference": reference, "url": pending[0], "caption": "Imagen referencial del proyecto"}], True
+    shown = latest_presented_references(previous)
+    if len(shown) == 1 and (reply.startswith(PHOTOS_UNAVAILABLE_PREFIX) or wants_more_photos(previous, text)):
+        reference = shown[0]
+        urls, pending = pending_photos(store, phone, reference)
+        if not urls:
+            return reply, [], False
+        if not pending:
+            return f"Ya te envié todas las fotos que tengo de esta opción. {next_step(stage)}" + photo_reference_marker(reference), [], False
+        batch, rest = pending[:MAX_REQUESTED_PHOTOS], len(pending) - MAX_REQUESTED_PHOTOS
+        if rest > 0:
+            text_reply = remaining_photos_line(rest)
+        else:
+            text_reply = f"Esas son todas las fotos que tengo de esta opción. {next_step(stage)}"
+        return text_reply + photo_reference_marker(reference), [{"reference": reference, "url": url} for url in batch], True
+    return reply, [], False
 
 
 def send_property_photos(to, photos, store=None, skip_already_sent=True):
@@ -2233,23 +2256,12 @@ def receive_webhook():
             if inventory_store and inventory_ready(criteria):
                 inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
                 reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
-            photos, photos_requested = [], False
+            photos, photos_first = [], False
             if inventory_store:
                 try:
-                    shown = latest_presented_references(previous)
-                    if reply.startswith(PHOTOS_UNAVAILABLE_PREFIX) and len(shown) == 1:
-                        urls = inventory_store.photos_for_reference(shown[0], MAX_PROJECT_PHOTOS)
-                        already = inventory_store.sent_media(sender, urls) if urls else set()
-                        pending = [url for url in urls if url not in already][:MAX_REQUESTED_PHOTOS]
-                        if pending:
-                            reply, photos_requested = requested_photos_reply(stage, more=bool(already)), True
-                            photos = [{"reference": shown[0], "url": url} for url in pending]
-                        elif urls:
-                            reply = all_photos_sent_reply(stage)
-                    elif inventory_matches:
-                        photos = listing_photos(reply, inventory_matches)
+                    reply, photos, photos_first = photo_turn(inventory_store, sender, previous, text, reply, stage)
                 except requests.RequestException:
-                    photos = []
+                    photos, photos_first = [], False
             started_at = time.monotonic()
             if memory:
                 # All mandatory internal state commits before attempting Meta.
@@ -2263,9 +2275,11 @@ def receive_webhook():
             timings["internal_commit_ms"] = round((time.monotonic() - started_at) * 1000)
             started_at = time.monotonic()
             try:
+                if photos_first:
+                    # The client sees the images and then the text that asks about the next batch.
+                    send_property_photos(sender, photos, inventory_store, skip_already_sent=False)
                 send_whatsapp_message(sender, reply)
                 if memory: memory.record_delivery(message_id, "sent")
-                send_property_photos(sender, photos, inventory_store, skip_already_sent=not photos_requested)
             except requests.RequestException as error:
                 # Internal commit remains processed. Never retry Meta automatically.
                 if memory:

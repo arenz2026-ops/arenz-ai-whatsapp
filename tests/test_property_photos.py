@@ -5,57 +5,91 @@ import requests
 
 import app
 
-
-def item(reference, url=None, project="Libertador", district="Pueblo Libre"):
-    media = [{"media_type": "photo", "media_url": url}] if url else []
-    return {"public": {"public_reference": reference, "district": district,
-                       "public_description": f"Proyecto {project}; unidad 501.", "media": media}}
+URLS = [f"https://x/{i}.jpg" for i in range(1, 13)]
 
 
-class ListingPhotosTest(unittest.TestCase):
-    def test_only_listed_units_with_photos_one_per_image(self):
-        matches = [item("C2-A", "https://x/1.jpg"), item("C2-B", "https://x/1.jpg"),
-                   item("C2-C", "https://x/2.jpg"), item("C2-D", "https://x/3.jpg")]
-        reply = "Opciones:\n1. A\nRef. C2-A\n2. B\nRef. C2-B\n3. C\nRef. C2-C"
-        photos = app.listing_photos(reply, matches)
-        self.assertEqual([p["url"] for p in photos], ["https://x/1.jpg", "https://x/2.jpg"])
-        self.assertEqual(photos[0]["caption"], "Opción 1: Libertador · Pueblo Libre (imagen referencial)")
+def store(sent=()):
+    s = mock.Mock()
+    s.photos_for_reference.return_value = URLS
+    s.sent_media.side_effect = lambda phone, urls: {u for u in urls if u in set(sent)}
+    return s
 
-    def test_no_photo_line_in_listing_text(self):
-        matches = [{"public": {**item("C2-A", "https://x/1.jpg")["public"], "operation": "compra", "property_type": "departamento",
-                               "price_amount": 100000, "currency": "USD", "bedrooms": 2, "bathrooms": 2, "provenance": "partner",
-                               "parking_spaces": None}}]
-        self.assertNotIn("https://x/1.jpg", app.inventory_reply(matches))
 
-    def test_no_matches_no_photos(self):
-        self.assertEqual(app.listing_photos("Ref. C2-A", None), [])
+def history(*assistant_messages):
+    return {"recent_messages": [{"direction": "assistant", "content": m} for m in assistant_messages]}
+
+
+class PhotoTurnTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(app, "recent_conversation_turns",
+                                    side_effect=lambda previous, limit=8, raw=False: (previous or {}).get("recent_messages", []))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_listing_sends_no_photos(self):
+        listing = "Opciones:\n1. Libertador\nRef. C2-AAA111\n2. Otra\nRef. C2-BBB222\nResponde con el número"
+        reply, photos, first = app.photo_turn(store(), "51", history("¿Para cuándo?"), "sí", listing, "qualified")
+        self.assertEqual((reply, photos, first), (listing, [], False))
+
+    def test_choosing_unit_sends_cover_and_offers_more(self):
+        previous = history("Opciones:\n1. Libertador\nRef. C2-AAA111\n2. Otra\nRef. C2-BBB222\nResponde con el número de la opción")
+        with mock.patch.object(app, "selected_option", return_value={"index": 1, "reference": "C2-AAA111", "count": 2}):
+            reply, photos, first = app.photo_turn(store(), "51", previous, "1", "Ficha de la unidad", "property_detail")
+        self.assertEqual([p["url"] for p in photos], [URLS[0]])
+        self.assertTrue(first)
+        self.assertIn("Tengo 11 fotos más", reply)
+        self.assertIn(app.MORE_PHOTOS_QUESTION, reply)
+        self.assertNotIn("C2-AAA111", app.customer_visible_reply(reply))
+
+    def test_yes_sends_next_five_and_keeps_offering(self):
+        previous = history("Ficha\n📷 Tengo 11 fotos más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
+        reply, photos, first = app.photo_turn(store(sent=URLS[:1]), "51", previous, "Sí", "otra cosa", "property_detail")
+        self.assertEqual([p["url"] for p in photos], URLS[1:6])
+        self.assertIn("Tengo 6 fotos más", reply)
+
+    def test_last_batch_closes_with_next_step(self):
+        previous = history("📷 Tengo 6 fotos más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
+        reply, photos, _ = app.photo_turn(store(sent=URLS[:6]), "51", previous, "dale", "x", "property_detail")
+        self.assertEqual(len(photos), 5)
+        self.assertIn("Tengo 1 foto más", reply)
+        reply, photos, _ = app.photo_turn(store(sent=URLS[:11]), "51", previous, "sí", "x", "property_detail")
+        self.assertEqual([p["url"] for p in photos], URLS[11:])
+        self.assertIn("Esas son todas", reply)
+        self.assertNotIn(app.MORE_PHOTOS_QUESTION, reply)
+
+    def test_nothing_left(self):
+        previous = history("📷 Tengo 1 foto más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
+        reply, photos, _ = app.photo_turn(store(sent=URLS), "51", previous, "sí", "x", "handoff")
+        self.assertEqual(photos, [])
+        self.assertIn("Ya te envié todas", reply)
+
+    def test_yes_without_offer_does_nothing(self):
+        previous = history("Ficha sin oferta\nRef. C2-AAA111")
+        reply, photos, _ = app.photo_turn(store(), "51", previous, "sí", "respuesta normal", "property_detail")
+        self.assertEqual((reply, photos), ("respuesta normal", []))
 
 
 class SendPhotosTest(unittest.TestCase):
     def test_skips_already_sent_and_records_new(self):
-        store = mock.Mock()
-        store.sent_media.return_value = {"https://x/1.jpg"}
+        s = mock.Mock()
+        s.sent_media.return_value = {"https://x/1.jpg"}
         with mock.patch.object(app, "post_graph_message") as post:
-            sent = app.send_property_photos("51999", [{"url": "https://x/1.jpg"}, {"url": "https://x/2.jpg", "reference": "C2-B"}], store)
+            sent = app.send_property_photos("51999", [{"url": "https://x/1.jpg"}, {"url": "https://x/2.jpg", "reference": "C2-B"}], s)
         self.assertEqual(sent, 1)
         self.assertEqual(post.call_args[0][0]["image"], {"link": "https://x/2.jpg"})
-        store.record_media_delivery.assert_called_once_with("51999", "C2-B", "https://x/2.jpg")
+        s.record_media_delivery.assert_called_once_with("51999", "C2-B", "https://x/2.jpg")
 
     def test_graph_failure_never_raises(self):
         with mock.patch.object(app, "post_graph_message", side_effect=requests.ConnectionError()):
             self.assertEqual(app.send_property_photos("51999", [{"url": "https://x/1.jpg"}], None), 0)
 
-    def test_requested_reply_by_stage(self):
-        self.assertIn("visita", app.requested_photos_reply("property_detail"))
-        self.assertNotIn("visita", app.requested_photos_reply("handoff"))
+    def test_record_failure_still_counts_as_sent(self):
+        s = mock.Mock()
+        s.sent_media.return_value = set()
+        s.record_media_delivery.side_effect = requests.HTTPError("409")
+        with mock.patch.object(app, "post_graph_message"):
+            self.assertEqual(app.send_property_photos("51999", [{"url": "https://x/1.jpg"}], s), 1)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class RequestedBatchTest(unittest.TestCase):
-    def test_more_reply_and_all_sent_reply(self):
-        self.assertTrue(app.requested_photos_reply("property_detail", more=True).startswith("Te envío más fotos"))
-        self.assertIn("Ya te envié todas", app.all_photos_sent_reply("property_detail"))
-        self.assertNotIn("visita", app.all_photos_sent_reply("handoff"))
