@@ -104,3 +104,22 @@ class SendPhotosTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeclineMorePhotosTest(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(app, "recent_conversation_turns",
+                                    side_effect=lambda previous, limit=8, raw=False: (previous or {}).get("recent_messages", []))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_no_to_more_photos_asks_closing_question(self):
+        s = store(sent=URLS[:6])
+        s.closing_question.return_value = "¿Quieres que un asesor te envíe los planos y el brochure del proyecto?"
+        previous = history("📷 Tengo 6 fotos más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-AAA111")
+        plan = app.photo_turn(s, "51", previous, "No", "descripción repetida", "property_detail")
+        self.assertEqual(plan["photos"], [])
+        self.assertEqual(plan["text"], "Perfecto. ¿Quieres que un asesor te envíe los planos y el brochure del proyecto?")
+        # A following "No" then closes the conversation.
+        closing = app.declined_offer_reply(history(plan["stored"]), "No")
+        self.assertTrue(closing.startswith("Entendido, no te contactará un asesor"))
