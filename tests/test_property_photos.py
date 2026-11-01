@@ -59,3 +59,12 @@ class RequestedBatchTest(unittest.TestCase):
         self.assertTrue(app.requested_photos_reply("property_detail", more=True).startswith("Te envío más fotos"))
         self.assertIn("Ya te envié todas", app.all_photos_sent_reply("property_detail"))
         self.assertNotIn("visita", app.all_photos_sent_reply("handoff"))
+
+
+class RecordFailureTest(unittest.TestCase):
+    def test_record_failure_still_counts_as_sent(self):
+        store = mock.Mock()
+        store.sent_media.return_value = set()
+        store.record_media_delivery.side_effect = requests.HTTPError("409")
+        with mock.patch.object(app, "post_graph_message"):
+            self.assertEqual(app.send_property_photos("51999", [{"url": "https://x/1.jpg"}], store), 1)

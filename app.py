@@ -1187,7 +1187,10 @@ class InventoryStore:
         return {row["media_url"] for row in response.json()}
 
     def record_media_delivery(self, phone, search_key, url):
-        response = requests.post(f"{self.url}/rest/v1/media_deliveries", headers={**self.headers, "Prefer": "return=minimal"},
+        # Idempotent: the table is UNIQUE (phone, search_key, media_url); a repeat must not raise.
+        response = requests.post(f"{self.url}/rest/v1/media_deliveries",
+                                 headers={**self.headers, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                                 params={"on_conflict": "phone,search_key,media_url"},
                                  json={"phone": phone, "search_key": search_key, "media_url": url}, timeout=10)
         response.raise_for_status()
 
@@ -2121,16 +2124,20 @@ def send_property_photos(to, photos, store=None, skip_already_sent=True):
     for photo in photos:
         if photo["url"] in already:
             continue
+        image = {"link": photo["url"]}
+        if photo.get("caption"):
+            image["caption"] = photo["caption"]
         try:
-            image = {"link": photo["url"]}
-            if photo.get("caption"):
-                image["caption"] = photo["caption"]
             post_graph_message({"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "image", "image": image})
-            sent += 1
-            if store:
-                store.record_media_delivery(to, photo.get("reference") or "", photo["url"])
         except requests.RequestException:
             logger.warning("Property photo not delivered")
+            continue
+        sent += 1
+        if store:
+            try:
+                store.record_media_delivery(to, photo.get("reference") or "", photo["url"])
+            except requests.RequestException:
+                logger.warning("Property photo sent but its delivery record failed")
     return sent
 
 
