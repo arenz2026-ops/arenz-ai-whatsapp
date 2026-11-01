@@ -761,6 +761,22 @@ def active_search_id(previous):
     return active if isinstance(active, str) and active != "legacy" else None
 
 
+RESUME_QUESTION = "¿Quieres retomar tu búsqueda anterior o comenzar una nueva?"
+NEW_SEARCH_ANSWER = re.compile(r"^(no\b|nueva|nuevo|otra|otro|comenzar|empezar|desde cero|de cero|una nueva)", re.IGNORECASE)
+
+
+def resume_answer_as_command(previous, text):
+    """'No', 'otra', 'nueva'... right after the resume question means a new search."""
+    asked = ""
+    turns = recent_conversation_turns(previous, limit=4) if isinstance(previous, dict) else []
+    for turn in turns:
+        if turn["direction"] == "assistant":
+            asked = turn["content"]
+    if RESUME_QUESTION in asked and NEW_SEARCH_ANSWER.match((text or "").strip()):
+        return "nueva búsqueda"
+    return text
+
+
 def is_new_search_request(text):
     normalized = " ".join((text or "").casefold().split())
     return normalized in {"nueva búsqueda", "nueva busqueda", "nueva búsqueda.", "nueva busqueda."}
@@ -950,7 +966,8 @@ def property_matches_criteria(property_row, criteria):
         return False
     if canonical_property_type(property_row.get("property_type")) != criteria.get("property_type"):
         return False
-    if criteria.get("parking_required") is True and not property_row.get("parking_spaces"):
+    # Unknown parking ("por confirmar") stays in the results; only a unit recorded without parking is dropped.
+    if criteria.get("parking_required") is True and property_row.get("parking_spaces") == 0:
         return False
     try:
         for field, minimum in (("bedrooms", criteria.get("bedrooms")),
@@ -1666,7 +1683,13 @@ def no_match_followup(previous, criteria):
 def qualified_inventory_reply(previous, matches, criteria, user_text):
     """Complete the five filters (qué, dónde, cuánto, cómo, cuándo) before talking about units."""
     if not matches:
-        return no_match_followup(previous, criteria) or inventory_conversation_reply(matches, criteria), criteria
+        followup = no_match_followup(previous, criteria)
+        if followup:
+            return followup, criteria
+        summary = criteria_summary(criteria)
+        extra = " Incluiste estacionamiento obligatorio; puedo buscar también sin ese requisito." if criteria.get("parking_required") else ""
+        return (f"Con tus criterios ({summary}) no encontré unidades verificadas en este momento.{extra} "
+                "¿Prefieres ampliar los distritos, revisar el presupuesto o que te contacte un asesor?"), criteria
     teaser_sent = "Tengo opciones que podrían encajar" in last_assistant_message(previous)
     if not criteria.get("payment_method"):
         return "Tengo opciones que podrían encajar con lo que buscas. Antes de mostrártelas, " + PAYMENT_QUESTION, criteria
@@ -1959,6 +1982,7 @@ def receive_webhook():
                 previous = None
                 logger.warning("Conversation memory unavailable; using in-process fallback")
             timings["session_read_ms"] = round((time.monotonic() - started_at) * 1000)
+            text = resume_answer_as_command(previous, text)
             observation = observe_conversation(sender, text, fallback, timings, previous, True)
             # One effective observation governs reply, search selection, and persistence.
             # This prevents an explicit operation from updating the prior search only in

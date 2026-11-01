@@ -127,3 +127,12 @@ class SaleOnlyFlowTests(unittest.TestCase):
         more, _ = app.delivery_reply(prev, matches, crit, "muéstrame las otras")
         self.assertIn("Ref. R4", more); self.assertNotIn("Ref. R1 ", more)
         self.assertIn("4.", more)
+
+
+class ResumeAnswerTests(unittest.TestCase):
+    def test_no_after_resume_question_starts_new_search(self):
+        prev = {"state": {"recent_turns": [{"direction": "assistant", "content": "Hola, soy Cecilia. " + app.RESUME_QUESTION}]}}
+        self.assertEqual(app.resume_answer_as_command(prev, "No"), "nueva búsqueda")
+        self.assertEqual(app.resume_answer_as_command(prev, "Otra búsqueda"), "nueva búsqueda")
+        self.assertEqual(app.resume_answer_as_command(prev, "Retomar"), "Retomar")
+        self.assertEqual(app.resume_answer_as_command(None, "No"), "No")

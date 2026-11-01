@@ -508,8 +508,8 @@ class AppTests(unittest.TestCase):
         observation={"intent":"property_search","slot_updates":{"operation":"compra","districts":["Surco"],"budget_max":250000,"currency":"USD","bedrooms":2,"property_type":"departamento","preferences":[]},"handoff":False,"assistant_reply":"Busco un departamento. Humor y beneficios."}
         reply, _, stage, _ = app.progressive_reply(None, observation, "fallback", inventory_matches=[])
         self.assertEqual(stage,"qualified")
-        self.assertTrue(reply.startswith(app.inventory_reply([])))
-        self.assertIn("¿Prefieres ampliar las zonas", reply)
+        self.assertIn("no encontré unidades verificadas", reply)
+        self.assertIn("Surco", reply)
         self.assertEqual(reply.count("?"), 1)
 
     def test_general_question_and_handoff_do_not_reset_conversation(self):
