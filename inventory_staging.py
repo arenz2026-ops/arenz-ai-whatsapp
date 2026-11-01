@@ -64,3 +64,28 @@ def receive_rows():
         return jsonify({"ok": False, "message": f"Supabase {saved.status_code}"}), 502, cors
     logger.info("Staged %s rows from %s", len(payload), source)
     return jsonify({"ok": True, "staged": len(payload)}), 200, cors
+
+
+RECEIVER_PAGE = """<!doctype html><meta charset="utf-8"><title>Receptor de inventario</title>
+<p id="s">Esperando datos…</p>
+<script>
+window.addEventListener("message", async (e) => {
+  const d = e.data || {};
+  if (!d.token || !d.source || !Array.isArray(d.rows)) return;
+  let total = 0, out = [];
+  for (let i = 0; i < d.rows.length; i += 500) {
+    const r = await fetch("/admin/inventario-staging", {method: "POST", headers: {"Content-Type": "text/plain"},
+      body: JSON.stringify({token: d.token, source: d.source, rows: d.rows.slice(i, i + 500)})});
+    out.push(r.status); if (r.ok) total += Math.min(500, d.rows.length - i);
+  }
+  document.getElementById("s").textContent = "Recibidas " + total + " filas (" + out.join(",") + ")";
+  if (e.source) e.source.postMessage({staged: total, statuses: out}, e.origin);
+});
+if (window.opener) window.opener.postMessage({ready: true}, "*");
+</script>"""
+
+
+@bp.route("/admin/inventario-receptor", methods=["GET"])
+def receiver_page():
+    """A same-origin relay for pages whose CSP blocks posting here directly. Rows still need a valid token."""
+    return RECEIVER_PAGE, 200, {"Content-Type": "text/html; charset=utf-8"}
