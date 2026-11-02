@@ -49,7 +49,7 @@ def conversacion_ia_activa():
 logger.info("CONVERSACION_IA=%s", "on" if conversacion_ia_activa() else "off")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
 COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "C2 Inmobiliaria")
-INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. Te ayudo a encontrar tu departamento ideal. ¿En qué distrito o distritos lo buscas?"
+INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} 😊 Te ayudo a encontrar tu departamento ideal 🏡 ¿En qué distrito o distritos lo buscas?"
 user_sessions = {}
 
 OBSERVATION_SCHEMA = {
@@ -127,7 +127,13 @@ COMMERCIAL_POLICY = (
     "Para una visita o un asesor, registra una solicitud sin prometer una fecha confirmada. "
     "C2 Inmobiliaria solo comercializa departamentos en VENTA (flat, dúplex, loft): la operación siempre es compra y el "
     "tipo siempre es departamento; nunca preguntes si desea comprar, alquilar o vender, ni qué tipo de inmueble busca. "
-    "Pide el presupuesto aclarando que puede indicarlo en soles o en dólares."
+    "Pide el presupuesto aclarando que puede indicarlo en soles o en dólares. "
+    # Estilo ARENZ tomado de las conversaciones con leads de setiembre y octubre de 2026.
+    "Escribe como una asesora por WhatsApp: cercana y cordial, con uno o dos emoticons por mensaje (😊 🏡 📍 📷 🙌), "
+    "nunca junto a montos. Si el cliente no menciona un inmueble concreto, no supongas que le interesa alguno: pregunta "
+    "qué busca y en qué zona. No prometas descuentos, precio de cochera ni condiciones de pago: un asesor los confirma. "
+    "Si quien escribe es agente o corredor inmobiliario que busca para un cliente, trátalo como colaboración y pregunta "
+    "qué departamento o zona busca su cliente."
 )
 
 
@@ -977,7 +983,8 @@ def assistant_reply_is_real_estate_scoped(reply):
     domain_terms = ("inmueble", "inmobiliaria", "propiedad", "departamento", "apartamento", "casa", "compra", "comprar", "alquiler", "alquilar", "venta", "vender", "búsqueda", "busqueda", "buscar", "criterio", "distrito", "zona", "presupuesto", "precio", "usd", "pen", "dormitorio", "estacionamiento", "cochera", "asesor", "inventario", "moneda")
     generic_acknowledgements = ("claro", "perfecto", "de acuerdo", "gracias", "claro, puedo ayudarte con esa consulta", "puedo ayudarte")
     neutral_clarifications = ("qué deseas consultar", "que deseas consultar", "en qué puedo ayudarte", "en que puedo ayudarte")
-    segments = [segment.strip().casefold() for segment in re.split(r"[.!?]+", reply) if segment.strip()]
+    segments = [re.sub(r"[^\w\s¿¡,;:()'\"/-]", "", segment).strip().casefold() for segment in re.split(r"[.!?]+", reply)]
+    segments = [segment for segment in segments if segment]
     return bool(segments) and all(
         any(term in segment for term in domain_terms)
         or segment.strip("¿¡ ") in generic_acknowledgements
@@ -1686,15 +1693,15 @@ def detected_handoff(previous, observation, user_text, inventory_matches=None):
 def handoff_reply(handoff):
     request_type, reference = handoff["request_type"], handoff["property_reference"]
     if request_type == "callback":
-        return (f"Perfecto. Registré tu solicitud de llamada; un asesor de {COMMERCIAL_BRAND} coordinará contigo.",
+        return (f"Perfecto. Registré tu solicitud de llamada; un asesor de {COMMERCIAL_BRAND} coordinará contigo 🙌",
                 "Solicitud de llamada registrada con consentimiento explícito.")
     if request_type == "visit":
-        return (f"Perfecto. Registré tu solicitud de visita para la referencia {reference}; un asesor de {COMMERCIAL_BRAND} coordinará contigo.",
+        return (f"Perfecto. Registré tu solicitud de visita para la referencia {reference}; un asesor de {COMMERCIAL_BRAND} coordinará contigo 🙌",
                 f"Solicitud de visita registrada para la referencia {reference}.")
     if request_type == "property_interest":
-        return (f"Perfecto. Registré tu interés en la referencia {reference}; un asesor de {COMMERCIAL_BRAND} continuará contigo.",
+        return (f"Perfecto. Registré tu interés en la referencia {reference}; un asesor de {COMMERCIAL_BRAND} continuará contigo 🙌",
                 f"Interés registrado en la referencia {reference}.")
-    return (f"Perfecto. Registraré tu solicitud para que un asesor de {COMMERCIAL_BRAND} continúe contigo.",
+    return (f"Perfecto. Registraré tu solicitud para que un asesor de {COMMERCIAL_BRAND} continúe contigo 🙌",
             "Solicitud de asesor registrada.")
 
 
@@ -1719,8 +1726,10 @@ def customer_pause_reply(text):
 NEGATIVE_PATTERN = re.compile(r"^(?:no|nop|nel|no gracias|no,? gracias|por ahora no|ahora no|todav[ií]a no|no quiero|no deseo|no necesito|no es necesario|nada m[aá]s|eso es todo|as[ií] est[aá] bien)\b", re.IGNORECASE)
 THANKS_PATTERN = re.compile(r"^(?:ok|okay|gracias|muchas gracias|ok,? gracias|listo|perfecto|vale|genial|bien|entendido)\b[\s,.!👍🙏]*(?:gracias)?[\s.!👍🙏]*$", re.IGNORECASE)
 OFFER_DECLINED_REPLY = ("Entendido, no te contactará un asesor. Si más adelante quieres revisar otra opción, ver más fotos "
-                        "o cambiar tu búsqueda, escríbeme por aquí. ¡Gracias por escribir a {brand}!")
-CLOSING_THANKS_REPLY = "¡Con gusto! Aquí estaré cuando quieras retomar tu búsqueda."
+                        "o cambiar tu búsqueda, escríbeme por aquí. ¡Gracias por escribir a {brand}! 😊")
+# Base sin emoticon: también reconoce el mensaje en conversaciones guardadas antes de añadirlo.
+CLOSING_THANKS_BASE = "¡Con gusto! Aquí estaré cuando quieras retomar tu búsqueda."
+CLOSING_THANKS_REPLY = CLOSING_THANKS_BASE + " 😊"
 
 
 def declined_offer_reply(previous, text):
@@ -1981,7 +1990,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if greeting in {"hola", "buenos días", "buenos dias", "buenas tardes", "buenas noches"}:
         criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
         if criteria:
-            reply = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. ¿Quieres retomar tu búsqueda anterior o comenzar una nueva?"
+            reply = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} 😊 ¿Quieres retomar tu búsqueda anterior o comenzar una nueva?"
             return reply, criteria, "conversation", "Saludo atendido; criterios conservados sin consultar inventario."
         return INTRODUCTION, criteria, "qualification", "Saludo atendido antes de la calificación."
     observation = with_explicit_operation(observation, user_text)
@@ -2345,8 +2354,8 @@ def notify_advisor_of_handoff(sender, stage, previous, observation, text, criter
 
 ALTERNATIVES_REPLY = "Entendido. ¿Prefieres ampliar los distritos, revisar el presupuesto o que te contacte un asesor?"
 CLOSING_REPLY = ("Gracias por escribir a {brand}. Cuando quieras retomar tu búsqueda, ver más fotos o hablar con un asesor, "
-                 "escríbeme por aquí.")
-CLOSING_AFTER_HANDOFF_REPLY = "¡Gracias a ti! El asesor de {brand} te escribirá pronto por aquí."
+                 "escríbeme por aquí. 😊")
+CLOSING_AFTER_HANDOFF_REPLY = "¡Gracias a ti! El asesor de {brand} te escribirá pronto por aquí 🙌"
 CHANGE_CRITERIA_REPLY = "Claro. ¿Qué te gustaría cambiar: el distrito, el presupuesto o los dormitorios?"
 REPETITION_REPLIES = {
     "unit": "Tienes razón, disculpa la repetición. ¿Quieres ver otras opciones, más fotos o que un asesor te contacte?",
@@ -2369,7 +2378,7 @@ def last_bot_message(previous):
 def bot_offer(previous):
     """What the bot's last message asked for, so a yes/no can be read against it."""
     last = last_bot_message(previous)
-    if last.startswith(("Entendido, no te contactará un asesor", "Gracias por escribir a")) or CLOSING_THANKS_REPLY in last:
+    if last.startswith(("Entendido, no te contactará un asesor", "Gracias por escribir a")) or CLOSING_THANKS_BASE in last:
         return "cerrada"
     if MORE_PHOTOS_QUESTION in last:
         return "mas_fotos"
@@ -2567,7 +2576,67 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
     return None, text
 
 
+# Agentes o corredores que buscan para un cliente: colaboración comercial, no compradores directos.
+AGENT_COMMISSION_SHARE = os.getenv("AGENT_COMMISSION_SHARE", "50 % para cada parte").strip()
+BROKER_PATTERN = re.compile(
+    r"\b(?:soy|somos)\s+(?:una?\s+)?(?:agentes?|corredor(?:a|es)?|brokers?|asesor(?:a|es)?\s+inmobiliari[oa]s?)\b"
+    r"|\bpara\s+(?:una?|mis?)\s+clientes?\b|\bmis?\s+clientes?\s+(?:busca|está|esta|quiere|necesita)"
+    r"|\bcompart(?:en|es|imos|ir)\s+(?:la\s+)?comisi[oó]n", re.IGNORECASE)
+BROKER_SUMMARY = "Contacto de colaboración: agente inmobiliario que busca para un cliente."
+
+
+def is_broker_message(text):
+    return bool(BROKER_PATTERN.search(text or ""))
+
+
+def broker_reply(rules_reply, fallback=None):
+    commission = f", compartiendo la comisión al {AGENT_COMMISSION_SHARE}" if AGENT_COMMISSION_SHARE else ""
+    opening = (f"¡Mucho gusto! 😊 Soy {ASSISTANT_NAME}, de {COMMERCIAL_BRAND}. Sí trabajamos en colaboración con agentes "
+               f"inmobiliarios{commission}.")
+    # Ante la presentación genérica se pregunta qué busca su cliente; un listado o una pregunta concreta se conservan.
+    if not rules_reply or rules_reply in (INTRODUCTION, fallback):
+        return f"{opening} ¿Qué departamento o en qué distrito busca tu cliente? 🏡"
+    return f"{opening}\n\n{rules_reply}"
+
+
+NEW_SEARCH_PREFIX = "Nueva búsqueda iniciada. "
+DISTRICT_QUESTION = "¿En qué distrito o distritos te gustaría tu departamento?"
+
+
+def is_first_contact(previous):
+    return not (isinstance(previous, dict) and any(
+        turn["direction"] == "assistant" for turn in recent_conversation_turns(previous, limit=8, raw=True)))
+
+
+def first_contact_reply(reply):
+    """Primer mensaje al lead: se presenta como en WhatsApp, sin 'Nueva búsqueda iniciada'."""
+    if not reply or reply.startswith(("Hola", "¡Hola")):
+        return reply
+    reply = reply[len(NEW_SEARCH_PREFIX):] if reply.startswith(NEW_SEARCH_PREFIX) else reply
+    return f"¡Hola! 😊 Soy {ASSISTANT_NAME}, de {COMMERCIAL_BRAND}. {reply}"
+
+
 def plan_turn(sender, previous, text, observation, fallback, inventory_store):
+    """Decide the turn; a first contact gets a greeting and an agent who writes for a client the collaboration terms."""
+    result = _plan_turn(sender, previous, text, observation, fallback, inventory_store)
+    told = isinstance(previous, dict) and any(
+        turn["direction"] == "assistant" and "colaboración con agentes" in turn["content"]
+        for turn in recent_conversation_turns(previous, limit=8, raw=True))
+    if is_broker_message(text) and not told:
+        generic = (INTRODUCTION, fallback, DISTRICT_QUESTION, NEW_SEARCH_PREFIX + DISTRICT_QUESTION)
+        plan = dict(result["plan"])
+        for key in ("text", "stored"):
+            plan[key] = broker_reply(None if plan.get(key) in generic else plan.get(key), fallback)
+        result = {**result, "plan": plan, "summary": f"{BROKER_SUMMARY} {result.get('summary') or ''}".strip()}
+    elif is_first_contact(previous):
+        plan = dict(result["plan"])
+        for key in ("text", "stored"):
+            plan[key] = first_contact_reply(plan.get(key))
+        result = {**result, "plan": plan}
+    return result
+
+
+def _plan_turn(sender, previous, text, observation, fallback, inventory_store):
     """Decide one turn (reply, criteria, stage and photos) from the AI observation.
 
     Reads inventory and may ask OpenAI for the ficha or a unit answer; persistence and
