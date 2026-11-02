@@ -16,6 +16,10 @@ Configúralas en Render o localmente, nunca en Git.
 | `OPENAI_API_KEY` | Clave de servidor para IA; si falta, usa fallback. |
 | `OPENAI_MODEL` | Opcional; por defecto `gpt-4.1-mini`. |
 | `CONVERSACION_IA` | Opcional; `on` u `off` (por defecto `off`). Con `on`, la misma llamada a OpenAI clasifica cómo respondió el cliente a la última pregunta del bot (acepta, rechaza, pide otra cosa, se queja de repetición, cierra u otra) y el código actúa según eso; las preguntas sobre la unidad se responden en esa misma llamada. Precios, áreas y disponibilidad salen siempre del inventario. En `off` el bot funciona como antes. Antes de encenderlo: `OPENAI_API_KEY=... python scripts/probar_ia_real.py`. |
+| `AGENT_COMMISSION_SHARE` | Opcional; por defecto `50 % para cada parte`. Cuando escribe un agente o corredor inmobiliario que busca para un cliente, el bot confirma la colaboración y menciona esta comisión. Vacío: confirma la colaboración sin mencionar comisión. |
+| `SEGUIMIENTO_AUTOMATICO` | Opcional; `on` u `off` (por defecto `off`). Con `on`, `scripts/enviar_seguimientos.py` escribe una vez a quien vio un listado o una ficha y no respondió: “Hola Ana, ¿cómo estás? 😊 … ¿pudiste revisar las opciones que te compartí?”. Nunca tras un cierre, un “no me contacten” o una derivación al asesor, y solo dentro de las 24 h desde el último mensaje del cliente (después WhatsApp no permite texto libre). |
+| `SEGUIMIENTO_HORAS` | Opcional; por defecto `20`. Horas de silencio del cliente antes del seguimiento (debe ser menor que 23,5). |
+| `SEGUIMIENTO_DESDE` / `SEGUIMIENTO_HASTA` | Opcional; por defecto `9` y `20`. Horario de Lima en que se envían seguimientos. |
 | `SUPABASE_URL` | URL del proyecto Supabase para persistencia durable en Render. |
 | `SUPABASE_KEY` | Clave de servidor Supabase; nunca la expongas en el cliente o Git. |
 | `LEADS_DB_PATH` | SQLite solo como fallback local. |
@@ -157,3 +161,9 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
    - `inventory_unit_info.client_notice = 'carga'` hace que el bot cierre la ficha con un aviso general (sin detalle) de que
      el inmueble tiene una carga y que lo consulte con un asesor. No se borra en la recarga; quitarlo cuando se levante.
 4. Se revisa el resultado en el buscador web y con una conversación de prueba.
+
+## Seguimiento automático
+
+`scripts/enviar_seguimientos.py` debe ejecutarse cada hora, con las mismas variables de entorno que el servicio web (Supabase, WhatsApp y `SEGUIMIENTO_AUTOMATICO=on`). En Render: **New → Cron Job**, mismo repositorio, comando `python scripts/enviar_seguimientos.py`, programación `0 * * * *`.
+
+Antes de encenderlo, `python scripts/enviar_seguimientos.py --simular` muestra qué mensajes enviaría, sin enviarlos ni guardar nada.

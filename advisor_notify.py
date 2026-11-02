@@ -13,6 +13,7 @@ sent after the client has their reply, and a failure is logged, never raised.
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("arenz.advisor")
 
@@ -27,6 +28,16 @@ PAYMENT_LABELS = {"contado": "contado", "credito": "crédito hipotecario", "mixt
 CREDIT_LABELS = {"aprobado": "crédito aprobado", "en_tramite": "crédito en trámite",
                  "por_evaluar": "crédito por evaluar", "prefiere_no_indicar": "no indicó estado del crédito"}
 NOT_GIVEN = "no indicado"
+LIMA = timezone(timedelta(hours=-5))  # Perú no cambia de hora
+# Nota CRM al estilo ARENZ: situación actual y próxima acción según lo que pidió el cliente.
+CRM_STEPS = {
+    "visit": ("Interés en visita – pendiente de coordinar día, hora e ingreso.",
+              "Escribir hoy al cliente para coordinar la visita y confirmar la unidad que desea ver."),
+    "callback": ("Pidió que lo llamen.", "Llamar hoy al cliente durante la jornada comercial."),
+    "property_interest": ("Interés en un inmueble concreto.",
+                          "Escribir hoy al cliente, resolver sus dudas sobre la unidad y proponer una visita."),
+    "advisor": ("Pidió hablar con un asesor.", "Escribir hoy al cliente por WhatsApp para continuar la atención."),
+}
 # Meta rejects template parameters with line breaks, tabs or 4+ consecutive spaces.
 _TEMPLATE_UNSAFE = re.compile(r"[\r\n\t]+| {4,}")
 
@@ -73,14 +84,24 @@ def criteria_lines(criteria):
     ]
 
 
-def advisor_text(client_phone, handoff, criteria, last_message):
-    lines = [f"🔔 Nuevo lead para atender — {REQUEST_LABELS.get(handoff['request_type'], 'Pidió atención')}",
+def advisor_text(client_phone, handoff, criteria, last_message, name=None, broker=False, now=None):
+    """Nota CRM consolidada (formato ARENZ) para el asesor que atiende el lead."""
+    now = (now or datetime.now(timezone.utc)).astimezone(LIMA)
+    situation, next_step = CRM_STEPS.get(handoff["request_type"], ("Pidió atención.", "Escribir hoy al cliente por WhatsApp."))
+    lines = [f"📋 Nota CRM – {name or 'Nombre por confirmar'}",
+             f"{now:%d/%m/%Y %H:%M} – {REQUEST_LABELS.get(handoff['request_type'], 'Pidió atención')} (bot de WhatsApp)",
              f"Cliente: +{client_phone} (https://wa.me/{client_phone})"]
+    if broker:
+        lines.append("Tipo de contacto: agente inmobiliario que busca para un cliente (colaboración comercial).")
     if handoff.get("property_reference"):
         lines.append(f"Inmueble: {handoff['property_reference']}")
-    lines += [f"{label}: {value}" for label, value in criteria_lines(criteria)]
     if last_message:
         lines.append(f"Último mensaje: “{last_message.strip()[:300]}”")
+    lines += ["", f"Situación actual: {situation}", f"Próxima acción: {next_step}", "Canal: WhatsApp.",
+              "Semáforo ARENZ: 🟢 Avanzar – interés comercial activo.", "", "Filtros comerciales ARENZ"]
+    lines += [f"{label}: {value}" for label, value in criteria_lines(criteria)]
+    if not name:
+        lines += ["", "Observación: confirmar el nombre del cliente."]
     return "\n".join(lines)
 
 
@@ -88,10 +109,10 @@ def _template_param(value):
     return _TEMPLATE_UNSAFE.sub(" ", str(value)).strip()[:500] or "-"
 
 
-def template_payload(advisor_phone, template_name, language, client_phone, handoff, criteria):
+def template_payload(advisor_phone, template_name, language, client_phone, handoff, criteria, name=None):
     """Template body parameters: {{1}} cliente, {{2}} solicitud, {{3}} inmueble, {{4}} criterios."""
     summary = " | ".join(f"{label}: {value}" for label, value in criteria_lines(criteria))
-    params = [f"+{client_phone}", REQUEST_LABELS.get(handoff["request_type"], "Pidió atención"),
+    params = [f"{name} (+{client_phone})" if name else f"+{client_phone}", REQUEST_LABELS.get(handoff["request_type"], "Pidió atención"),
               handoff.get("property_reference") or "sin referencia", summary]
     return {"messaging_product": "whatsapp", "recipient_type": "individual", "to": advisor_phone, "type": "template",
             "template": {"name": template_name, "language": {"code": language},
@@ -103,7 +124,7 @@ def text_payload(advisor_phone, body):
             "type": "text", "text": {"body": body}}
 
 
-def notify_advisors(post, client_phone, handoff, criteria, last_message):
+def notify_advisors(post, client_phone, handoff, criteria, last_message, name=None, broker=False):
     """Send the notice to every advisor; return how many accepted it. Never raises.
 
     `post` sends one Graph API messages payload and raises on rejection.
@@ -115,8 +136,8 @@ def notify_advisors(post, client_phone, handoff, criteria, last_message):
     language = os.getenv("ADVISOR_TEMPLATE_LANGUAGE", "es").strip() or "es"
     sent = 0
     for phone in phones:
-        payload = (template_payload(phone, template, language, client_phone, handoff, criteria) if template
-                   else text_payload(phone, advisor_text(client_phone, handoff, criteria, last_message)))
+        payload = (template_payload(phone, template, language, client_phone, handoff, criteria, name) if template
+                   else text_payload(phone, advisor_text(client_phone, handoff, criteria, last_message, name, broker)))
         try:
             post(payload)
             sent += 1
