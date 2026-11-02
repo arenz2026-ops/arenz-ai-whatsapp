@@ -49,6 +49,38 @@ POR_REFERENCIA = {item["public"]["public_reference"]: item for item in INVENTARI
 FOTOS = {ref: [f"https://fotos.test/{ref}/{i}.jpg" for i in range(1, 16)] for ref in POR_REFERENCIA}
 
 
+def tarjeta(item):
+    """Tarjeta de proyecto de prueba con la estructura y el tamaño de las reales (~2.100 caracteres de media),
+    incluidos sus propios precios y metrajes, que nunca deben llegar al cliente desde la IA."""
+    p = item["public"]
+    proyecto = re.match(r"Proyecto (.*?);", p["public_description"]).group(1)
+    return (
+        "# _INFORMACIÓN DEL PROYECTO_\n\n🔴**EMPRESA DESARROLLADORA**\n\n- Constructora de prueba\n\n"
+        "🔴**COMENTARIOS DEL PROYECTO..**\n\n- En construcción. **Precio de entrada:** Desde **S/ 381,200**.\n\n"
+        f"📍**DIRECCIÓN**: Jr. Los Pinos 450, {p['district']}\n\n"
+        "📍**UBICACIÓN MAPS**: [https://maps.app.goo.gl/prueba](https://maps.app.goo.gl/prueba)\n\n"
+        f"### 📍 Entorno y Conectividad\n\nLa zona de {proyecto} destaca por su tranquilidad y cercanía a todo lo necesario:\n\n"
+        "- Rodeado de **parques** (el principal referente es el Parque El Carmen).\n"
+        "- Acceso rápido a **bancos y entidades financieras**, mercados y supermercados.\n"
+        "- Cercanía a **hospitales y centros de salud**, colegios y universidades.\n"
+        "- A pocas cuadras de avenidas principales con transporte público.\n\n"
+        "### 🛋️ Áreas Comunes (Amenities)\n\nEl edificio está diseñado con espacios funcionales para el día a día:\n\n"
+        "1. **Recepción:** Ingreso controlado y elegante.\n2. **Zona de BBQ:** Espacio al aire libre para parrillas.\n"
+        "3. **SUM (Sala de Usos Múltiples):** Para eventos o celebraciones privadas.\n"
+        "4. **Zona de bicicletas:** Pensado en la movilidad sostenible del distrito.\n"
+        "5. **Gimnasio equipado** y terraza con zona de juegos para niños.\n\n"
+        "### 🏢 Características de los Departamentos\n\n"
+        "Los departamentos van desde formatos medianos para parejas hasta opciones amplias para familias:\n\n"
+        "- **Metraje:** Desde 56 m² hasta 119.66 m².\n- **Dormitorios:** Opciones de 2, 3 y 4 habitaciones.\n"
+        "- Acabados de primera, cocina abierta con muebles altos y bajos, pisos laminados en dormitorios.\n"
+        "- Ventanas con sistema acústico, calentador eléctrico y puntos de gas natural.\n\n"
+        "#### Distribución por Tipologías:\n\n- **2 Dormitorios:** Tipo 2 (56 m²), Tipo 3 (57.3 m²), Tipo 3C (56.4 m²)\n"
+        "- **3 Dormitorios:** Tipo 5 (90.7 m²)\n- **4 Dormitorios:** Tipo 1A (98 m²), Tipo 4 (119.66 m²)\n\n"
+        "### 📑 Financiamiento\n\nCrédito hipotecario con bancos aliados, Bono Mi Vivienda Verde y uso del fondo AFP. "
+        "Separación con 2,000 soles y cuota inicial desde el 10%. Entrega con conformidad de obra e independización.\n"
+    )
+
+
 class InventarioFalso:
     """Mismo contrato que app.InventoryStore, en memoria."""
 
@@ -68,7 +100,7 @@ class InventarioFalso:
     def project_card(self, reference):
         # En producción cada proyecto tiene su tarjeta de Trello; con ella el bot consulta a la IA sobre la unidad.
         item = POR_REFERENCIA.get(reference)
-        return f"📍 DIRECCIÓN: Jr. Ejemplo 643, {item['public']['district']}\nÁreas comunes: SUM, zona BBQ." if item else ""
+        return tarjeta(item) if item else ""
 
     def unit_notice(self, reference):
         return ""
@@ -91,7 +123,8 @@ class InventarioFalso:
 # ---------------------------------------------------------------- OpenAI simulado
 
 def ia(intent="confirmation", respuesta="", acciones=(), cambio=False, handoff=False, siguiente="reply", pregunta=None, **slots):
-    """Observación con la forma exacta del esquema; los slots no indicados van vacíos."""
+    """Observación con la forma exacta del esquema; los slots no indicados van vacíos.
+    respuesta_cliente (solo existe con CONVERSACION_IA=on) se agrega desde CLASES al final del archivo."""
     vacios = {"operation": None, "districts": [], "budget_max": None, "currency": None, "bedrooms": None,
               "property_type": None, "parking_required": None, "preferences": [], "payment_method": None,
               "credit_status": None, "purchase_timeline": None, "area_min_m2": None, "bathrooms_min": None}
@@ -236,7 +269,7 @@ def ejecutar(caso):
         stack.enter_context(mock.patch.object(app, "get_inventory_store", return_value=inventario))
         stack.enter_context(mock.patch.object(app, "get_conversation_memory_store", return_value=None))
         text = app.resume_answer_as_command(previous, app.normalize_client_text(caso["cliente"]))
-        observation = app.observe_conversation(TELEFONO, text, "FALLBACK", {}, previous, True)
+        observation = app.observe_conversation(TELEFONO, text, "FALLBACK", {}, previous, True, raw_text=caso["cliente"])
         turno = app.plan_turn(TELEFONO, previous, text, observation, "FALLBACK", inventario)
     return Resultado(turno, openai.llamadas)
 
@@ -434,6 +467,11 @@ CASOS = [
          ia=ia(respuesta="Disculpa la repetición. ¿Quieres ver otra opción?"),
          espera=[NO_REPITE_LIBERTADOR, NO_LISTADO], hoy_falla="vuelve a describir el departamento"),
 
+    dict(id="rep_ya_te_dije_con_dato", grupo="repeticion", cliente="ya te dije, en Surco",
+         historia=historial("qualification", {}, "Hola", "Nueva búsqueda iniciada. ¿En qué distrito o distritos te gustaría tu departamento?"),
+         ia=ia("property_search", "Disculpa. Anoto Surco.", [{"field": "districts", "action": "ADD", "values": ["Surco"]}], True, districts=["Surco"]),
+         espera=[criterio("districts", ["Surco"]), contiene("presupuesto")]),
+
     # ---- cambios de idea
     dict(id="cambio_mejor_en_surco", grupo="cambio", historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB, cliente="mejor en Surco",
          ia=ia("change_criteria", "Perfecto, cambio la búsqueda a Surco.", [{"field": "districts", "action": "UPDATE", "values": ["Surco"]}], True,
@@ -483,7 +521,73 @@ CASOS = [
     dict(id="jerga_simon_a_entrega_futura", grupo="jerga", historia=H_PREGUNTA_FUTURA, cliente="simón", ia=ia(siguiente="search_inventory"),
          espera=[LISTADO]),
     dict(id="jerga_chevere_la_2", grupo="jerga", historia=H_LISTADO, cliente="chévere, la 2", ia=ia(), espera=[ficha("C2-95A5052AC4A0")]),
+    # ---- preguntas sobre la unidad y seguridad de los datos
+    dict(id="dato_cuanto_cuesta", grupo="dato", historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB, cliente="y cuánto cuesta al final?",
+         ia=ia("general_question", "El precio es de S/ 289,460.", pregunta="¿cuánto cuesta?"),
+         espera=[contiene("289,460"), NO_CIERRA]),
+    dict(id="dato_donde_queda", grupo="dato", historia=H_MAS_FOTOS, enviadas=ONCE_LIB, cliente="y dónde queda exactamente?",
+         ia=ia("general_question", "Queda en Jr. Los Pinos 450, Pueblo Libre, cerca del Parque El Carmen.", pregunta="¿dónde queda?"),
+         espera=[contiene("Jr. Los Pinos"), NO_REPITE_LIBERTADOR], hoy_falla="la IA de unidad vuelve a describir el departamento en vez de dar la dirección"),
+    dict(id="seguridad_ia_inventa_precio", grupo="dato", historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB, cliente="ya me lo dijiste",
+         ia=ia(respuesta="Disculpa, este depa cuesta S/ 250,000 y tiene 60 m², está disponible."),
+         espera=[no_contiene("250,000"), no_contiene("disponible"), NO_REPITE_LIBERTADOR],
+         hoy_falla="vuelve a describir el departamento"),
     dict(id="jerga_ta_caro", grupo="jerga", historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB, cliente="ta caro",
          ia=ia("general_question", "Entiendo. ¿Quieres que busque opciones con un presupuesto menor?"),
          espera=[NO_REPITE_LIBERTADOR, NO_CIERRA], hoy_falla="vuelve a describir el departamento en vez de ofrecer opciones más baratas"),
 ]
+
+
+# Clasificación que devolvería la IA con CONVERSACION_IA=on: (tipo, pedido, opción, dato).
+# Con el interruptor apagado el campo no existe en el esquema y el código lo ignora.
+CLASES = {
+    "real_1841_no_al_brochure": ("rechaza",),
+    "real_1841_ya_me_lo_dijiste_en_la_ficha": ("queja_repeticion",),
+    "real_1842_ya_lo_indicaste": ("queja_repeticion",),
+    "real_1850_no_a_mas_fotos": ("rechaza",),
+    "real_1851_otra_vez": ("queja_repeticion",),
+    "real_1840_si_a_mas_fotos": ("acepta",),
+    "real_1933_no_a_mas_fotos_entrega_inmediata": ("rechaza",),
+    "real_1933_si_a_la_visita": ("acepta",),
+    "neg_nel_al_brochure": ("rechaza",),
+    "neg_no_gracias_asi_esta_bien_a_la_visita": ("rechaza",),
+    "neg_nop_a_mas_fotos": ("rechaza",),
+    "neg_no_a_ver_entrega_futura": ("rechaza",),
+    "neg_ninguna_me_convence": ("rechaza",),
+    "neg_todavia_no_al_asesor": ("rechaza",),
+    "rep_ya_me_lo_dijiste": ("queja_repeticion",),
+    "rep_otra_vez_lo_mismo": ("queja_repeticion",),
+    "rep_me_estas_repitiendo": ("queja_repeticion",),
+    "rep_otra_vez_tras_mas_opciones": ("queja_repeticion",),
+    "rep_y_dale_con_lo_mismo": ("queja_repeticion",),
+    "rep_ya_te_dije_con_dato": ("queja_repeticion",),
+    "cambio_mejor_en_surco": ("pide_otra_cosa", "cambiar_criterios"),
+    "cambio_mejor_3_cuartos": ("pide_otra_cosa", "cambiar_criterios"),
+    "cambio_no_mejor_la_2": ("pide_otra_cosa", "opcion", 2),
+    "cambio_presupuesto_en_dolares": ("pide_otra_cosa", "cambiar_criterios"),
+    "no_pero_muestrame_otra": ("pide_otra_cosa", "otras_opciones"),
+    "no_pero_mandame_mas_fotos": ("pide_otra_cosa", "fotos"),
+    "no_pero_tienes_en_surco": ("pide_otra_cosa", "cambiar_criterios"),
+    "no_pero_tiene_cochera": ("pide_otra_cosa", "dato_unidad", None, "estacionamiento"),
+    "cierre_ok_gracias_tras_cerrar": ("cierra",),
+    "cierre_listo_gracias_por_todo": ("cierra",),
+    "cierre_lo_voy_a_pensar": ("cierra",),
+    "cierre_ya_fue_no_me_interesa": ("cierra",),
+    "cierre_chau_a_la_visita": ("cierra",),
+    "jerga_ya_pe_mandame": ("acepta",),
+    "jerga_dale_nomas_a_la_visita": ("acepta",),
+    "jerga_simon_a_entrega_futura": ("acepta",),
+    "jerga_chevere_la_2": ("pide_otra_cosa", "opcion", 2),
+    "jerga_ta_caro": ("pide_otra_cosa", "cambiar_criterios"),
+    "dato_cuanto_cuesta": ("pide_otra_cosa", "dato_unidad", None, "precio"),
+    "dato_donde_queda": ("pide_otra_cosa", "dato_unidad", None, "ubicacion"),
+    "seguridad_ia_inventa_precio": ("queja_repeticion",),
+}
+
+
+def clasificacion(tipo="otra", pedido="ninguno", opcion=None, dato="ninguno"):
+    return {"tipo": tipo, "pedido": pedido, "opcion": opcion, "dato": dato}
+
+
+for _caso in CASOS:
+    _caso["ia"]["respuesta_cliente"] = clasificacion(*CLASES.get(_caso["id"], ()))

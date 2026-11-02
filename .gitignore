@@ -9,3 +9,4 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
+probar_ia_real.json
