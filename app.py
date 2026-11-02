@@ -2167,10 +2167,16 @@ def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, out
         session_state["customer_name"] = name
     if search_state.get("pending_question"):
         session_state["pending_question"] = search_state["pending_question"]
+    turns = (recent_conversation_turns(previous) + [{"direction": "user", "content": inbound},
+                                                    {"direction": "assistant", "content": outbound}])[-4:]
+    if not active_id:
+        # Sin búsqueda activa (saludo, nombre) el historial va en la sesión; sin él, el bot no sabía que ya había
+        # saludado ni que pidió el nombre, y volvía a presentarse en cada mensaje.
+        session_state["recent_turns"] = turns
     payload = {"p_message_id": message_id, "p_claim_token": claim_token,
                "p_profile": _profile_payload(sender, criteria, inbound, outbound, stage),
                "p_session": {"phone": sender, "stage": stage, "state": session_state, "summary": summary},
-               "p_search": {"search_id": active_id, "phone": sender, "operation": criteria.get("operation"), "state": {**current, "criteria": criteria, "recent_turns": (recent_conversation_turns(previous) + [{"direction":"user","content":inbound},{"direction":"assistant","content":outbound}])[-4:]}},
+               "p_search": {"search_id": active_id, "phone": sender, "operation": criteria.get("operation"), "state": {**current, "criteria": criteria, "recent_turns": turns}},
                "p_previous_search_id": previous_id if previous_id != active_id else None,
                "p_inbound": {"message_key": f"in:{message_id}", "phone": sender, "content": inbound, "extraction": observation},
                "p_outbound": {"message_key": f"out:{message_id}", "phone": sender, "content": outbound},

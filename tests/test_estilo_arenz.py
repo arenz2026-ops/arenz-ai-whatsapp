@@ -96,6 +96,37 @@ class NombreDelClienteTest(unittest.TestCase):
         self.assertNotIn("pending_question", sesion)
 
 
+class ConversacionPersistidaTest(unittest.TestCase):
+    """Turnos seguidos como en producción: cada uno parte de lo que commit_consistent_turn guardó en la sesión."""
+
+    def conversar(self, *mensajes):
+        previous, respuestas = None, []
+        for numero, mensaje in enumerate(mensajes):
+            turno = turno_reglas(mensaje, previous)
+            memoria = mock.Mock()
+            app.commit_consistent_turn(memoria, "token", banco.TELEFONO, f"m{numero}", mensaje, turno["plan"]["stored"], {},
+                                       turno["criteria"], turno["stage"], turno["summary"], previous, turno["search_state"])
+            pago = memoria.commit_work.call_args[0][0]
+            estado = dict(pago["p_session"]["state"])
+            if estado.get("active_search_id"):  # load_session une la búsqueda activa a la sesión
+                estado["searches"] = {estado["active_search_id"]: pago["p_search"]["state"]}
+            previous = {"stage": pago["p_session"]["stage"], "state": estado, "summary": pago["p_session"]["summary"]}
+            respuestas.append(turno["plan"]["text"])
+        return respuestas, previous
+
+    def test_saludo_nombre_y_distrito_sin_volver_a_presentarse(self):
+        respuestas, previous = self.conversar("Hola", "Rildo", "Surco")
+        self.assertIn(app.NAME_QUESTION, respuestas[0])
+        self.assertEqual(respuestas[1], f"Mucho gusto, Rildo 😊 {app.DISTRICT_QUESTION}")
+        self.assertFalse(respuestas[2].startswith(("¡Hola", "Hola")), respuestas[2])
+        self.assertEqual(app.customer_name(previous), "Rildo")
+
+    def test_sin_busqueda_el_historial_queda_en_la_sesion(self):
+        _, previous = self.conversar("Hola")
+        self.assertEqual([t["direction"] for t in previous["state"]["recent_turns"]], ["user", "assistant"])
+        self.assertTrue(app.asked_for_name(previous))
+
+
 class AgenteInmobiliarioTest(unittest.TestCase):
     def test_reconoce_agentes_que_buscan_para_un_cliente(self):
         for texto in ("Hola, soy agente inmobiliaria y busco propiedad para un cliente",
