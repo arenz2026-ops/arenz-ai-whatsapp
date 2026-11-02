@@ -1,3 +1,5 @@
+import copy
+import difflib
 import hashlib
 import hmac
 import json
@@ -37,6 +39,14 @@ GRAPH_API_VERSION = "v26.0"
 # Render injects RENDER_GIT_COMMIT. Without it a deploy can only be assumed, never
 # verified, so /health reports the short SHA it is actually running.
 SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
+
+
+def conversacion_ia_activa():
+    """Interruptor CONVERSACION_IA (on/off, por defecto off). En off el bot conserva el comportamiento anterior."""
+    return os.getenv("CONVERSACION_IA", "off").strip().casefold() in {"on", "1", "true", "si", "sí"}
+
+
+logger.info("CONVERSACION_IA=%s", "on" if conversacion_ia_activa() else "off")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
 COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "C2 Inmobiliaria")
 INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. Te ayudo a encontrar tu departamento ideal. ¿En qué distrito o distritos lo buscas?"
@@ -69,6 +79,34 @@ _slot_contract = OBSERVATION_SCHEMA["properties"]["slot_updates"]
 _slot_contract["properties"].update(COMMERCIAL_FIELDS)
 _slot_contract["required"].extend(COMMERCIAL_FIELDS)
 OBSERVATION_SCHEMA["properties"]["criteria_actions"]["items"]["properties"]["field"]["enum"].extend(COMMERCIAL_FIELDS)
+
+# CONVERSACION_IA=on: the same single call also classifies the reply to the bot's last question.
+CUSTOMER_REPLY_TYPES = ["acepta", "rechaza", "pide_otra_cosa", "queja_repeticion", "cierra", "otra"]
+CUSTOMER_REQUESTS = ["ninguno", "otras_opciones", "fotos", "opcion", "cambiar_criterios", "dato_unidad", "asesor"]
+UNIT_FACTS_ASKED = ["ninguno", "precio", "area", "dormitorios", "banos", "piso", "entrega", "estacionamiento",
+                    "ubicacion", "areas_comunes", "otro"]
+OBSERVATION_SCHEMA_IA = copy.deepcopy(OBSERVATION_SCHEMA)
+OBSERVATION_SCHEMA_IA["properties"]["respuesta_cliente"] = {
+    "type": "object", "additionalProperties": False,
+    "properties": {"tipo": {"type": "string", "enum": CUSTOMER_REPLY_TYPES},
+                   "pedido": {"type": "string", "enum": CUSTOMER_REQUESTS},
+                   "opcion": {"type": ["integer", "null"]},
+                   "dato": {"type": "string", "enum": UNIT_FACTS_ASKED}},
+    "required": ["tipo", "pedido", "opcion", "dato"]}
+OBSERVATION_SCHEMA_IA["required"].append("respuesta_cliente")
+CUSTOMER_REPLY_POLICY = (
+    " respuesta_cliente: cómo responde el Mensaje a ultima_pregunta_bot. tipo: acepta (sí, dale, ya pe, simón); "
+    "rechaza (no, nel, ninguna); pide_otra_cosa (pide algo distinto aunque empiece con no: otra opción, 'mejor la 2', "
+    "fotos, otro distrito, 'ta caro', un dato); queja_repeticion (dice que el bot repite: 'ya me lo dijiste', 'otra "
+    "vez?'); cierra (agradece o se despide: 'ok gracias', 'lo voy a pensar', 'chau'); otra (lo demás, incluidas "
+    "respuestas de distrito, presupuesto, dormitorios, pago o plazo). opcion: número elegido. dato: dato de la unidad "
+    "preguntado. Con ficha_proyecto y dato ubicacion, areas_comunes u otro, responde en assistant_reply con la ficha "
+    "(máx. 280 caracteres). En queja_repeticion discúlpate y ofrece otro paso (otra opción, fotos o asesor). "
+    "pedido es lo que el Mensaje pide, no lo que el bot ofreció: un 'no' o 'todavía no' a una oferta es rechaza con pedido "
+    "ninguno. Si pregunta un dato de la unidad ('¿tiene cochera?', '¿cuánto cuesta?') es pide_otra_cosa con pedido dato_unidad. "
+    "assistant_reply nunca lleva precios, montos, metrajes, unidad, piso ni disponibilidad, ni repite al bot."
+)
+
 
 COMMERCIAL_POLICY = (
     f" Preséntate como {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}, con trato cálido y sin presión. "
@@ -459,6 +497,7 @@ def response_usage_metadata(response_body, started_at):
     return {
         "model": response_body.get("model") if isinstance(response_body, dict) and isinstance(response_body.get("model"), str) else "unknown",
         "usage_available": isinstance(usage, dict),
+        "input_tokens": usage.get("input_tokens") if isinstance(usage, dict) else None,
         "output_tokens": usage.get("output_tokens") if isinstance(usage, dict) else None,
         "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details, dict) else None,
         "total_tokens": usage.get("total_tokens") if isinstance(usage, dict) else None,
@@ -499,20 +538,69 @@ def recent_conversation_turns(previous, limit=4, raw=False):
     return clean[-limit:]
 
 
-def build_observation_payload(previous, text):
+def last_bot_question(previous):
+    """The question that closed the bot's last message (what the client is answering)."""
+    turns = recent_conversation_turns(previous, limit=8, raw=True) if isinstance(previous, dict) else []
+    last = next((t["content"] for t in reversed(turns) if t["direction"] == "assistant"), "")
+    visible = customer_visible_reply(last)
+    questions = re.findall(r"¿[^¿?]*\?", visible)
+    return (questions[-1] if questions else visible[-200:]).strip()
+
+
+OBSERVATION_CARD_CHARS = 1800
+
+
+SHORT_ANSWERS = {"chau", "chao", "bye", "adios", "adiós", "nos vemos", "hasta luego"}
+
+
+def needs_unit_card(message):
+    """A bare yes, no, thanks or goodbye is classified without the project card (saves ~500 tokens)."""
+    cleaned = " ".join((message or "").casefold().split()).strip(".!¡ ")
+    if "?" in cleaned or len(cleaned.split()) > 4:
+        return True
+    return not (AFFIRMATIVE_PATTERN.match(cleaned) or THANKS_PATTERN.match(cleaned) or cleaned in SHORT_ANSWERS
+                or (NEGATIVE_PATTERN.match(cleaned) and "pero" not in cleaned))
+
+
+def shown_unit_card(previous):
+    """Project card of the single unit on screen, so the same call can answer about it."""
+    shown = latest_presented_references(previous)
+    if (previous or {}).get("stage") not in ("property_detail", "handoff") or len(shown) != 1:
+        return ""
+    store = get_inventory_store()
+    if not store:
+        return ""
+    try:
+        return clean_card_text(store.project_card(shown[0]))[:OBSERVATION_CARD_CHARS]
+    except (requests.RequestException, ValueError):
+        logger.warning("Project card unavailable for observation")
+        return ""
+
+
+def build_observation_payload(previous, text, raw_text=None):
     """Build a bounded request from durable criteria and recent dialogue."""
     context = {"stage": previous.get("stage") if isinstance(previous, dict) else None, "active_search_id": active_search_id(previous), "criteria": conversation_state(previous), "recent_turns": recent_conversation_turns(previous)}
+    conversational = conversacion_ia_activa()
+    if conversational:
+        context["ultima_pregunta_bot"] = last_bot_question(previous)
+        card = shown_unit_card(previous) if needs_unit_card(raw_text or text) else ""
+        if card:
+            context["ficha_proyecto"] = card
+        # The AI reads the message as typed: the normalizer folds 'ok gracias' into 'Sí'.
+        text = raw_text or text
     payload = {
         "model": OPENAI_MODEL, "store": False, "max_output_tokens": 1200,
         "instructions": "Analiza una conversación inmobiliaria en Lima. Los clientes escriben rápido, con faltas de ortografía, sin tildes, con abreviaturas y jerga peruana (depa = departamento, lucas = soles, k = mil, 'cuartos' o 'habitaciones' = dormitorios): interpreta lo que quieren decir según el contexto de la conversación y la última pregunta del asesor, como lo haría una persona. Extrae solo datos explícitos o altamente confiables. No inventes inmuebles, precios ni disponibilidad. Devuelve únicamente el JSON del esquema. NUEVA BÚSQUEDA es intent new_search. Para cambios usa criteria_actions: ADD agrega, UPDATE reemplaza y REMOVE elimina; 'ya no es necesario' es REMOVE, nunca una preferencia negativa. Estacionamiento/cochera se expresa únicamente con parking_required: 'con estacionamiento', 'con cochera', 'necesito estacionamiento' y 'necesito cochera' son true; 'sin estacionamiento', 'sin cochera', 'no necesito estacionamiento' y 'no necesito cochera' son false. Para cualquier valor explícito usa UPDATE parking_required con una lista unitaria; false significa que no es requisito y no una preferencia negativa. property_type debe usar solo valores canónicos: departamento es el valor para departamento y apartamento; nunca devuelvas apartamento. Un cambio explícito entre compra, alquiler y venta inicia un contexto independiente. assistant_reply debe ser natural, útil y máximo 180 caracteres, exclusivamente sobre búsqueda inmobiliaria, criterios, aclaraciones, compra, alquiler, venta o derivación a un asesor. No introduzcas humor, temas generales, recomendaciones no inmobiliarias ni contenido accesorio; nunca afirmes disponibilidad, recomendación ni características de una propiedad concreta. No preguntes un criterio ya presente en Contexto salvo ambigüedad o conflicto. user_question máximo 120 caracteres; máximo tres distritos y tres preferencias.",
-        "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA}},
+        "text": {"format": {"type": "json_schema", "name": "arenz_conversation_observation", "strict": True, "schema": OBSERVATION_SCHEMA_IA if conversational else OBSERVATION_SCHEMA}},
         "input": f"Contexto: {json.dumps(context, ensure_ascii=False)}\nMensaje: {text}",
     }
     payload["instructions"] += COMMERCIAL_POLICY
+    if conversational:
+        payload["instructions"] += CUSTOMER_REPLY_POLICY
     return payload
 
 
-def observe_conversation(sender, text, deterministic_reply, timings=None, previous=None, previous_loaded=False):
+def observe_conversation(sender, text, deterministic_reply, timings=None, previous=None, previous_loaded=False, raw_text=None):
     """Extract structured signals only; never controls the user-facing reply."""
     if not OPENAI_API_KEY:
         return None
@@ -523,7 +611,7 @@ def observe_conversation(sender, text, deterministic_reply, timings=None, previo
         except requests.RequestException:
             logger.warning("Conversation memory unavailable during observation")
     context_started_at = time.monotonic()
-    payload = build_observation_payload(previous, text)
+    payload = build_observation_payload(previous, text, raw_text)
     if timings is not None:
         timings["context_ms"] = round((time.monotonic() - context_started_at) * 1000)
     started_at = time.monotonic()
@@ -534,7 +622,7 @@ def observe_conversation(sender, text, deterministic_reply, timings=None, previo
         telemetry = response_usage_metadata(response_body, started_at)
         if timings is not None:
             timings["openai_ms"] = telemetry["latency_ms"]
-        logger.info("Conversation observation telemetry: model=%s usage_available=%s output_tokens=%s reasoning_tokens=%s total_tokens=%s latency_ms=%s", telemetry["model"], telemetry["usage_available"], telemetry["output_tokens"], telemetry["reasoning_tokens"], telemetry["total_tokens"], telemetry["latency_ms"])
+        logger.info("Conversation observation telemetry: model=%s usage_available=%s input_tokens=%s output_tokens=%s reasoning_tokens=%s total_tokens=%s latency_ms=%s", telemetry["model"], telemetry["usage_available"], telemetry["input_tokens"], telemetry["output_tokens"], telemetry["reasoning_tokens"], telemetry["total_tokens"], telemetry["latency_ms"])
         output_text = response_output_text(response_body)
         if not output_text:
             outputs = response_body.get("output", [])
@@ -1374,7 +1462,12 @@ def unit_question_reply(previous, item, user_text, observation):
     public = item["public"]
     found = re.match(r"^Proyecto (.*?); unidad (.*?)\.", public.get("public_description") or "")
     name = f"{found.group(1)} (unidad {found.group(2)})" if found else f"La unidad Ref. {public['public_reference']}"
-    card = clean_card_text(project_card_text(item))
+    if conversacion_ia_activa():
+        # The observation already read the project card: no second OpenAI call.
+        natural = ai_reply_text(observation, previous)
+        if natural:
+            return natural if "?" in natural else f"{natural} {UNIT_FOLLOW_UP}"
+    card = "" if conversacion_ia_activa() else clean_card_text(project_card_text(item))
     if card:
         brief = ai_text(
             f"Eres la asesora de {COMMERCIAL_BRAND}. Responde SOLO lo que el cliente pregunta sobre este departamento, en 1 a 3 "
@@ -1396,7 +1489,8 @@ def unit_question_reply(previous, item, user_text, observation):
                       "los planos y el brochure del proyecto, y resolver tus dudas por llamada.")
         reply = f"{name} está {where}. En mi ficha no tengo la dirección exacta ni los lugares cercanos. {follow} {ADVISOR_OFFER}"
     else:
-        natural = usable_assistant_reply(observation, "conversation") if isinstance(observation, dict) else None
+        natural = (None if conversacion_ia_activa() else
+                   usable_assistant_reply(observation, "conversation") if isinstance(observation, dict) else None)
         reply = natural or (f"De {name} tengo el precio, dormitorios, área, piso y fecha de entrega que te mostré. "
                             f"Para otros detalles, un asesor de {COMMERCIAL_BRAND} puede ayudarte. {ADVISOR_OFFER}")
     if reply.strip() == last_assistant_message(previous).strip():
@@ -2143,7 +2237,7 @@ def final_photos_text(store, reference, stage):
     return "Esas son todas las fotos que tengo de este proyecto. " + store.closing_question(reference)
 
 
-def photo_turn(store, phone, previous, text, reply, stage):
+def photo_turn(store, phone, previous, text, reply, stage, selection=None):
     """Plan the photos of this turn: {'stored', 'text', 'photos'}.
 
     'stored' is committed to memory, 'text' is sent first (None = no text message) and the last
@@ -2155,7 +2249,7 @@ def photo_turn(store, phone, previous, text, reply, stage):
       the final batch ends with the ficha's closing question (brochure or visit).
     """
     plan = {"stored": reply, "text": reply, "photos": []}
-    selection = selected_option(previous, text)
+    selection = selection or selected_option(previous, text)
     if selection and selection.get("reference") and not reply.startswith(PHOTOS_UNAVAILABLE_PREFIX):
         reference = selection["reference"]
         _, pending = pending_photos(store, phone, reference)
@@ -2246,6 +2340,345 @@ def notify_advisor_of_handoff(sender, stage, previous, observation, text, criter
         return 0
 
 
+# ---------------------------------------------------------------- CONVERSACION_IA=on
+# The AI classifies how the client answered the bot's last question (respuesta_cliente);
+# this layer turns that class into an action. Prices, areas, units and availability never
+# come from the AI: they come from the inventory, and AI text that carries them is dropped.
+
+ALTERNATIVES_REPLY = "Entendido. ¿Prefieres ampliar los distritos, revisar el presupuesto o que te contacte un asesor?"
+CLOSING_REPLY = ("Gracias por escribir a {brand}. Cuando quieras retomar tu búsqueda, ver más fotos o hablar con un asesor, "
+                 "escríbeme por aquí.")
+CLOSING_AFTER_HANDOFF_REPLY = "¡Gracias a ti! El asesor de {brand} te escribirá pronto por aquí."
+CHANGE_CRITERIA_REPLY = "Claro. ¿Qué te gustaría cambiar: el distrito, el presupuesto o los dormitorios?"
+REPETITION_REPLIES = {
+    "unit": "Tienes razón, disculpa la repetición. ¿Quieres ver otras opciones, más fotos o que un asesor te contacte?",
+    "listing": "Tienes razón, disculpa. ¿Quieres revisar alguna de estas opciones o cambiar algún criterio de búsqueda?",
+    "other": "Tienes razón, disculpa la repetición. ¿En qué más te puedo ayudar con tu búsqueda?",
+}
+UNIT_FOLLOW_UP = "¿Quieres saber algo más de este departamento o que te contacte un asesor?"
+YES_NO_OFFERS = {"mas_fotos", "brochure", "visita", "asesor", "entrega"}
+AI_TEXT_FORBIDDEN = re.compile(
+    r"(?:S/|US\$|\$|soles|d[oó]lares|\bUSD\b|\bPEN\b)\s*\.?\s*\d|\d[\d.,]*\s*(?:soles|d[oó]lares|lucas|mil\b|k\b|m²|m2\b|mts?\b|metros)"
+    r"|disponib|\bC2-|\bref\.|\bunidad(?:es)?\s+(?:n[°º.]?\s*)?\d|\d+\s*(?:dormitorios|dorm\b|ba[ñn]os|cuartos|habitaciones)"
+    r"|\bpiso\s+\d|tenemos disponible|encontr[eé]|te mostrar[eé] las opciones", re.IGNORECASE)
+
+
+def last_bot_message(previous):
+    turns = recent_conversation_turns(previous, limit=8, raw=True) if isinstance(previous, dict) else []
+    return next((t["content"] for t in reversed(turns) if t["direction"] == "assistant"), "")
+
+
+def bot_offer(previous):
+    """What the bot's last message asked for, so a yes/no can be read against it."""
+    last = last_bot_message(previous)
+    if last.startswith(("Entendido, no te contactará un asesor", "Gracias por escribir a")) or CLOSING_THANKS_REPLY in last:
+        return "cerrada"
+    if MORE_PHOTOS_QUESTION in last:
+        return "mas_fotos"
+    if BROCHURE_OFFER in last:
+        return "brochure"
+    if VISIT_OFFER in last:
+        return "visita"
+    if "te contacte un asesor" in last:
+        return "asesor"
+    if "¿Te muestro las de entrega en los próximos años?" in last or "¿Te muestro las de entrega inmediata?" in last:
+        return "entrega"
+    if "Responde con el número de la opción" in last or REPETITION_REPLIES["listing"] in last:
+        return "listado"
+    return "otra"
+
+
+# Lo que convierte un "no" en un pedido: "no, pero mándame fotos", "no gracias, ¿tiene cochera?".
+REQUEST_AFTER_NO = re.compile(r"\bpero\b|\?|\b(?:foto|opci[oó]n|otra|otro|mejor|precio|cu[aá]nto|d[oó]nde|cochera|estacionamiento|"
+                              r"visita|asesor|llam|ficha|brochure|plano|distrito|presupuesto|dormitorio)|\d", re.IGNORECASE)
+
+
+def plain_refusal(text):
+    """'no', 'nel', 'todavía no', 'no gracias, así está bien': un rechazo sin ningún pedido."""
+    normalized = " ".join((text or "").casefold().split()).strip(".!¡ ")
+    found = NEGATIVE_PATTERN.match(normalized)
+    return bool(found) and not REQUEST_AFTER_NO.search(normalized[found.end():])
+
+
+def corrected_reply_class(reply_class, text):
+    """Corrige dos confusiones que la IA real tuvo en la prueba del 02/11 (scripts/probar_ia_real.py).
+
+    - Ante una oferta, un "no" simple a veces llega con el pedido de la oferta ("todavía no" al asesor ->
+      rechaza/asesor, "nop" a más fotos -> rechaza/fotos) y el bot hacía justo lo rechazado.
+    - "no, mejor la 2" llegaba como otras_opciones (con opcion 2) y se mostraban más opciones.
+    - Una pregunta por un dato de la unidad llegaba como rechaza u otra sin pedido ("no gracias, pero
+      ¿tiene cochera?", "¿y cuánto cuesta?") y el bot cerraba o no la respondía.
+    """
+    if not reply_class:
+        return reply_class
+    kind, request, fact, option = reply_class["tipo"], reply_class["pedido"], reply_class["dato"], reply_class["opcion"]
+    if kind != "cierra" and plain_refusal(text):
+        return {**reply_class, "tipo": "rechaza", "pedido": "ninguno", "dato": "ninguno", "opcion": None}
+    # "no, mejor la 2" llegaba a veces como otras_opciones con opcion 2: el número que escribió manda.
+    if option and request in ("ninguno", "otras_opciones") and re.search(rf"(?<!\d){option}(?!\d)", text or ""):
+        return {**reply_class, "tipo": "pide_otra_cosa" if kind in ("rechaza", "otra") else kind, "pedido": "opcion"}
+    if kind in ("rechaza", "otra") and fact != "ninguno" and request in ("ninguno", "dato_unidad"):
+        return {**reply_class, "tipo": "pide_otra_cosa", "pedido": "dato_unidad"}
+    return reply_class
+
+
+def customer_reply(observation):
+    """respuesta_cliente from the observation, cleaned; None when the AI did not classify."""
+    data = observation.get("respuesta_cliente") if isinstance(observation, dict) else None
+    if not isinstance(data, dict) or data.get("tipo") not in CUSTOMER_REPLY_TYPES:
+        return None
+    option = data.get("opcion")
+    return {"tipo": data["tipo"],
+            "pedido": data.get("pedido") if data.get("pedido") in CUSTOMER_REQUESTS else "ninguno",
+            "opcion": option if isinstance(option, int) and not isinstance(option, bool) and 0 < option < 100 else None,
+            "dato": data.get("dato") if data.get("dato") in UNIT_FACTS_ASKED else "ninguno"}
+
+
+def ai_reply_text(observation, previous):
+    """The AI's own sentence, only if it states no price, area, unit or availability and is not a repeat."""
+    reply = observation.get("assistant_reply") if isinstance(observation, dict) else None
+    if not isinstance(reply, str):
+        return None
+    reply = reply.strip()
+    if not reply or len(reply) > 300 or reply.count("?") > 1 or AI_TEXT_FORBIDDEN.search(reply):
+        return None
+    last = customer_visible_reply(last_bot_message(previous)).casefold()
+    if last and difflib.SequenceMatcher(None, last, reply.casefold()).ratio() > 0.8:
+        return None
+    return reply
+
+
+def unit_display_name(item):
+    found = re.match(r"^Proyecto (.*?); unidad (.*?)\.", item["public"].get("public_description") or "")
+    return f"{found.group(1)} (unidad {found.group(2)})" if found else "Esta unidad"
+
+
+def unit_fact_reply(item, fact):
+    """A unit fact written from the inventory record, never by the AI; None if the record lacks it."""
+    public = item["public"]
+    name = unit_display_name(item)
+    description = public.get("public_description") or ""
+    if fact == "estacionamiento":
+        return parking_question_reply(item)
+    if fact == "precio":
+        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
+        sentence = f"{name} tiene un precio de {symbol} {float(public['price_amount']):,.0f}."
+    elif fact == "area":
+        area = public.get("area_total_m2") or public.get("area_m2")
+        sentence = f"{name} tiene {float(area):g} m²." if area else None
+    elif fact in ("dormitorios", "banos"):
+        parts = []
+        if public.get("bedrooms") is not None:
+            parts.append(f"{float(public['bedrooms']):g} dormitorios")
+        if public.get("bathrooms") is not None:
+            parts.append(f"{float(public['bathrooms']):g} baños")
+        sentence = f"{name} tiene {' y '.join(parts)}." if parts else None
+    elif fact == "piso":
+        floor = re.search(r"\bPiso ([^.]+)\.", description)
+        sentence = f"{name} está en el piso {floor.group(1)}." if floor else None
+    elif fact == "entrega":
+        when = re.search(r"Entrega según fuente: ([^.]+)\.", description)
+        sentence = (f"{name} es de entrega inmediata." if item_delivery(item) == "inmediata" else
+                    f"{name} tiene entrega prevista para {when.group(1)}." if when else
+                    f"La fecha de entrega de {name} está por confirmar.")
+    else:
+        return None
+    return f"{sentence} {UNIT_FOLLOW_UP}" if sentence else None
+
+
+def option_reference(previous, number):
+    """Reference shown as option `number` in any recent listing (the ficha in between does not hide it)."""
+    for turn in reversed(recent_conversation_turns(previous, limit=8, raw=True)):
+        if turn["direction"] == "assistant":
+            pairs = dict(re.findall(r"(?m)^(\d{1,2})\.\s[^\n]*\n[^\n]*?\bRef\.\s*([A-Za-z0-9-]+)", turn["content"]))
+            if str(number) in pairs:
+                return pairs[str(number)]
+    return None
+
+
+AMOUNT_IN_TEXT = re.compile(r"\d|\b(?:mil|mill[oó]n|millones|lucas|k)\b", re.IGNORECASE)
+
+
+def without_invented_budget(observation, text, previous=None):
+    """Sin una cifra en el mensaje no hay presupuesto nuevo: ante 'ta caro' la IA real puso a veces el precio de la
+    unidad (S/ 289,460) como presupuesto máximo, y el bot volvía a mostrar esa misma unidad. Se conserva el presupuesto
+    que ya se conocía (la IA lo repite en slot_updates y una búsqueda nueva lo necesita)."""
+    if not isinstance(observation, dict) or AMOUNT_IN_TEXT.search(text or ""):
+        return observation
+    known = (conversation_state(previous) or {}).get("budget_max") if isinstance(previous, dict) else None
+    actions = [a for a in observation.get("criteria_actions") or [] if not (isinstance(a, dict) and a.get("field") == "budget_max")]
+    slots = observation.get("slot_updates")
+    if isinstance(slots, dict) and slots.get("budget_max") not in (None, known):
+        slots = {**slots, "budget_max": known}
+    return {**observation, "criteria_actions": actions, "slot_updates": slots}
+
+
+def changes_criteria(criteria, actions):
+    """True solo si las acciones cambian algo: la IA a veces repite un criterio conocido ('UPDATE property_type
+    departamento' en 'no, mejor la 2') y eso mandaba el turno a las reglas, que leían el 'no' como 'no más fotos'."""
+    if not actions:
+        return False
+    try:
+        updated = apply_criteria_actions(copy.deepcopy(criteria), actions)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return True
+    fields = {action.get("field") for action in actions if isinstance(action, dict)}
+    return any(updated.get(field) != criteria.get(field) for field in fields) or not fields
+
+
+def conversational_turn(sender, previous, text, observation, inventory_store):
+    """Act on the client's answer to the bot's last question.
+
+    Returns (result, text): a complete turn, or (None, text) to run the rules, where text may be
+    rewritten to the canonical form the rules already understand ('Sí', 'más opciones'...).
+    """
+    reply_class = customer_reply(observation)
+    greeting = re.sub(r"[^\w\s]", "", (text or "").casefold()).strip() in {"hola", "buenos días", "buenos dias", "buenas tardes", "buenas noches"}
+    if not reply_class or greeting or customer_pause_reply(text) or is_new_search_request(text):
+        return None, text
+    reply_class = corrected_reply_class(reply_class, text)
+    kind, request, offer = reply_class["tipo"], reply_class["pedido"], bot_offer(previous)
+    stage = (previous or {}).get("stage") or "conversation"
+    shown = latest_presented_references(previous)
+    unit = shown[0] if len(shown) == 1 and stage in ("property_detail", "handoff") else None
+    neutral = {**observation, "intent": "confirmation", "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}
+    turn_state, criteria = search_state_for_turn(previous, neutral, text)
+    criteria = dict(criteria)
+    slots = validated_slot_updates(observation.get("slot_updates"))
+    # New search data ("ya te dije, en Surco") goes through the rules, which store it. Only explicit actions or
+    # core fields count: the model tends to echo known criteria and loose preferences in every turn.
+    changes_search = changes_criteria(criteria, observation.get("criteria_actions")) or any(
+        slots.get(key) not in (None, [], "") and slots.get(key) != criteria.get(key)
+        for key in ("districts", "budget_max", "currency", "bedrooms"))
+
+    def matches():
+        if inventory_store and inventory_ready(criteria):
+            return inventory_store.find_matches(with_sale_defaults(criteria))
+        return None, None
+
+    def done(reply, new_stage, summary, reference=None, plan=None, found=(None, None)):
+        stored = reply + (photo_reference_marker(reference) if reference and reference not in reply else "")
+        if found == (None, None):
+            found = matches()
+        return ({"observation": observation, "search_state": turn_state, "criteria": criteria, "stage": new_stage,
+                 "summary": summary, "plan": plan or {"stored": stored, "text": reply, "photos": []},
+                 "inventory_matches": found[0], "inventory_cutoff": found[1]}, text)
+
+    if kind == "cierra":
+        if offer == "cerrada":
+            return done(CLOSING_THANKS_REPLY, stage, "Cliente agradece tras el cierre.")
+        if stage == "handoff":
+            return done(CLOSING_AFTER_HANDOFF_REPLY.format(brand=COMMERCIAL_BRAND), "handoff", "Cliente se despide; derivación ya registrada.", unit)
+        return done(CLOSING_REPLY.format(brand=COMMERCIAL_BRAND), "awaiting_customer", "Cliente cierra la conversación; sin seguimiento automático.", unit)
+
+    # Pedir más opciones, fotos o elegir una opción no es cambiar la búsqueda, aunque la IA añada algo como la
+    # preferencia 'opcion_2' o marque una búsqueda nueva ("no, pero muéstrame otra" llegó a reiniciar la búsqueda).
+    if changes_search and kind in ("queja_repeticion", "rechaza", "pide_otra_cosa") and request not in ("opcion", "otras_opciones", "fotos"):
+        return None, text
+
+    if kind == "queja_repeticion":
+        context = "unit" if unit else "listing" if offer == "listado" or (shown and stage == "qualified") else "other"
+        reply = ai_reply_text(observation, previous) or REPETITION_REPLIES[context]
+        return done(reply, stage, "Cliente señala que el bot repite; no se repite la información.", unit)
+
+    if kind == "rechaza" and request == "ninguno":
+        if offer in ("brochure", "visita", "asesor"):
+            return done(OFFER_DECLINED_REPLY.format(brand=COMMERCIAL_BRAND), "awaiting_customer",
+                        "Cliente no desea asesor por ahora; conversación cerrada sin seguimiento automático.")
+        if offer == "mas_fotos" and unit:
+            if stage == "handoff":
+                closing = "Perfecto. El asesor que te contactará puede resolver cualquier detalle."
+            else:
+                try:
+                    closing = "Perfecto. " + (inventory_store.closing_question(unit) if inventory_store else ADVISOR_OFFER)
+                except requests.RequestException:
+                    closing = "Perfecto. " + ADVISOR_OFFER
+            return done(closing, stage, "Cliente no quiere más fotos; se pasa a la pregunta de cierre.", unit)
+        if offer in ("entrega", "listado"):
+            return done(ALTERNATIVES_REPLY, "qualified", "Cliente rechaza las opciones ofrecidas; se proponen alternativas.")
+        if offer == "cerrada":
+            return done(CLOSING_THANKS_REPLY, stage, "Conversación ya cerrada.")
+        return None, text
+
+    if kind == "acepta":
+        return None, ("Sí" if offer in YES_NO_OFFERS else text)
+
+    if kind in ("pide_otra_cosa", "rechaza"):
+        if request == "otras_opciones":
+            return None, "Muéstrame más opciones"
+        if request == "fotos":
+            return None, "Envíame más fotos"
+        if request == "asesor":
+            return None, ("Sí" if offer in ("brochure", "visita", "asesor") else "Quiero hablar con un asesor")
+        if request == "opcion" and reply_class["opcion"]:
+            reference = option_reference(previous, reply_class["opcion"])
+            found = matches()
+            item = next((m for m in found[0] or [] if m["public"]["public_reference"] == reference), None)
+            if not item:
+                return None, text
+            reply = full_unit_reply(item)
+            selection = {"index": reply_class["opcion"], "reference": reference, "count": len(shown)}
+            try:
+                plan = photo_turn(inventory_store, sender, previous, text, reply, "property_detail", selection)
+            except requests.RequestException:
+                plan = None
+            return done(reply, "property_detail", f"Detalle de la referencia elegida {reference}.", plan=plan, found=found)
+        if request == "dato_unidad" and unit:
+            found = matches()
+            item = next((m for m in found[0] or [] if m["public"]["public_reference"] == unit), None)
+            reply = unit_fact_reply(item, reply_class["dato"]) if item else None
+            if reply:
+                return done(reply, stage, f"Dato de la unidad {unit} desde el inventario.", unit, found=found)
+            return None, text
+        if request == "cambiar_criterios":
+            reply = ai_reply_text(observation, previous) or CHANGE_CRITERIA_REPLY
+            return done(reply, stage, "Cliente quiere cambiar la búsqueda; se pregunta qué cambiar.", unit)
+    return None, text
+
+
+def plan_turn(sender, previous, text, observation, fallback, inventory_store):
+    """Decide one turn (reply, criteria, stage and photos) from the AI observation.
+
+    Reads inventory and may ask OpenAI for the ficha or a unit answer; persistence and
+    WhatsApp delivery stay in the webhook. With CONVERSACION_IA=on the client's answer to
+    the bot's last question is acted on first (conversational_turn).
+    """
+    if conversacion_ia_activa():
+        observation = without_invented_budget(observation, text, previous)
+        result, text = conversational_turn(sender, previous, text, observation, inventory_store)
+        if result:
+            return result
+    return rules_turn(sender, previous, text, observation, fallback, inventory_store)
+
+
+def rules_turn(sender, previous, text, observation, fallback, inventory_store):
+    """The deterministic flow (the whole behavior while CONVERSACION_IA is off)."""
+    # One effective observation governs reply, search selection, and persistence.
+    # This prevents an explicit operation from updating the prior search only in
+    # the response layer while persistence still sees the unnormalized input.
+    effective_observation = with_explicit_operation(observation, text)
+    if is_more_request(text) and isinstance(effective_observation, dict) and effective_observation.get("intent") == "new_search":
+        # "Muéstrame otro departamento" continues the same search; the model reads it as a new one.
+        effective_observation = {**effective_observation, "intent": "property_search", "criteria_actions": []}
+    if selected_option(previous, text) or is_selected_parking_question(previous, text):
+        effective_observation = {**(effective_observation or {}), "intent": "confirmation",
+                                 "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}
+    turn_state, turn_prior_criteria = search_state_for_turn(previous, effective_observation, text)
+    reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria)
+    inventory_matches, inventory_cutoff = None, None
+    if inventory_store and inventory_ready(criteria):
+        inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
+        reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
+    plan = {"stored": reply, "text": reply, "photos": []}
+    if inventory_store:
+        try:
+            plan = photo_turn(inventory_store, sender, previous, text, reply, stage)
+        except requests.RequestException:
+            plan = {"stored": reply, "text": reply, "photos": []}
+    return {"observation": effective_observation, "search_state": turn_state, "criteria": criteria, "stage": stage,
+            "summary": summary, "plan": plan, "inventory_matches": inventory_matches, "inventory_cutoff": inventory_cutoff}
+
+
 def valid_meta_signature(raw_body, signature):
     if not APP_SECRET or not signature or not signature.startswith("sha256="): return False
     expected = "sha256=" + hmac.new(APP_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
@@ -2288,6 +2721,7 @@ def receive_webhook():
                 continue
             timings["dedupe_ms"] = round((time.monotonic() - started_at) * 1000)
             sender, text = message["from"], message["text"]["body"]
+            raw_text = text
             fallback = generate_reply(sender, text)
             started_at = time.monotonic()
             try:
@@ -2298,30 +2732,12 @@ def receive_webhook():
             timings["session_read_ms"] = round((time.monotonic() - started_at) * 1000)
             # Clients type fast, with typos and slang; every rule below reads the cleaned message.
             text = resume_answer_as_command(previous, normalize_client_text(text))
-            observation = observe_conversation(sender, text, fallback, timings, previous, True)
-            # One effective observation governs reply, search selection, and persistence.
-            # This prevents an explicit operation from updating the prior search only in
-            # the response layer while persistence still sees the unnormalized input.
-            effective_observation = with_explicit_operation(observation, text)
-            if is_more_request(text) and isinstance(effective_observation, dict) and effective_observation.get("intent") == "new_search":
-                # "Muéstrame otro departamento" continues the same search; the model reads it as a new one.
-                effective_observation = {**effective_observation, "intent": "property_search", "criteria_actions": []}
-            if selected_option(previous, text) or is_selected_parking_question(previous, text):
-                effective_observation = {**(effective_observation or {}), "intent": "confirmation",
-                                         "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}
-            turn_state, turn_prior_criteria = search_state_for_turn(previous, effective_observation, text)
-            reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria)
+            observation = observe_conversation(sender, text, fallback, timings, previous, True, raw_text=raw_text)
             inventory_store = get_inventory_store()
-            inventory_matches, inventory_cutoff = None, None
-            if inventory_store and inventory_ready(criteria):
-                inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
-                reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
-            plan = {"stored": reply, "text": reply, "photos": []}
-            if inventory_store:
-                try:
-                    plan = photo_turn(inventory_store, sender, previous, text, reply, stage)
-                except requests.RequestException:
-                    plan = {"stored": reply, "text": reply, "photos": []}
+            turn = plan_turn(sender, previous, text, observation, fallback, inventory_store)
+            effective_observation, turn_state, criteria, stage, summary, plan = (
+                turn["observation"], turn["search_state"], turn["criteria"], turn["stage"], turn["summary"], turn["plan"])
+            inventory_matches, inventory_cutoff = turn["inventory_matches"], turn["inventory_cutoff"]
             reply = plan["stored"]
             started_at = time.monotonic()
             if memory:

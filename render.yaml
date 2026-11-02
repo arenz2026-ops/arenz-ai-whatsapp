@@ -21,6 +21,9 @@ services:
         sync: false
       - key: OPENAI_MODEL
         value: gpt-4.1-mini
+      # Rediseño conversacional: se enciende desde el panel de Render con "on"; sin valor queda apagado.
+      - key: CONVERSACION_IA
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
