@@ -1,4 +1,5 @@
 """Banco de conversaciones difíciles (ver tests/banco_conversaciones.py) e interruptor CONVERSACION_IA."""
+import logging
 import os
 import unittest
 from unittest import mock
@@ -33,17 +34,34 @@ class InterruptorConversacionIATest(unittest.TestCase):
                              (encendido.guardado, encendido.etapa, encendido.criterios, encendido.fotos), caso["id"])
 
 
+def ejecutar_sin_logs(caso):
+    logging.disable(logging.INFO)
+    try:
+        return banco.ejecutar(caso)
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+class InvariantesTest(unittest.TestCase):
+    """Se revisan en los 40 casos, también en los de fallo esperado, para que ese fallo no esconda otro error."""
+
+    def test_invariantes_en_todos_los_casos(self):
+        for caso in banco.CASOS:
+            with self.subTest(caso=caso["id"]):
+                resultado = ejecutar_sin_logs(caso)
+                observaciones = [p for p in resultado.llamadas
+                                 if (p.get("text") or {}).get("format", {}).get("name") == "arenz_conversation_observation"]
+                self.assertEqual(len(observaciones), 1, "debe haber una sola observación de la IA por mensaje")
+                self.assertTrue(banco.precios_y_areas_validos(resultado, caso),
+                                f"precio o área que no viene del inventario: {resultado.visible!r}")
+                self.assertTrue(resultado.visible.strip() or resultado.fotos, "el cliente no recibe nada")
+
+
 class ConversacionDificilTest(unittest.TestCase):
     """Un método por caso. Los casos con hoy_falla quedan como fallo esperado hasta la etapa 2."""
 
     def revisar(self, caso):
-        with self.assertLogs("arenz", level="INFO"):
-            resultado = banco.ejecutar(caso)
-        observaciones = [p for p in resultado.llamadas
-                         if (p.get("text") or {}).get("format", {}).get("name") == "arenz_conversation_observation"]
-        self.assertEqual(len(observaciones), 1, "debe haber una sola observación de la IA por mensaje")
-        self.assertTrue(banco.precios_y_areas_validos(resultado, caso),
-                        f"precio o área que no viene del inventario: {resultado.visible!r}")
+        resultado = ejecutar_sin_logs(caso)
         fallas = [descripcion for descripcion, cumple in caso["espera"] if not cumple(resultado, caso)]
         self.assertEqual(fallas, [], f"{caso['id']}: {resultado!r}")
 

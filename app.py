@@ -2258,7 +2258,8 @@ def notify_advisor_of_handoff(sender, stage, previous, observation, text, criter
 def plan_turn(sender, previous, text, observation, fallback, inventory_store):
     """Decide one turn (reply, criteria, stage and photos) from the AI observation.
 
-    Only reads inventory; persistence and WhatsApp delivery stay in the webhook.
+    Reads inventory and may ask OpenAI for the ficha or a unit answer; persistence and
+    WhatsApp delivery stay in the webhook.
     """
     # One effective observation governs reply, search selection, and persistence.
     # This prevents an explicit operation from updating the prior search only in
