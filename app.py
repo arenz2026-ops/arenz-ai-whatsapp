@@ -37,6 +37,14 @@ GRAPH_API_VERSION = "v26.0"
 # Render injects RENDER_GIT_COMMIT. Without it a deploy can only be assumed, never
 # verified, so /health reports the short SHA it is actually running.
 SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
+
+
+def conversacion_ia_activa():
+    """Interruptor CONVERSACION_IA (on/off, por defecto off). En off el bot conserva el comportamiento anterior."""
+    return os.getenv("CONVERSACION_IA", "off").strip().casefold() in {"on", "1", "true", "si", "sí"}
+
+
+logger.info("CONVERSACION_IA=%s", "on" if conversacion_ia_activa() else "off")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
 COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "C2 Inmobiliaria")
 INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}. Te ayudo a encontrar tu departamento ideal. ¿En qué distrito o distritos lo buscas?"
@@ -459,6 +467,7 @@ def response_usage_metadata(response_body, started_at):
     return {
         "model": response_body.get("model") if isinstance(response_body, dict) and isinstance(response_body.get("model"), str) else "unknown",
         "usage_available": isinstance(usage, dict),
+        "input_tokens": usage.get("input_tokens") if isinstance(usage, dict) else None,
         "output_tokens": usage.get("output_tokens") if isinstance(usage, dict) else None,
         "reasoning_tokens": details.get("reasoning_tokens") if isinstance(details, dict) else None,
         "total_tokens": usage.get("total_tokens") if isinstance(usage, dict) else None,
@@ -534,7 +543,7 @@ def observe_conversation(sender, text, deterministic_reply, timings=None, previo
         telemetry = response_usage_metadata(response_body, started_at)
         if timings is not None:
             timings["openai_ms"] = telemetry["latency_ms"]
-        logger.info("Conversation observation telemetry: model=%s usage_available=%s output_tokens=%s reasoning_tokens=%s total_tokens=%s latency_ms=%s", telemetry["model"], telemetry["usage_available"], telemetry["output_tokens"], telemetry["reasoning_tokens"], telemetry["total_tokens"], telemetry["latency_ms"])
+        logger.info("Conversation observation telemetry: model=%s usage_available=%s input_tokens=%s output_tokens=%s reasoning_tokens=%s total_tokens=%s latency_ms=%s", telemetry["model"], telemetry["usage_available"], telemetry["input_tokens"], telemetry["output_tokens"], telemetry["reasoning_tokens"], telemetry["total_tokens"], telemetry["latency_ms"])
         output_text = response_output_text(response_body)
         if not output_text:
             outputs = response_body.get("output", [])
@@ -2246,6 +2255,37 @@ def notify_advisor_of_handoff(sender, stage, previous, observation, text, criter
         return 0
 
 
+def plan_turn(sender, previous, text, observation, fallback, inventory_store):
+    """Decide one turn (reply, criteria, stage and photos) from the AI observation.
+
+    Only reads inventory; persistence and WhatsApp delivery stay in the webhook.
+    """
+    # One effective observation governs reply, search selection, and persistence.
+    # This prevents an explicit operation from updating the prior search only in
+    # the response layer while persistence still sees the unnormalized input.
+    effective_observation = with_explicit_operation(observation, text)
+    if is_more_request(text) and isinstance(effective_observation, dict) and effective_observation.get("intent") == "new_search":
+        # "Muéstrame otro departamento" continues the same search; the model reads it as a new one.
+        effective_observation = {**effective_observation, "intent": "property_search", "criteria_actions": []}
+    if selected_option(previous, text) or is_selected_parking_question(previous, text):
+        effective_observation = {**(effective_observation or {}), "intent": "confirmation",
+                                 "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}
+    turn_state, turn_prior_criteria = search_state_for_turn(previous, effective_observation, text)
+    reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria)
+    inventory_matches, inventory_cutoff = None, None
+    if inventory_store and inventory_ready(criteria):
+        inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
+        reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
+    plan = {"stored": reply, "text": reply, "photos": []}
+    if inventory_store:
+        try:
+            plan = photo_turn(inventory_store, sender, previous, text, reply, stage)
+        except requests.RequestException:
+            plan = {"stored": reply, "text": reply, "photos": []}
+    return {"observation": effective_observation, "search_state": turn_state, "criteria": criteria, "stage": stage,
+            "summary": summary, "plan": plan, "inventory_matches": inventory_matches, "inventory_cutoff": inventory_cutoff}
+
+
 def valid_meta_signature(raw_body, signature):
     if not APP_SECRET or not signature or not signature.startswith("sha256="): return False
     expected = "sha256=" + hmac.new(APP_SECRET.encode(), raw_body, hashlib.sha256).hexdigest()
@@ -2299,29 +2339,11 @@ def receive_webhook():
             # Clients type fast, with typos and slang; every rule below reads the cleaned message.
             text = resume_answer_as_command(previous, normalize_client_text(text))
             observation = observe_conversation(sender, text, fallback, timings, previous, True)
-            # One effective observation governs reply, search selection, and persistence.
-            # This prevents an explicit operation from updating the prior search only in
-            # the response layer while persistence still sees the unnormalized input.
-            effective_observation = with_explicit_operation(observation, text)
-            if is_more_request(text) and isinstance(effective_observation, dict) and effective_observation.get("intent") == "new_search":
-                # "Muéstrame otro departamento" continues the same search; the model reads it as a new one.
-                effective_observation = {**effective_observation, "intent": "property_search", "criteria_actions": []}
-            if selected_option(previous, text) or is_selected_parking_question(previous, text):
-                effective_observation = {**(effective_observation or {}), "intent": "confirmation",
-                                         "slot_updates": {}, "criteria_actions": [], "criteria_change": False, "handoff": False}
-            turn_state, turn_prior_criteria = search_state_for_turn(previous, effective_observation, text)
-            reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria)
             inventory_store = get_inventory_store()
-            inventory_matches, inventory_cutoff = None, None
-            if inventory_store and inventory_ready(criteria):
-                inventory_matches, inventory_cutoff = inventory_store.find_matches(with_sale_defaults(criteria))
-                reply, criteria, stage, summary = progressive_reply(previous, effective_observation, fallback, text, turn_prior_criteria, inventory_matches)
-            plan = {"stored": reply, "text": reply, "photos": []}
-            if inventory_store:
-                try:
-                    plan = photo_turn(inventory_store, sender, previous, text, reply, stage)
-                except requests.RequestException:
-                    plan = {"stored": reply, "text": reply, "photos": []}
+            turn = plan_turn(sender, previous, text, observation, fallback, inventory_store)
+            effective_observation, turn_state, criteria, stage, summary, plan = (
+                turn["observation"], turn["search_state"], turn["criteria"], turn["stage"], turn["summary"], turn["plan"])
+            inventory_matches, inventory_cutoff = turn["inventory_matches"], turn["inventory_cutoff"]
             reply = plan["stored"]
             started_at = time.monotonic()
             if memory:

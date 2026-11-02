@@ -15,6 +15,7 @@ Configúralas en Render o localmente, nunca en Git.
 | `APP_SECRET` | App Secret Meta para `X-Hub-Signature-256`. |
 | `OPENAI_API_KEY` | Clave de servidor para IA; si falta, usa fallback. |
 | `OPENAI_MODEL` | Opcional; por defecto `gpt-4.1-mini`. |
+| `CONVERSACION_IA` | Opcional; `on` u `off` (por defecto `off`). Enciende el rediseño en que la IA clasifica la respuesta del cliente a la última pregunta del bot. En `off` el bot funciona como antes. |
 | `SUPABASE_URL` | URL del proyecto Supabase para persistencia durable en Render. |
 | `SUPABASE_KEY` | Clave de servidor Supabase; nunca la expongas en el cliente o Git. |
 | `LEADS_DB_PATH` | SQLite solo como fallback local. |
@@ -36,6 +37,10 @@ $env:LEADS_DB_PATH = "$PWD\leads.db"
 python app.py
 python -m unittest discover -s tests -v
 ```
+
+El banco de conversaciones difíciles (`tests/banco_conversaciones.py`) simula OpenAI y el inventario:
+no necesita red. Los casos que el bot aún resuelve mal figuran como fallo esperado (`hoy_falla`).
+Para medir los tokens que se envían a OpenAI en cada caso: `python scripts/medir_tokens.py`.
 
 ## Render
 
