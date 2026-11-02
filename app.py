@@ -102,6 +102,8 @@ CUSTOMER_REPLY_POLICY = (
     "respuestas de distrito, presupuesto, dormitorios, pago o plazo). opcion: número elegido. dato: dato de la unidad "
     "preguntado. Con ficha_proyecto y dato ubicacion, areas_comunes u otro, responde en assistant_reply con la ficha "
     "(máx. 280 caracteres). En queja_repeticion discúlpate y ofrece otro paso (otra opción, fotos o asesor). "
+    "pedido es lo que el Mensaje pide, no lo que el bot ofreció: un 'no' o 'todavía no' a una oferta es rechaza con pedido "
+    "ninguno. Si pregunta un dato de la unidad ('¿tiene cochera?', '¿cuánto cuesta?') es pide_otra_cosa con pedido dato_unidad. "
     "assistant_reply nunca lleva precios, montos, metrajes, unidad, piso ni disponibilidad, ni repite al bot."
 )
 
@@ -2386,6 +2388,40 @@ def bot_offer(previous):
     return "otra"
 
 
+# Lo que convierte un "no" en un pedido: "no, pero mándame fotos", "no gracias, ¿tiene cochera?".
+REQUEST_AFTER_NO = re.compile(r"\bpero\b|\?|\b(?:foto|opci[oó]n|otra|otro|mejor|precio|cu[aá]nto|d[oó]nde|cochera|estacionamiento|"
+                              r"visita|asesor|llam|ficha|brochure|plano|distrito|presupuesto|dormitorio)|\d", re.IGNORECASE)
+
+
+def plain_refusal(text):
+    """'no', 'nel', 'todavía no', 'no gracias, así está bien': un rechazo sin ningún pedido."""
+    normalized = " ".join((text or "").casefold().split()).strip(".!¡ ")
+    found = NEGATIVE_PATTERN.match(normalized)
+    return bool(found) and not REQUEST_AFTER_NO.search(normalized[found.end():])
+
+
+def corrected_reply_class(reply_class, text):
+    """Corrige dos confusiones que la IA real tuvo en la prueba del 02/11 (scripts/probar_ia_real.py).
+
+    - Ante una oferta, un "no" simple a veces llega con el pedido de la oferta ("todavía no" al asesor ->
+      rechaza/asesor, "nop" a más fotos -> rechaza/fotos) y el bot hacía justo lo rechazado.
+    - "no, mejor la 2" llegaba como otras_opciones (con opcion 2) y se mostraban más opciones.
+    - Una pregunta por un dato de la unidad llegaba como rechaza u otra sin pedido ("no gracias, pero
+      ¿tiene cochera?", "¿y cuánto cuesta?") y el bot cerraba o no la respondía.
+    """
+    if not reply_class:
+        return reply_class
+    kind, request, fact, option = reply_class["tipo"], reply_class["pedido"], reply_class["dato"], reply_class["opcion"]
+    if kind != "cierra" and plain_refusal(text):
+        return {**reply_class, "tipo": "rechaza", "pedido": "ninguno", "dato": "ninguno", "opcion": None}
+    # "no, mejor la 2" llegaba a veces como otras_opciones con opcion 2: el número que escribió manda.
+    if option and request in ("ninguno", "otras_opciones") and re.search(rf"(?<!\d){option}(?!\d)", text or ""):
+        return {**reply_class, "tipo": "pide_otra_cosa" if kind in ("rechaza", "otra") else kind, "pedido": "opcion"}
+    if kind in ("rechaza", "otra") and fact != "ninguno" and request in ("ninguno", "dato_unidad"):
+        return {**reply_class, "tipo": "pide_otra_cosa", "pedido": "dato_unidad"}
+    return reply_class
+
+
 def customer_reply(observation):
     """respuesta_cliente from the observation, cleaned; None when the AI did not classify."""
     data = observation.get("respuesta_cliente") if isinstance(observation, dict) else None
@@ -2460,6 +2496,36 @@ def option_reference(previous, number):
     return None
 
 
+AMOUNT_IN_TEXT = re.compile(r"\d|\b(?:mil|mill[oó]n|millones|lucas|k)\b", re.IGNORECASE)
+
+
+def without_invented_budget(observation, text, previous=None):
+    """Sin una cifra en el mensaje no hay presupuesto nuevo: ante 'ta caro' la IA real puso a veces el precio de la
+    unidad (S/ 289,460) como presupuesto máximo, y el bot volvía a mostrar esa misma unidad. Se conserva el presupuesto
+    que ya se conocía (la IA lo repite en slot_updates y una búsqueda nueva lo necesita)."""
+    if not isinstance(observation, dict) or AMOUNT_IN_TEXT.search(text or ""):
+        return observation
+    known = (conversation_state(previous) or {}).get("budget_max") if isinstance(previous, dict) else None
+    actions = [a for a in observation.get("criteria_actions") or [] if not (isinstance(a, dict) and a.get("field") == "budget_max")]
+    slots = observation.get("slot_updates")
+    if isinstance(slots, dict) and slots.get("budget_max") not in (None, known):
+        slots = {**slots, "budget_max": known}
+    return {**observation, "criteria_actions": actions, "slot_updates": slots}
+
+
+def changes_criteria(criteria, actions):
+    """True solo si las acciones cambian algo: la IA a veces repite un criterio conocido ('UPDATE property_type
+    departamento' en 'no, mejor la 2') y eso mandaba el turno a las reglas, que leían el 'no' como 'no más fotos'."""
+    if not actions:
+        return False
+    try:
+        updated = apply_criteria_actions(copy.deepcopy(criteria), actions)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return True
+    fields = {action.get("field") for action in actions if isinstance(action, dict)}
+    return any(updated.get(field) != criteria.get(field) for field in fields) or not fields
+
+
 def conversational_turn(sender, previous, text, observation, inventory_store):
     """Act on the client's answer to the bot's last question.
 
@@ -2470,6 +2536,7 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
     greeting = re.sub(r"[^\w\s]", "", (text or "").casefold()).strip() in {"hola", "buenos días", "buenos dias", "buenas tardes", "buenas noches"}
     if not reply_class or greeting or customer_pause_reply(text) or is_new_search_request(text):
         return None, text
+    reply_class = corrected_reply_class(reply_class, text)
     kind, request, offer = reply_class["tipo"], reply_class["pedido"], bot_offer(previous)
     stage = (previous or {}).get("stage") or "conversation"
     shown = latest_presented_references(previous)
@@ -2480,7 +2547,7 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
     slots = validated_slot_updates(observation.get("slot_updates"))
     # New search data ("ya te dije, en Surco") goes through the rules, which store it. Only explicit actions or
     # core fields count: the model tends to echo known criteria and loose preferences in every turn.
-    changes_search = bool(observation.get("criteria_actions")) or any(
+    changes_search = changes_criteria(criteria, observation.get("criteria_actions")) or any(
         slots.get(key) not in (None, [], "") and slots.get(key) != criteria.get(key)
         for key in ("districts", "budget_max", "currency", "bedrooms"))
 
@@ -2504,7 +2571,9 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
             return done(CLOSING_AFTER_HANDOFF_REPLY.format(brand=COMMERCIAL_BRAND), "handoff", "Cliente se despide; derivación ya registrada.", unit)
         return done(CLOSING_REPLY.format(brand=COMMERCIAL_BRAND), "awaiting_customer", "Cliente cierra la conversación; sin seguimiento automático.", unit)
 
-    if changes_search and kind in ("queja_repeticion", "rechaza", "pide_otra_cosa"):
+    # Pedir más opciones, fotos o elegir una opción no es cambiar la búsqueda, aunque la IA añada algo como la
+    # preferencia 'opcion_2' o marque una búsqueda nueva ("no, pero muéstrame otra" llegó a reiniciar la búsqueda).
+    if changes_search and kind in ("queja_repeticion", "rechaza", "pide_otra_cosa") and request not in ("opcion", "otras_opciones", "fotos"):
         return None, text
 
     if kind == "queja_repeticion":
@@ -2575,6 +2644,7 @@ def plan_turn(sender, previous, text, observation, fallback, inventory_store):
     the bot's last question is acted on first (conversational_turn).
     """
     if conversacion_ia_activa():
+        observation = without_invented_budget(observation, text, previous)
         result, text = conversational_turn(sender, previous, text, observation, inventory_store)
         if result:
             return result
