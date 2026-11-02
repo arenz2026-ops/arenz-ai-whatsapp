@@ -15,7 +15,7 @@ Configúralas en Render o localmente, nunca en Git.
 | `APP_SECRET` | App Secret Meta para `X-Hub-Signature-256`. |
 | `OPENAI_API_KEY` | Clave de servidor para IA; si falta, usa fallback. |
 | `OPENAI_MODEL` | Opcional; por defecto `gpt-4.1-mini`. |
-| `CONVERSACION_IA` | Opcional; `on` u `off` (por defecto `off`). Enciende el rediseño en que la IA clasifica la respuesta del cliente a la última pregunta del bot. En `off` el bot funciona como antes. |
+| `CONVERSACION_IA` | Opcional; `on` u `off` (por defecto `off`). Con `on`, la misma llamada a OpenAI clasifica cómo respondió el cliente a la última pregunta del bot (acepta, rechaza, pide otra cosa, se queja de repetición, cierra u otra) y el código actúa según eso; las preguntas sobre la unidad se responden en esa misma llamada. Precios, áreas y disponibilidad salen siempre del inventario. En `off` el bot funciona como antes. Antes de encenderlo: `OPENAI_API_KEY=... python scripts/probar_ia_real.py`. |
 | `SUPABASE_URL` | URL del proyecto Supabase para persistencia durable en Render. |
 | `SUPABASE_KEY` | Clave de servidor Supabase; nunca la expongas en el cliente o Git. |
 | `LEADS_DB_PATH` | SQLite solo como fallback local. |

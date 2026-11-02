@@ -1,7 +1,8 @@
 """Mide los tokens que se envían a OpenAI por mensaje, usando el banco de conversaciones difíciles.
 
 Uso:
-    python scripts/medir_tokens.py                 # tabla por caso y resumen
+    python scripts/medir_tokens.py                 # CONVERSACION_IA según el entorno (por defecto off)
+    python scripts/medir_tokens.py --modo on       # forzar on u off
     python scripts/medir_tokens.py --json out.json # además guarda los textos enviados (para contarlos con otra herramienta)
 
 Cuenta con tiktoken (o200k_base, el tokenizador de gpt-4.1-mini) si está disponible; si no, estima con
@@ -40,7 +41,10 @@ def textos_de_llamada(payload, caso):
     formato = (payload.get("text") or {}).get("format") or {}
     if formato.get("name") == "arenz_conversation_observation":
         entrada = payload["instructions"] + "\n" + payload["input"] + "\n" + json.dumps(formato["schema"], ensure_ascii=False)
-        return "observacion", entrada, json.dumps(caso["ia"], ensure_ascii=False)
+        salida = dict(caso["ia"])
+        if os.getenv("CONVERSACION_IA", "off") != "on":
+            salida.pop("respuesta_cliente", None)  # en off el esquema no tiene ese campo
+        return "observacion", entrada, json.dumps(salida, ensure_ascii=False)
     tipo = "ficha" if "Redacta la ficha" in payload["instructions"] else "pregunta_unidad"
     return tipo, payload["instructions"] + "\n" + payload["input"], None
 
@@ -60,13 +64,16 @@ def medir():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", help="guardar los textos enviados a OpenAI en este archivo")
+    parser.add_argument("--modo", choices=("on", "off"), help="valor de CONVERSACION_IA para la medición")
     args = parser.parse_args()
+    if args.modo:
+        os.environ["CONVERSACION_IA"] = args.modo
     registros = medir()
     if args.json:
         with open(args.json, "w", encoding="utf-8") as archivo:
             json.dump(registros, archivo, ensure_ascii=False, indent=1)
     contar, metodo = contador()
-    print(f"Conteo: {metodo}\n")
+    print(f"Conteo: {metodo} · CONVERSACION_IA={os.getenv('CONVERSACION_IA', 'off')}\n")
     print(f"{'caso':48} {'llamadas':>8} {'obs.entrada':>11} {'obs.salida':>10} {'otras.entrada':>13}")
     obs_entrada, obs_salida, otras, por_mensaje, llamadas_por_mensaje = [], [], [], [], []
     for registro in registros:
