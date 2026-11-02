@@ -39,6 +39,22 @@ class AdvisorMessageTests(unittest.TestCase):
                          "Cómo: crédito hipotecario · crédito en trámite", "Cuándo: en 3 meses", "Quiero visitar"):
             self.assertIn(expected, body)
 
+    def test_text_notice_is_an_arenz_crm_note(self):
+        from datetime import datetime, timezone
+        body = an.advisor_text("51911111111", {"request_type": "visit", "property_reference": "ARZ-000001"}, CRITERIA,
+                               "Quiero visitar", name="Ana", broker=True, now=datetime(2026, 11, 2, 15, 30, tzinfo=timezone.utc))
+        for expected in ("📋 Nota CRM – Ana", "02/11/2026 10:30 – Pidió una visita", "Situación actual: Interés en visita",
+                         "Próxima acción: Escribir hoy al cliente para coordinar la visita", "Semáforo ARENZ: 🟢 Avanzar",
+                         "Filtros comerciales ARENZ", "agente inmobiliario"):
+            self.assertIn(expected, body)
+        self.assertNotIn("confirmar el nombre", body)
+        sin_nombre = an.advisor_text("51911111111", {"request_type": "advisor", "property_reference": None}, CRITERIA, "")
+        self.assertIn("Nota CRM – Nombre por confirmar", sin_nombre); self.assertIn("confirmar el nombre del cliente", sin_nombre)
+
+    def test_template_first_param_carries_the_name(self):
+        payload = an.template_payload("51979300318", "aviso_lead", "es", "51911111111", {"request_type": "visit", "property_reference": None}, CRITERIA, "Ana")
+        self.assertEqual(payload["template"]["components"][0]["parameters"][0]["text"], "Ana (+51911111111)")
+
     def test_missing_filters_are_marked_not_invented(self):
         body = an.advisor_text("51911111111", {"request_type": "advisor", "property_reference": None}, {"operation": "alquiler"}, "")
         self.assertIn("Dónde: no indicado", body); self.assertIn("Cuánto: no indicado", body); self.assertNotIn("Inmueble:", body)
