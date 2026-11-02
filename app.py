@@ -2159,6 +2159,12 @@ def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, out
     session_state = {"active_search_id": active_id} if active_id else {}
     if isinstance(legacy, dict) and legacy:
         session_state["legacy_searches"] = legacy
+    # Nombre del cliente: se conserva entre turnos y búsquedas. La pregunta pendiente solo dura un turno.
+    name = search_state.get("customer_name") or (prior_state.get("customer_name") if isinstance(prior_state, dict) else None)
+    if name:
+        session_state["customer_name"] = name
+    if search_state.get("pending_question"):
+        session_state["pending_question"] = search_state["pending_question"]
     payload = {"p_message_id": message_id, "p_claim_token": claim_token,
                "p_profile": _profile_payload(sender, criteria, inbound, outbound, stage),
                "p_session": {"phone": sender, "stage": stage, "state": session_state, "summary": summary},
@@ -2335,13 +2341,15 @@ def post_graph_message(payload):
     return response
 
 
-def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None):
-    """After the client has their reply, tell the advisor. Best effort; never raises."""
+def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None, turn_state=None, summary=None):
+    """After the client has their reply, tell the advisor (nota CRM ARENZ). Best effort; never raises."""
     if stage != "handoff":
         return 0
     try:
         handoff = detected_handoff(previous, sanitize_new_search_observation(observation, text), text, inventory_matches)
-        return advisor_notify.notify_advisors(post_graph_message, sender, handoff, criteria, text)
+        name = (turn_state or {}).get("customer_name") or customer_name(previous)
+        broker = BROKER_SUMMARY in (summary or "") or broker_terms_told(previous)
+        return advisor_notify.notify_advisors(post_graph_message, sender, handoff, criteria, text, name, broker)
     except Exception:
         logger.exception("Advisor notice skipped")
         return 0
@@ -2585,6 +2593,13 @@ BROKER_PATTERN = re.compile(
 BROKER_SUMMARY = "Contacto de colaboración: agente inmobiliario que busca para un cliente."
 
 
+def broker_terms_told(previous):
+    """The bot already told this contact the collaboration terms (so it is an agent)."""
+    return isinstance(previous, dict) and any(
+        turn["direction"] == "assistant" and "colaboración con agentes" in turn["content"]
+        for turn in recent_conversation_turns(previous, limit=8, raw=True))
+
+
 def is_broker_message(text):
     return bool(BROKER_PATTERN.search(text or ""))
 
@@ -2601,6 +2616,66 @@ def broker_reply(rules_reply, fallback=None):
 
 NEW_SEARCH_PREFIX = "Nueva búsqueda iniciada. "
 DISTRICT_QUESTION = "¿En qué distrito o distritos te gustaría tu departamento?"
+NAME_QUESTION = "¿Me podrías indicar tu nombre?"
+FREE_QUERY_REPLY = "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Qué deseas consultar?"
+# Preguntas de calificación que pueden esperar a que el cliente diga su nombre.
+QUALIFYING_REPLIES = (DISTRICT_QUESTION, "¿Cuál es tu presupuesto máximo aproximado? Puedes indicarlo en soles o en dólares.",
+                      "¿Ese monto es en soles o en dólares?", "¿Cuántos dormitorios necesitas?")
+NAME_WORD = r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,20}"
+NAME_INTRO_PATTERN = re.compile(rf"\b(?P<intro>me llamo|mi nombre es|soy)\s+(?P<name>{NAME_WORD}(?:\s+{NAME_WORD})?)", re.IGNORECASE)
+NOT_A_NAME = {
+    "de", "del", "la", "el", "los", "las", "un", "una", "y", "e", "o", "en", "con", "para", "por", "que", "yo", "mi", "su",
+    "agente", "agentes", "corredor", "corredora", "broker", "asesor", "asesora", "inmobiliaria", "inmobiliario",
+    "cliente", "interesado", "interesada", "nuevo", "nueva", "independiente", "propietario", "propietaria",
+    "no", "si", "sí", "hola", "ok", "okay", "gracias", "busco", "buscamos", "quiero", "queremos", "ya", "claro",
+    "prefiero", "depa", "departamento", "información", "informacion", "buenas", "buenos", "tardes", "días", "dias",
+    "noches", "perfecto", "listo", "bien", "dale", "vale", "nada", "todavía", "todavia", "luego", "después", "despues",
+    "lima", "peruano", "peruana", "contado", "crédito", "credito", "más", "mas", "fotos", "opciones", "otra", "otro",
+    "soy", "me", "llamo", "es", "tengo", "estoy", "necesito", "busca", "quisiera", "deseo", "aquí", "aqui", "chau",
+}
+
+
+def customer_name(previous):
+    state = (previous or {}).get("state") if isinstance(previous, dict) else None
+    name = state.get("customer_name") if isinstance(state, dict) else None
+    return name if isinstance(name, str) and name.strip() else None
+
+
+def _clean_name(words):
+    words = [w for w in words if w]
+    if not words or words[0].casefold() in NOT_A_NAME:
+        return None
+    if len(words) > 1 and words[1].casefold() in NOT_A_NAME:
+        words = words[:1]
+    return " ".join(w[:1].upper() + w[1:].lower() for w in words)
+
+
+def name_from_text(text, asked=False):
+    """Nombre dicho por el cliente ('me llamo Ana', 'soy Ana') o, si el bot lo pidió, una respuesta corta ('Ana Pérez')."""
+    text = (text or "").strip()
+    for found in NAME_INTRO_PATTERN.finditer(text):
+        if found.group("intro").casefold() != "soy" or asked or found.start() < 40:
+            name = _clean_name(found.group("name").split())
+            if name:
+                return name
+    if asked:
+        bare = re.sub(r"^(?:hola|buenas|buenos días|buenas tardes|buenas noches)[\s,!.]*", "", text, flags=re.IGNORECASE)
+        bare = bare.strip(" .!¡,😊🙂👋")
+        if re.fullmatch(rf"{NAME_WORD}(?:\s+{NAME_WORD}){{0,2}}", bare):
+            return _clean_name(bare.split()[:2])
+    return None
+
+
+def asked_for_name(previous):
+    turns = recent_conversation_turns(previous, limit=8, raw=True) if isinstance(previous, dict) else []
+    last = next((t["content"] for t in reversed(turns) if t["direction"] == "assistant"), "")
+    return NAME_QUESTION in last
+
+
+def pending_question(previous):
+    state = (previous or {}).get("state") if isinstance(previous, dict) else None
+    question = state.get("pending_question") if isinstance(state, dict) else None
+    return question if isinstance(question, str) and question else None
 
 
 def is_first_contact(previous):
@@ -2608,31 +2683,67 @@ def is_first_contact(previous):
         turn["direction"] == "assistant" for turn in recent_conversation_turns(previous, limit=8, raw=True)))
 
 
-def first_contact_reply(reply):
+def first_contact_reply(reply, name=None):
     """Primer mensaje al lead: se presenta como en WhatsApp, sin 'Nueva búsqueda iniciada'."""
-    if not reply or reply.startswith(("Hola", "¡Hola")):
+    hello = f"¡Hola, {name}! 😊" if name else "¡Hola! 😊"
+    if not reply:
+        return reply
+    if reply == INTRODUCTION:
+        reply = "Te ayudo a encontrar tu departamento ideal 🏡 ¿En qué distrito o distritos lo buscas?"
+    elif reply.startswith(("Hola", "¡Hola")):
         return reply
     reply = reply[len(NEW_SEARCH_PREFIX):] if reply.startswith(NEW_SEARCH_PREFIX) else reply
-    return f"¡Hola! 😊 Soy {ASSISTANT_NAME}, de {COMMERCIAL_BRAND}. {reply}"
+    return f"{hello} Soy {ASSISTANT_NAME}, de {COMMERCIAL_BRAND}. {reply}"
+
+
+def _with_reply(result, reply, **state):
+    """Same turn with another text (no photos) and extra session data (customer_name, pending_question)."""
+    turn_state = {**(result.get("search_state") or {}), **state}
+    return {**result, "plan": {"stored": reply, "text": reply, "photos": []}, "search_state": turn_state}
 
 
 def plan_turn(sender, previous, text, observation, fallback, inventory_store):
-    """Decide the turn; a first contact gets a greeting and an agent who writes for a client the collaboration terms."""
+    """Decide the turn, then apply the ARENZ conversation style.
+
+    First contact: greet as Cecilia and ask the client's name before the search questions.
+    Name answer: thank by name and ask the pending question. Agents writing for a client
+    get the collaboration terms once.
+    """
+    known_name = customer_name(previous)
+    if not known_name and asked_for_name(previous):
+        name = name_from_text(text, asked=True)
+        if name:
+            neutral = {**(observation or {}), "intent": "confirmation", "slot_updates": {}, "criteria_actions": [],
+                       "criteria_change": False, "handoff": False}
+            result = rules_turn(sender, previous, text, neutral, fallback, inventory_store)
+            question = pending_question(previous) or DISTRICT_QUESTION
+            stage = (previous or {}).get("stage") or result["stage"]
+            result = _with_reply(result, f"Mucho gusto, {name} 😊 {question}", customer_name=name)
+            return {**result, "stage": stage, "summary": f"Cliente se identifica como {name}."}
     result = _plan_turn(sender, previous, text, observation, fallback, inventory_store)
-    told = isinstance(previous, dict) and any(
-        turn["direction"] == "assistant" and "colaboración con agentes" in turn["content"]
-        for turn in recent_conversation_turns(previous, limit=8, raw=True))
-    if is_broker_message(text) and not told:
-        generic = (INTRODUCTION, fallback, DISTRICT_QUESTION, NEW_SEARCH_PREFIX + DISTRICT_QUESTION)
+    name = known_name or name_from_text(text, asked=is_first_contact(previous))
+    if name and not known_name:
+        result = {**result, "search_state": {**(result.get("search_state") or {}), "customer_name": name}}
+    if is_broker_message(text) and not broker_terms_told(previous):
+        generic = (INTRODUCTION, fallback, FREE_QUERY_REPLY, NEW_SEARCH_PREFIX + DISTRICT_QUESTION) + QUALIFYING_REPLIES
         plan = dict(result["plan"])
         for key in ("text", "stored"):
             plan[key] = broker_reply(None if plan.get(key) in generic else plan.get(key), fallback)
         result = {**result, "plan": plan, "summary": f"{BROKER_SUMMARY} {result.get('summary') or ''}".strip()}
     elif is_first_contact(previous):
-        plan = dict(result["plan"])
-        for key in ("text", "stored"):
-            plan[key] = first_contact_reply(plan.get(key))
-        result = {**result, "plan": plan}
+        reply = result["plan"].get("text")
+        waiting = reply[len(NEW_SEARCH_PREFIX):] if reply and reply.startswith(NEW_SEARCH_PREFIX) else reply
+        generic = waiting in (INTRODUCTION, fallback, FREE_QUERY_REPLY) + QUALIFYING_REPLIES and not result["plan"].get("photos")
+        if generic and not name:
+            question = DISTRICT_QUESTION if waiting in (INTRODUCTION, fallback, FREE_QUERY_REPLY) else waiting
+            greeting = (f"¡Hola! 😊 Soy {ASSISTANT_NAME}, de {COMMERCIAL_BRAND}. Con gusto te ayudo a encontrar tu "
+                        f"departamento 🏡 {NAME_QUESTION}")
+            result = _with_reply(result, greeting, pending_question=question)
+        else:
+            plan = dict(result["plan"])
+            for key in ("text", "stored"):
+                plan[key] = first_contact_reply(plan.get(key), name)
+            result = {**result, "plan": plan}
     return result
 
 
@@ -2767,7 +2878,7 @@ def receive_webhook():
                 logger.warning("WhatsApp delivery failed after internal commit: category=%s", type(error).__name__)
             # The handoff is already committed; the notice to the advisor comes last so it
             # can never delay or break the client's reply.
-            notify_advisor_of_handoff(sender, stage, previous, effective_observation, text, criteria, inventory_matches)
+            notify_advisor_of_handoff(sender, stage, previous, effective_observation, text, criteria, inventory_matches, turn_state, summary)
             timings["graph_ms"] = round((time.monotonic() - started_at) * 1000)
             timings["total_ms"] = round((time.monotonic() - webhook_started_at) * 1000)
             logger.info("Webhook timing: dedupe_ms=%s session_read_ms=%s context_ms=%s openai_ms=%s session_write_ms=%s messages_write_ms=%s lead_write_ms=%s graph_ms=%s total_ms=%s", timings.get("dedupe_ms"), timings.get("session_read_ms"), timings.get("context_ms"), timings.get("openai_ms"), timings.get("session_write_ms"), timings.get("messages_write_ms"), timings.get("lead_write_ms"), timings.get("graph_ms"), timings.get("total_ms"))

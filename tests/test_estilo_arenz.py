@@ -40,7 +40,7 @@ class PrimerContactoTest(unittest.TestCase):
     def test_primer_mensaje_se_presenta_sin_nueva_busqueda(self):
         texto = app.first_contact_reply("Nueva búsqueda iniciada. " + app.DISTRICT_QUESTION)
         self.assertEqual(texto, f"¡Hola! 😊 Soy {app.ASSISTANT_NAME}, de {app.COMMERCIAL_BRAND}. {app.DISTRICT_QUESTION}")
-        self.assertEqual(app.first_contact_reply(app.INTRODUCTION), app.INTRODUCTION)
+        self.assertTrue(app.first_contact_reply(app.INTRODUCTION, "Ana").startswith("¡Hola, Ana! 😊 Soy"))
 
     def test_solo_en_el_primer_contacto(self):
         self.assertTrue(app.is_first_contact(None))
@@ -48,6 +48,52 @@ class PrimerContactoTest(unittest.TestCase):
         self.assertFalse(app.is_first_contact(previous))
         texto = turno_reglas("busco en Surco", previous)["plan"]["text"]
         self.assertFalse(texto.startswith("¡Hola!"))
+
+
+class NombreDelClienteTest(unittest.TestCase):
+    def test_extrae_el_nombre(self):
+        casos = {("me llamo Ana Pérez", False): "Ana Pérez", ("Hola, soy Joanna, agente inmobiliaria", False): "Joanna",
+                 ("mi nombre es luis", False): "Luis", ("Juan", True): "Juan", ("Hola, María", True): "María",
+                 ("Juan Carlos Pérez", True): "Juan Carlos"}
+        for (texto, pedido), esperado in casos.items():
+            self.assertEqual(app.name_from_text(texto, asked=pedido), esperado, texto)
+        for texto, pedido in (("soy de Lima", True), ("soy agente inmobiliaria", True), ("busco en Surco", True),
+                              ("no", True), ("Juan", False), ("tengo 300 mil", True), ("hola", True)):
+            self.assertIsNone(app.name_from_text(texto, asked=pedido), texto)
+
+    def test_primer_saludo_pide_el_nombre_y_guarda_la_pregunta(self):
+        turno = turno_reglas("Hola")
+        self.assertIn(app.NAME_QUESTION, turno["plan"]["text"])
+        self.assertTrue(turno["plan"]["text"].startswith(f"¡Hola! 😊 Soy {app.ASSISTANT_NAME}"))
+        self.assertEqual(turno["search_state"]["pending_question"], app.DISTRICT_QUESTION)
+
+    def test_respuesta_con_el_nombre_retoma_la_pregunta_pendiente(self):
+        previous = banco.historial("qualification", {}, "Hola", "¡Hola! 😊 Soy Cecilia. " + app.NAME_QUESTION)
+        previous["state"]["pending_question"] = app.DISTRICT_QUESTION
+        turno = turno_reglas("Juan", previous)
+        self.assertEqual(turno["plan"]["text"], f"Mucho gusto, Juan 😊 {app.DISTRICT_QUESTION}")
+        self.assertEqual(turno["search_state"]["customer_name"], "Juan")
+
+    def test_si_no_da_el_nombre_sigue_la_busqueda_sin_insistir(self):
+        previous = banco.historial("qualification", {}, "Hola", "¡Hola! 😊 Soy Cecilia. " + app.NAME_QUESTION)
+        texto = turno_reglas("busco en Surco", previous)["plan"]["text"]
+        self.assertNotIn("Mucho gusto", texto)
+        self.assertNotIn(app.NAME_QUESTION, texto)
+
+    def test_primer_mensaje_con_nombre_saluda_por_su_nombre(self):
+        turno = turno_reglas("Hola, me llamo Ana")
+        self.assertTrue(turno["plan"]["text"].startswith("¡Hola, Ana! 😊"))
+        self.assertNotIn(app.NAME_QUESTION, turno["plan"]["text"])
+        self.assertEqual(turno["search_state"]["customer_name"], "Ana")
+
+    def test_el_nombre_se_guarda_en_la_sesion(self):
+        memoria = mock.Mock()
+        previous = {"stage": "qualification", "state": {"customer_name": "Ana", "pending_question": app.DISTRICT_QUESTION}}
+        app.commit_consistent_turn(memoria, "token", banco.TELEFONO, "m1", "busco en Surco", "ok", {}, {}, "qualification",
+                                   "resumen", previous, {"active_search_id": None, "searches": {}})
+        sesion = memoria.commit_work.call_args[0][0]["p_session"]["state"]
+        self.assertEqual(sesion["customer_name"], "Ana")
+        self.assertNotIn("pending_question", sesion)
 
 
 class AgenteInmobiliarioTest(unittest.TestCase):
