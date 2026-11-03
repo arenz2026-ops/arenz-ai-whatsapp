@@ -32,7 +32,8 @@ class EmoticonsTest(unittest.TestCase):
         self.assertFalse(app.assistant_reply_is_real_estate_scoped("¡Qué buen clima! 😊"))
 
     def test_la_ia_recibe_la_guia_de_estilo(self):
-        for frase in ("emoticons", "no supongas que le interesa", "No prometas descuentos", "agente o corredor"):
+        for frase in ("emoticons", "no supongas que le interesa", "No prometas descuentos", "agente o corredor",
+                      "No preguntes si necesita cochera"):
             self.assertIn(frase, app.COMMERCIAL_POLICY)
 
 

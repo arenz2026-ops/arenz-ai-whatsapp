@@ -136,7 +136,9 @@ COMMERCIAL_POLICY = (
     "qué busca y en qué zona. No prometas descuentos, precio de cochera ni condiciones de pago: un asesor los confirma. "
     "Si quien escribe es agente o corredor inmobiliario que busca para un cliente, trátalo como colaboración y pregunta "
     "qué departamento o zona busca su cliente. Si la respuesta a la última pregunta parece una opción mal escrita "
-    "('ahorq' = 'ahora', 'contdo' = 'contado'), interprétala así; si de verdad no se entiende, dilo con amabilidad."
+    "('ahorq' = 'ahora', 'contdo' = 'contado'), interprétala así; si de verdad no se entiende, dilo con amabilidad. "
+    "No preguntes si necesita cochera o estacionamiento (casi siempre está por confirmar); si el cliente lo pregunta, "
+    "un asesor lo confirma."
 )
 
 
