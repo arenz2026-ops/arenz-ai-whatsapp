@@ -198,6 +198,56 @@ class PruebaReal0311Test(unittest.TestCase):
         self.assertNotIn("280,000", limpia)
 
 
+class CualquierDistritoTest(unittest.TestCase):
+    """Prueba real del 03/11 (segunda): "con mi presupuesto, ¿en qué lugares tienes?" recibía "no te entendí"."""
+
+    def turno(self, texto, previous, observacion=None):
+        with mock.patch.object(app, "OPENAI_API_KEY", ""), mock.patch.object(app, "conversacion_ia_activa", return_value=False):
+            return app.plan_turn(banco.TELEFONO, previous, texto, observacion or banco.ia("general_question"), "FALLBACK",
+                                 banco.InventarioFalso())
+
+    def test_frases(self):
+        for texto in ("Con mi presupuesto dime en que lugares tienes opciones de departamentos", "En el lugar que tengas",
+                      "me iria bien cualquier distrito", "¿qué distritos tienes?", "no importa el distrito"):
+            self.assertTrue(app.is_any_district_request(texto), texto)
+        for texto in ("Cercano a que lugares esta?", "¿En qué distrito queda?", "busco en Surco", "Quiero conocer su ubicacion"):
+            self.assertFalse(app.is_any_district_request(texto), texto)
+
+    def test_dice_en_que_distritos_hay_opciones(self):
+        criterios = {"budget_max": 300000, "currency": "PEN", "bedrooms": 3}
+        previous = banco.historial("qualification", criterios, "300 mil soles", app.DISTRICT_QUESTION)
+        texto = self.turno("Con mi presupuesto dime en que lugares tienes opciones", previous)["plan"]["text"]
+        self.assertIn("Con S/ 300,000 y 3 dormitorios tengo opciones en Chorrillos", texto)
+        self.assertNotIn("no te entendí", texto)
+
+    def test_sin_presupuesto_lo_pide(self):
+        previous = banco.historial("qualification", {}, "Hola", app.DISTRICT_QUESTION)
+        texto = self.turno("en cualquier distrito", previous)["plan"]["text"]
+        self.assertIn("presupuesto", texto)
+
+    def test_viendo_una_unidad_no_se_activa(self):
+        turno = self.turno("Cercano a que lugares esta?", banco.H_VISITA_FOTOS_PENDIENTES)
+        self.assertNotIn("tengo opciones en", turno["plan"]["text"] or "")
+
+    def test_nombre_dentro_de_un_mensaje_largo_no_pierde_la_busqueda(self):
+        previous = banco.historial("qualification", {}, "Hola", "¡Hola! 😊 Soy Cecilia. " + app.NAME_QUESTION)
+        observacion = banco.ia("property_search", districts=["Surco"], budget_max=780000, currency="PEN", bedrooms=3)
+        turno = self.turno("Te saluda Rildo, busco 3 dormitorios en Surco hasta S/780000", previous, observacion)
+        self.assertTrue(turno["plan"]["text"].startswith("Mucho gusto, Rildo 😊"))
+        self.assertEqual(turno["criteria"].get("districts"), ["Surco"])
+        self.assertEqual(turno["search_state"]["customer_name"], "Rildo")
+
+    def test_no_te_entendi_no_se_repite(self):
+        previous = banco.historial("qualification", {}, "x", f"{app.NOT_UNDERSTOOD} {app.DISTRICT_QUESTION}")
+        texto = app.repeated_question_reply(previous, app.DISTRICT_QUESTION)
+        self.assertIn("aún no logro entenderte", texto)
+        self.assertIn("asesor", texto)
+
+    def test_ahora_mismo_es_entrega_inmediata(self):
+        self.assertTrue(app.IMMEDIATE_WORDS.search("lo quiero para ahora mismo"))
+        self.assertFalse(app.IMMEDIATE_WORDS.search("por ahora no tengo apuro"))
+
+
 class AgenteInmobiliarioTest(unittest.TestCase):
     def test_reconoce_agentes_que_buscan_para_un_cliente(self):
         for texto in ("Hola, soy agente inmobiliaria y busco propiedad para un cliente",

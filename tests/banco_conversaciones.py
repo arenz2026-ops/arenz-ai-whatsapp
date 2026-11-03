@@ -93,8 +93,8 @@ class InventarioFalso:
         distritos = {app.canonical_district(d) or d for d in criteria.get("districts", [])}
         tope = app.budget_in_currency(criteria, "PEN")
         encontrados = [item for item in INVENTARIO
-                       if item["public"]["district"] in distritos and item["public"]["price_amount"] <= tope
-                       and item["public"]["bedrooms"] == criteria.get("bedrooms")]
+                       if (criteria.get("any_district") or item["public"]["district"] in distritos) and item["public"]["price_amount"] <= tope
+                       and criteria.get("bedrooms") in (None, item["public"]["bedrooms"])]
         return app.MatchList(encontrados), now or datetime.now(timezone.utc)
 
     def project_card(self, reference):

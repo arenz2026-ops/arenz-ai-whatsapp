@@ -1098,7 +1098,7 @@ def property_matches_criteria(property_row, criteria):
     districts = {fold_text(district) for district in criteria.get("districts", []) if isinstance(district, str)}
     if property_row.get("operation") != criteria.get("operation"):
         return False
-    if fold_text(property_row.get("district", "")) not in districts:
+    if not criteria.get("any_district") and fold_text(property_row.get("district", "")) not in districts:
         return False
     if canonical_property_type(property_row.get("property_type")) != criteria.get("property_type"):
         return False
@@ -1211,8 +1211,9 @@ class InventoryStore:
             "or": "(" + ",".join(f"and(currency.eq.{c},price_amount.lte.{budget_in_currency(criteria, c):.2f})"
                                  for c in sorted(ALLOWED_CURRENCIES)) + ")",
             "property_type": f"eq.{criteria['property_type']}",
-            "district": "in.(" + ",".join(f'"{v}"' for d in criteria["districts"] for v in district_variants(canonical_district(d) or d)) + ")",
         }
+        if not criteria.get("any_district"):
+            params["district"] = "in.(" + ",".join(f'"{v}"' for d in criteria["districts"] for v in district_variants(canonical_district(d) or d)) + ")"
         response = requests.get(f"{self.url}/rest/v1/inventory_properties", headers=self.headers, params=params, timeout=10)
         response.raise_for_status()
         candidates = [row for row in response.json() if property_is_eligible(row, now) and property_matches_criteria(row, criteria)]
@@ -1782,7 +1783,7 @@ def inventory_conversation_reply(matches, criteria):
     return reply + "\n\n" + question
 
 
-IMMEDIATE_WORDS = re.compile(r"inmediat|entregad|lo antes posible|cuanto antes|lo m[aá]s pronto|urgente|ya mismo|\bpronto\b|este a[ñn]o|este mes|pr[oó]ximo mes|\bsemanas?\b|fin de a[ñn]o|\bya\b|para mudarme|\b\d+\s*mes|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre", re.IGNORECASE)
+IMMEDIATE_WORDS = re.compile(r"inmediat|(?<!por )\bahora\b|ahorita|entregad|lo antes posible|cuanto antes|lo m[aá]s pronto|urgente|ya mismo|\bpronto\b|este a[ñn]o|este mes|pr[oó]ximo mes|\bsemanas?\b|fin de a[ñn]o|\bya\b|para mudarme|\b\d+\s*mes|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre", re.IGNORECASE)
 FUTURE_YEAR = re.compile(r"20(2[7-9]|3\d)")
 FUTURE_WORDS = re.compile(r"preventa|en plano|en construcci|futur|pr[oó]ximos a[ñn]os|pr[oó]ximo a[ñn]o|sin apuro|no tengo apuro|no hay apuro|20(2[7-9]|3\d)|a[ñn]os", re.IGNORECASE)
 BOTH_WORDS = re.compile(r"\bambas\b|\blas dos\b|\btodas\b|\bambos\b", re.IGNORECASE)
@@ -2701,7 +2702,7 @@ FREE_QUERY_REPLY = "Claro. Puedo orientarte sobre tu búsqueda inmobiliaria. ¿Q
 QUALIFYING_REPLIES = (DISTRICT_QUESTION, "¿Cuál es tu presupuesto máximo aproximado? Puedes indicarlo en soles o en dólares.",
                       "¿Ese monto es en soles o en dólares?", "¿Cuántos dormitorios necesitas?")
 NAME_WORD = r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,20}"
-NAME_INTRO_PATTERN = re.compile(rf"\b(?P<intro>me llamo|mi nombre es|soy)\s+(?P<name>{NAME_WORD}(?:\s+{NAME_WORD})?)", re.IGNORECASE)
+NAME_INTRO_PATTERN = re.compile(rf"\b(?P<intro>me llamo|mi nombre es|soy|te saluda|le saluda|les saluda|te escribe|le escribe|habla)\s+(?P<name>{NAME_WORD}(?:\s+{NAME_WORD})?)", re.IGNORECASE)
 NOT_A_NAME = {
     "de", "del", "la", "el", "los", "las", "un", "una", "y", "e", "o", "en", "con", "para", "por", "que", "yo", "mi", "su",
     "agente", "agentes", "corredor", "corredora", "broker", "asesor", "asesora", "inmobiliaria", "inmobiliario",
@@ -2788,6 +2789,7 @@ def repeated_question_reply(previous, reply):
     """Si el bot vuelve a hacer la misma pregunta, es que no entendió: lo dice en vez de repetirla como si nada."""
     if not reply or "Responde con el número" in reply or NOT_UNDERSTOOD in reply:
         return None
+    second_time = NOT_UNDERSTOOD in last_bot_message(previous)
     asked = last_bot_question(previous)
     # Solo las preguntas para conocer al cliente (distrito, presupuesto, moneda, dormitorios, pago, plazo). Ni las de
     # seguimiento tras un dato ni "¿Prefieres ampliar los distritos...?": ahí el cliente suele preguntar otra cosa
@@ -2799,7 +2801,60 @@ def repeated_question_reply(previous, reply):
     if not questions or questions[-1].strip().casefold() != asked.casefold():
         return None
     question = reply[reply.rindex(questions[-1]):]
-    return f"{NOT_UNDERSTOOD} ¿{question[1:2].upper()}{question[2:]}"
+    question = f"¿{question[1:2].upper()}{question[2:]}"
+    if second_time:
+        return (f"Disculpa, aún no logro entenderte 😅 {question} Si prefieres, escribe «asesor» y te atiende una "
+                f"persona de {COMMERCIAL_BRAND}.")
+    return f"{NOT_UNDERSTOOD} {question}"
+
+
+ANY_DISTRICT_PATTERN = re.compile(
+    r"cualquier (?:distrito|lugar|zona|sitio)|en cualquiera|donde (?:tengas|haya|hay)|d[oó]nde (?:tienes|tengas|hay)"
+    r"|(?:el|los) lugar(?:es)? que tengas|(?:qu[eé]|cu[aá]les) (?:lugares|distritos|zonas) (?:tienes|tengas|hay)"
+    r"|en qu[eé] (?:lugares|distritos|zonas) (?:tienes|tengas|hay)|en qu[eé] (?:lugares|distritos|zonas)\b.*\bopciones"
+    r"|no importa (?:el|la) (?:distrito|zona|lugar)|me da igual (?:el|la) (?:distrito|zona)"
+    r"|todos los distritos|en todo lima", re.IGNORECASE)
+MAX_DISTRICTS_LISTED = 8
+
+
+def is_any_district_request(text):
+    return bool(ANY_DISTRICT_PATTERN.search(text or ""))
+
+
+def any_district_turn(text, result, inventory_store):
+    """'Con mi presupuesto, ¿en qué distritos tienes?', 'cualquier distrito': busca en todos y dice dónde hay opciones.
+
+    Prueba del 03/11: el cliente lo pidió tres veces y el bot respondía "no te entendí, ¿en qué distrito...?".
+    """
+    # Viendo una unidad, "¿cerca a qué lugares está?" es una pregunta sobre su ubicación, no una búsqueda nueva.
+    if not is_any_district_request(text) or not inventory_store or result.get("stage") in ("property_detail", "handoff"):
+        return None
+    criteria = with_sale_defaults(dict(result.get("criteria") or {}))
+    if criteria.get("budget_max") in (None, "") or not criteria.get("currency"):
+        reply = ("Claro, te digo en qué distritos tengo opciones 😊 Para eso necesito tu presupuesto máximo: "
+                 "¿cuánto es? Puedes indicarlo en soles o en dólares.")
+        return _with_reply(result, reply)
+    try:
+        found, _ = inventory_store.find_matches({**criteria, "districts": [], "any_district": True})
+    except requests.RequestException:
+        return None
+    counts = {}
+    for item in found or []:
+        district = item["public"].get("district")
+        if district:
+            counts[district] = counts.get(district, 0) + 1
+    budget = f"{'S/' if criteria['currency'] == 'PEN' else 'US$'} {float(criteria['budget_max']):,.0f}"
+    rooms = f" y {criteria['bedrooms']:g} dormitorios" if isinstance(criteria.get("bedrooms"), (int, float)) else ""
+    if not counts:
+        reply = (f"Con {budget}{rooms} no tengo opciones verificadas en este momento en ningún distrito. "
+                 "¿Prefieres revisar el presupuesto o los dormitorios, o que te contacte un asesor?")
+    else:
+        districts = sorted(counts, key=lambda d: (-counts[d], d))[:MAX_DISTRICTS_LISTED]
+        listed = ", ".join(districts[:-1]) + f" y {districts[-1]}" if len(districts) > 1 else districts[0]
+        question = "¿En cuál o cuáles te gustaría que te las muestre?" if len(districts) > 1 else "¿Te las muestro?"
+        reply = f"Con {budget}{rooms} tengo opciones en {listed} 🏡 {question}"
+    turn = _with_reply(result, reply)
+    return {**turn, "stage": "qualification", "summary": "Cliente pide opciones en cualquier distrito; se le indican los distritos con oferta."}
 
 
 def plan_turn(sender, previous, text, observation, fallback, inventory_store):
@@ -2810,9 +2865,10 @@ def plan_turn(sender, previous, text, observation, fallback, inventory_store):
     get the collaboration terms once.
     """
     known_name = customer_name(previous)
-    if not known_name and asked_for_name(previous):
+    asked = not known_name and asked_for_name(previous)
+    if asked:
         name = name_from_text(text, asked=True)
-        if name:
+        if name and len((text or "").split()) <= 5:
             neutral = {**(observation or {}), "intent": "confirmation", "slot_updates": {}, "criteria_actions": [],
                        "criteria_change": False, "handoff": False}
             result = rules_turn(sender, previous, text, neutral, fallback, inventory_store)
@@ -2821,9 +2877,17 @@ def plan_turn(sender, previous, text, observation, fallback, inventory_store):
             result = _with_reply(result, f"Mucho gusto, {name} 😊 {question}", customer_name=name)
             return {**result, "stage": stage, "summary": f"Cliente se identifica como {name}."}
     result = _plan_turn(sender, previous, text, observation, fallback, inventory_store)
-    name = known_name or name_from_text(text, asked=is_first_contact(previous))
+    result = any_district_turn(text, result, inventory_store) or result
+    name = known_name or name_from_text(text, asked=asked or is_first_contact(previous))
     if name and not known_name:
         result = {**result, "search_state": {**(result.get("search_state") or {}), "customer_name": name}}
+        if asked:
+            # "Te saluda Rildo, busco 3 dormitorios en Surco...": se saluda por el nombre y se sigue con la búsqueda.
+            plan = dict(result["plan"])
+            for key in ("text", "stored"):
+                if plan.get(key) and not plan[key].startswith("Mucho gusto"):
+                    plan[key] = f"Mucho gusto, {name} 😊 {plan[key]}"
+            result = {**result, "plan": plan}
     if is_broker_message(text) and not broker_terms_told(previous):
         generic = (INTRODUCTION, fallback, FREE_QUERY_REPLY, NEW_SEARCH_PREFIX + DISTRICT_QUESTION) + QUALIFYING_REPLIES
         plan = dict(result["plan"])
