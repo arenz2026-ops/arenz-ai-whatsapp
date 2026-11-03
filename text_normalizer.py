@@ -141,6 +141,11 @@ def normalize_client_text(text):
         return "Sí"
     if fold(original).strip(" .!") in SOON:
         return "Lo antes posible"
+    # "Ahorq", "ahroa", "urjente": una respuesta corta mal tipeada a "¿para cuándo?" (prueba real del 02/11).
+    # "inmediato" queda fuera: "imediata" habla de la entrega del departamento, no de cuándo compra.
+    short = fold(original).strip(" .!")
+    if len(short.split()) <= 3 and difflib.get_close_matches(short, list(SOON - {"inmediato", "de inmediato"}), n=1, cutoff=0.8):
+        return "Lo antes posible"
     if fold(original).strip(" .!") in NUMBER_WORDS:
         return NUMBER_WORDS[fold(original).strip(" .!")]
     cleaned = _fix_money(original)

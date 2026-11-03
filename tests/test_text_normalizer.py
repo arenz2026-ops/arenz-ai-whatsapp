@@ -9,6 +9,8 @@ CASES = {
     "san isidro o miraflores": "San Isidro y Miraflores", "Hasta 1.5millones de soles tengo": "Hasta 1500000 soles tengo",
     "300k dolares": "300000 dólares", "medio millon de soles": "500000 soles", "dos dormitorios": "2 dormitorios",
     "tres": "3", "sii": "Sí", "okey": "Sí", "Ahora": "Lo antes posible", "imediata": "inmediata",
+    # Respuestas cortas mal tipeadas a "¿para cuándo?" (prueba real del 02/11: "Ahorq").
+    "Ahorq": "Lo antes posible", "ahroa": "Lo antes posible", "urjente": "Lo antes posible",
     "Quiero ver los otrs": "Quiero ver los otros", "mandame fotitos porfa": "mándame fotos por favor",
     "kontado": "contado", "quiero un depa de 3 cuartos en surquiyo": "quiero un departamento de 3 dormitorios en Surquillo",
     "en la molina o en surco": "en La Molina o en Surco", "Surko, chrrills, once": "Surco y Chorrillos y Lince",

@@ -127,6 +127,28 @@ class ConversacionPersistidaTest(unittest.TestCase):
         self.assertTrue(app.asked_for_name(previous))
 
 
+class NoEntendioTest(unittest.TestCase):
+    PREGUNTA_PLAZO = ("Perfecto, gracias. Último dato antes de mostrarte las opciones: ¿para cuándo necesitas el departamento? "
+                      "Por ejemplo: lo antes posible, en los próximos meses o sin apuro.")
+
+    def test_si_repite_la_pregunta_dice_que_no_entendio(self):
+        previous = banco.historial("qualification", {}, "Crédito", self.PREGUNTA_PLAZO)
+        repetida = ("Tengo opciones que podrían encajar con lo que buscas. Antes de mostrártelas, ¿para cuándo necesitas el "
+                    "departamento? Por ejemplo: lo antes posible, en los próximos meses o sin apuro.")
+        self.assertEqual(app.repeated_question_reply(previous, repetida),
+                         "Perdona, no te entendí bien 😅 ¿Para cuándo necesitas el departamento? Por ejemplo: lo antes "
+                         "posible, en los próximos meses o sin apuro.")
+
+    def test_otra_pregunta_o_un_dato_no_se_tocan(self):
+        previous = banco.historial("qualification", {}, "Crédito", self.PREGUNTA_PLAZO)
+        self.assertIsNone(app.repeated_question_reply(previous, "¿Cuántos dormitorios necesitas?"))
+        ficha = banco.historial("property_detail", banco.CRITERIOS_PL, "1", banco.DESCRIPCION_1850)
+        self.assertIsNone(app.repeated_question_reply(ficha, "Precio: S/ 289,460. ¿Quieres saber sobre la ubicación o áreas comunes?"))
+
+    def test_ahorq_pasa_a_la_siguiente_pregunta(self):
+        self.assertEqual(app.normalize_client_text("Ahorq"), "Lo antes posible")
+
+
 class AgenteInmobiliarioTest(unittest.TestCase):
     def test_reconoce_agentes_que_buscan_para_un_cliente(self):
         for texto in ("Hola, soy agente inmobiliaria y busco propiedad para un cliente",

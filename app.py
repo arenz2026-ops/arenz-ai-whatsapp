@@ -135,7 +135,8 @@ COMMERCIAL_POLICY = (
     "nunca junto a montos. Si el cliente no menciona un inmueble concreto, no supongas que le interesa alguno: pregunta "
     "qué busca y en qué zona. No prometas descuentos, precio de cochera ni condiciones de pago: un asesor los confirma. "
     "Si quien escribe es agente o corredor inmobiliario que busca para un cliente, trátalo como colaboración y pregunta "
-    "qué departamento o zona busca su cliente."
+    "qué departamento o zona busca su cliente. Si la respuesta a la última pregunta parece una opción mal escrita "
+    "('ahorq' = 'ahora', 'contdo' = 'contado'), interprétala así; si de verdad no se entiende, dilo con amabilidad."
 )
 
 
@@ -2777,6 +2778,25 @@ def _with_reply(result, reply, **state):
     return {**result, "plan": {"stored": reply, "text": reply, "photos": []}, "search_state": turn_state}
 
 
+NOT_UNDERSTOOD = "Perdona, no te entendí bien 😅"
+
+
+def repeated_question_reply(previous, reply):
+    """Si el bot vuelve a hacer la misma pregunta, es que no entendió: lo dice en vez de repetirla como si nada."""
+    if not reply or "Responde con el número" in reply or NOT_UNDERSTOOD in reply:
+        return None
+    asked = last_bot_question(previous)
+    # Solo las preguntas para conocer al cliente; una pregunta de seguimiento tras un dato (precio, ubicación) se
+    # repite a propósito y el mensaje lleva información que no se debe perder.
+    if not asked.startswith("¿") or not QUALIFYING_QUESTION.search(asked):
+        return None
+    questions = re.findall(r"¿[^¿?]*\?", customer_visible_reply(reply))
+    if not questions or questions[-1].strip().casefold() != asked.casefold():
+        return None
+    question = reply[reply.rindex(questions[-1]):]
+    return f"{NOT_UNDERSTOOD} ¿{question[1:2].upper()}{question[2:]}"
+
+
 def plan_turn(sender, previous, text, observation, fallback, inventory_store):
     """Decide the turn, then apply the ARENZ conversation style.
 
@@ -2819,6 +2839,10 @@ def plan_turn(sender, previous, text, observation, fallback, inventory_store):
             for key in ("text", "stored"):
                 plan[key] = first_contact_reply(plan.get(key), name)
             result = {**result, "plan": plan}
+    elif not result["plan"].get("photos"):
+        clarified = repeated_question_reply(previous, result["plan"].get("text"))
+        if clarified:
+            result = _with_reply(result, clarified)
     return result
 
 
