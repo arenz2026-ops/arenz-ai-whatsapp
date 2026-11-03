@@ -150,6 +150,54 @@ class NoEntendioTest(unittest.TestCase):
         self.assertEqual(app.normalize_client_text("Ahorq"), "Lo antes posible")
 
 
+class PruebaReal0311Test(unittest.TestCase):
+    """Conversación real del 03/11: preguntas seguidas sobre la unidad que el cliente está viendo."""
+
+    def conversar(self, previous, *mensajes):
+        respuestas = []
+        for numero, mensaje in enumerate(mensajes):
+            with mock.patch.object(app, "OPENAI_API_KEY", ""), mock.patch.object(app, "conversacion_ia_activa", return_value=False):
+                turno = app.plan_turn(banco.TELEFONO, previous, mensaje, banco.ia("general_question", pregunta=mensaje),
+                                      "FALLBACK", banco.InventarioFalso(banco.TODAS_UNI))
+            memoria = mock.Mock()
+            app.commit_consistent_turn(memoria, "token", banco.TELEFONO, f"m{numero}", mensaje, turno["plan"]["stored"], {},
+                                       turno["criteria"], turno["stage"], turno["summary"], previous, turno["search_state"])
+            pago = memoria.commit_work.call_args[0][0]
+            estado = dict(pago["p_session"]["state"])
+            if estado.get("active_search_id"):
+                estado["searches"] = {estado["active_search_id"]: pago["p_search"]["state"]}
+            previous = {"stage": pago["p_session"]["stage"], "state": estado, "summary": pago["p_session"]["summary"]}
+            respuestas.append((turno["stage"], turno["plan"]["text"] or ""))
+        return respuestas
+
+    def test_no_olvida_la_unidad_tras_varias_preguntas(self):
+        respuestas = self.conversar(banco.H_VISITA_FOTOS_PENDIENTES, "¿Tiene estacionamiento?", "¿Cuál es el precio?",
+                                    "¿Cuántos dormitorios tiene?", "¿Cuál es su ubicación?", "Pásame el maps")
+        for etapa, texto in respuestas:
+            self.assertEqual(etapa, "property_detail", texto)
+            self.assertNotIn("Responde con el número", texto)
+
+    def test_respuesta_de_cochera_corta_y_sin_tramite_interno(self):
+        texto = app.parking_question_reply(banco.UNIVERSO)
+        self.assertNotIn("responsable del proyecto", texto)
+        self.assertIn("asesor", texto)
+
+    def test_no_dice_no_te_entendi_ante_una_pregunta_distinta(self):
+        alternativas = ("Con tus criterios (departamento, en Surco) no encontré unidades verificadas en este momento. "
+                        "¿Prefieres ampliar los distritos, revisar el presupuesto o que te contacte un asesor?")
+        previous = banco.historial("qualified", {}, "3", alternativas)
+        self.assertIsNone(app.repeated_question_reply(previous, alternativas))
+
+    def test_la_ia_no_recibe_precios_de_la_tarjeta(self):
+        tarjeta = ("🔴**RATIO DE VENTA:**\n- PRECIO AL MERCADO: 285,000 soles\n- PRECIO AL CIERRE: 280,000 soles\n"
+                   "📍 **Dirección:** Jr. Universo N°305, Chorrillos\n💧 Mantenimiento 190 soles\n💰PRECIO: S/. 285,000 SOLES Negociable")
+        limpia = app.clean_card_text(tarjeta)
+        self.assertIn("Jr. Universo", limpia)
+        self.assertIn("Mantenimiento", limpia)
+        self.assertNotIn("285,000", limpia)
+        self.assertNotIn("280,000", limpia)
+
+
 class AgenteInmobiliarioTest(unittest.TestCase):
     def test_reconoce_agentes_que_buscan_para_un_cliente(self):
         for texto in ("Hola, soy agente inmobiliaria y busco propiedad para un cliente",

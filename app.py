@@ -1556,6 +1556,9 @@ def clean_card_text(card):
             text = text[position:]
             break
     text = re.sub(r"(?im)^.*(n[uú]mero de contacto|contacto de visitas|t[ií]tulares?|empresa desarrolladora|precio al cierre|embargo).*$", "", text)
+    # Ningún precio de la tarjeta: puede diferir del inventario (Universo 407: tarjeta S/ 285,000 "negociable",
+    # inventario S/ 295,000) y el cliente recibía dos precios distintos.
+    text = re.sub(r"(?im)^.*(precio|ratio de venta|negociable).*$", "", text)
     return text[:6000]
 
 
@@ -1618,17 +1621,15 @@ def parking_question_reply(item):
     public = item["public"]
     spaces = public.get("parking_spaces")
     reference = public["public_reference"]
+    # Corto y en lenguaje del cliente: la versión anterior explicaba el trámite interno del asesor (prueba del 03/11).
     if spaces is None:
-        fact = "La ficha de esta unidad no indica si cuenta con estacionamiento."
+        fact = "El estacionamiento de este departamento está por confirmar 🚗"
     elif spaces == 0:
-        fact = "La ficha registra esta unidad sin estacionamiento incluido."
+        fact = "Este departamento no incluye estacionamiento en el precio 🚗"
     else:
-        fact = f"La ficha registra {spaces} estacionamiento(s), pero ese dato por sí solo no confirma si están incluidos en el precio."
-    return (f"Ref. {reference}\n{fact} "
-            "Para confirmarlo, un asesor debe consultar con el responsable del proyecto "
-            "si hay una cochera disponible para esta unidad, si está incluida en el precio del departamento "
-            "y, si se vende por separado, cuál es su precio. "
-            "Esa confirmación aún está pendiente; no puedo asegurar que esté incluida.")
+        fact = f"La ficha registra {spaces} estacionamiento(s), pero falta confirmar si está incluido en el precio 🚗"
+    return (f"Ref. {reference}\n{fact} Un asesor de {COMMERCIAL_BRAND} puede confirmarte si hay uno disponible y, si se "
+            f"vende por separado, su precio. {ADVISOR_OFFER}")
 
 
 def is_selected_parking_question(previous, text):
@@ -2788,9 +2789,11 @@ def repeated_question_reply(previous, reply):
     if not reply or "Responde con el número" in reply or NOT_UNDERSTOOD in reply:
         return None
     asked = last_bot_question(previous)
-    # Solo las preguntas para conocer al cliente; una pregunta de seguimiento tras un dato (precio, ubicación) se
-    # repite a propósito y el mensaje lleva información que no se debe perder.
-    if not asked.startswith("¿") or not QUALIFYING_QUESTION.search(asked):
+    # Solo las preguntas para conocer al cliente (distrito, presupuesto, moneda, dormitorios, pago, plazo). Ni las de
+    # seguimiento tras un dato ni "¿Prefieres ampliar los distritos...?": ahí el cliente suele preguntar otra cosa
+    # ("¿tienes estacionamiento?", prueba del 03/11) y "no te entendí" no corresponde.
+    qualifying = {q.split("?")[0].casefold() for q in re.findall(r"¿[^¿?]*\?", " ".join(QUALIFYING_REPLIES + (PAYMENT_QUESTION, TIMELINE_QUESTION)))}
+    if not asked.startswith("¿") or asked.split("?")[0].casefold() not in qualifying:
         return None
     questions = re.findall(r"¿[^¿?]*\?", customer_visible_reply(reply))
     if not questions or questions[-1].strip().casefold() != asked.casefold():
@@ -2845,7 +2848,23 @@ def plan_turn(sender, previous, text, observation, fallback, inventory_store):
         clarified = repeated_question_reply(previous, result["plan"].get("text"))
         if clarified:
             result = _with_reply(result, clarified)
-    return result
+    return with_unit_reference(previous, result)
+
+
+def with_unit_reference(previous, result):
+    """Las respuestas sobre la unidad que el cliente ve llevan su referencia guardada.
+
+    Solo se recuerdan los 4 últimos turnos: tras dos preguntas (cochera, precio) la ficha salía de la memoria, el bot
+    olvidaba la unidad y a "¿cuál es su ubicación?" volvía a listar opciones (prueba del 03/11).
+    """
+    stored = result["plan"].get("stored") or ""
+    if result.get("stage") not in ("property_detail", "handoff") or PRESENTED_REFERENCE_PATTERN.search(stored):
+        return result
+    shown = latest_presented_references(previous)
+    if len(shown) != 1 or (previous or {}).get("stage") not in ("property_detail", "handoff"):
+        return result
+    plan = {**result["plan"], "stored": stored + photo_reference_marker(shown[0])}
+    return {**result, "plan": plan}
 
 
 def _plan_turn(sender, previous, text, observation, fallback, inventory_store):

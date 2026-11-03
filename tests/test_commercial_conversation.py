@@ -204,18 +204,19 @@ class CommercialConversationTests(unittest.TestCase):
             "recent_turns": [{"direction": "assistant", "content": "Ref. C2-FIRST ¿Qué característica te gustaría confirmar de esta unidad?"}]}}
         for text in ("qué falta para confirmar el estacionamiento", "¿La cochera está incluida?", "¿cuánto cuesta el estacionamiento?"):
             reply, criteria, stage, _ = app.progressive_reply(previous, self.observe(parking_required=True), "fallback", text, inventory_matches=[item])
-            self.assertIn("no indica", reply)
-            self.assertIn("responsable del proyecto", reply)
+            self.assertIn("por confirmar", reply)
+            self.assertIn("asesor", reply)
             self.assertIn("por separado", reply)
+            self.assertNotIn("responsable del proyecto", reply)  # sin el trámite interno (prueba del 03/11)
             self.assertNotIn("Revisemos esta unidad", reply)
             self.assertEqual(criteria, self.criteria)
             self.assertEqual(stage, "property_detail")
             previous["state"]["recent_turns"] = [{"direction": "assistant", "content": app.bounded_turn_content(reply, "assistant")}]
-        for spaces, expected in ((0, "sin estacionamiento incluido"), (1, "registra 1 estacionamiento")):
+        for spaces, expected in ((0, "no incluye estacionamiento"), (1, "registra 1 estacionamiento")):
             item["public"]["parking_spaces"] = spaces
             reply = app.parking_question_reply(item)
             self.assertIn(expected, reply)
-            self.assertIn("confirmación aún está pendiente", reply)
+            self.assertIn("Un asesor", reply)
 
     def test_customer_copy_hides_internal_codes_without_losing_selection_context(self):
         internal = "Encontré estas opciones:\n1. LOS BOSQUES · Unidad A-406 · Chorrillos\nRef. C2-ABC123\nS/ 250.000\n2. LOS BOSQUES · Unidad A-506\nRef. C2-DEF456\n¿Cuál de estas unidades te gustaría revisar con más detalle?"
