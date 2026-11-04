@@ -7,6 +7,9 @@ os.environ.setdefault("PHONE_NUMBER_ID", "123456")
 os.environ.setdefault("APP_SECRET", "test-app-secret")
 import app
 import advisor_notify as an
+from datetime import datetime, timezone
+
+NOW = datetime(2026, 11, 3, 20, 0, tzinfo=timezone.utc)  # 15:00 en Lima
 
 CRITERIA = {"operation": "compra", "property_type": "departamento", "bedrooms": 2, "districts": ["Surco", "Lince"],
             "budget_max": 250000, "currency": "USD", "payment_method": "credito", "credit_status": "en_tramite",
@@ -52,8 +55,23 @@ class AdvisorMessageTests(unittest.TestCase):
         self.assertIn("Nota CRM – Nombre por confirmar", sin_nombre); self.assertIn("confirmar el nombre del cliente", sin_nombre)
 
     def test_template_first_param_carries_the_name(self):
-        payload = an.template_payload("51979300318", "aviso_lead", "es", "51911111111", {"request_type": "visit", "property_reference": None}, CRITERIA, "Ana")
-        self.assertEqual(payload["template"]["components"][0]["parameters"][0]["text"], "Ana (+51911111111)")
+        params = an.template_params("51911111111", {"request_type": "visit", "property_reference": None}, CRITERIA, "", "Ana")
+        payload = an.template_payload("51979300318", "nota_crm_asesor", "es", params)
+        self.assertEqual(payload["template"]["components"][0]["parameters"][0]["text"], "Ana")
+
+    def test_template_params_follow_the_crm_note(self):
+        """Los 12 parámetros dicen lo mismo que la Nota CRM de texto libre, línea por línea."""
+        handoff = {"request_type": "visit", "property_reference": "C2-268EAF11F560"}
+        params = an.template_params("51911111111", handoff, CRITERIA, "quiero visitarlo", "Ana", now=NOW)
+        body = an.advisor_text("51911111111", handoff, CRITERIA, "quiero visitarlo", "Ana", now=NOW)
+        self.assertEqual(len(params), 12)
+        self.assertEqual(params[:5], ["Ana", "03/11/2026 15:00 – Pidió una visita", "+51911111111 (https://wa.me/51911111111)",
+                                      "C2-268EAF11F560", "“quiero visitarlo”"])
+        for label, value in zip(("Situación actual", "Próxima acción", "Qué", "Dónde", "Cuánto", "Cómo", "Cuándo"), params[5:]):
+            self.assertIn(f"{label}: {value}", body)
+        sin_datos = an.template_params("51911111111", {"request_type": "advisor", "property_reference": None}, {}, "", None, broker=True, now=NOW)
+        self.assertEqual(sin_datos[0], "Nombre por confirmar"); self.assertEqual(sin_datos[3:5], ["sin referencia", "-"])
+        self.assertTrue(sin_datos[5].startswith("Agente inmobiliario que busca para un cliente"))
 
     def test_missing_filters_are_marked_not_invented(self):
         body = an.advisor_text("51911111111", {"request_type": "advisor", "property_reference": None}, {"operation": "alquiler"}, "")
@@ -69,7 +87,8 @@ class AdvisorMessageTests(unittest.TestCase):
         self.assertEqual(payload["type"], "template"); self.assertEqual(payload["to"], "51979300318")
         self.assertEqual(payload["template"]["name"], "aviso_lead"); self.assertEqual(payload["template"]["language"]["code"], "es_PE")
         params = [p["text"] for p in payload["template"]["components"][0]["parameters"]]
-        self.assertEqual(params[:3], ["+51911111111", "Pidió que lo llamen", "sin referencia"])
+        self.assertEqual(len(params), 12); self.assertEqual(params[0], "Nombre por confirmar")
+        self.assertTrue(params[1].endswith("Pidió que lo llamen")); self.assertEqual(params[3], "sin referencia")
         self.assertTrue(all("\n" not in p and "    " not in p for p in params))
 
     def test_one_failing_advisor_does_not_stop_the_others(self):

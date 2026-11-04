@@ -130,15 +130,30 @@ Qué / Dónde / Cuánto / Cómo / Cuándo (lo no declarado figura como "no indic
 Si el aviso falla, se registra en el log y la conversación sigue normal.
 
 WhatsApp solo acepta texto libre hacia un número que escribió al bot en las últimas
-24 h. Para que el aviso llegue siempre, crea en Meta una plantilla de categoría
-*Utility* y configura `ADVISOR_TEMPLATE`. El bot llena cuatro parámetros del cuerpo:
+24 h. Para que el aviso llegue siempre, se usa la plantilla `nota_crm_asesor`
+(categoría *Servicio/Utility*, idioma `es`) y se configura `ADVISOR_TEMPLATE=nota_crm_asesor`.
+Envía la misma Nota CRM; el bot llena sus 12 parámetros (ver `template_params`):
 
 ```
-Nuevo lead para atender.
-Cliente: {{1}}
-Solicitud: {{2}}
-Inmueble: {{3}}
-Criterios: {{4}}
+📋 Nota CRM – {{1}}
+{{2}} (bot de WhatsApp)
+Cliente: {{3}}
+Inmueble: {{4}}
+Último mensaje: {{5}}
+
+Situación actual: {{6}}
+Próxima acción: {{7}}
+Canal: WhatsApp.
+Semáforo ARENZ: 🟢 Avanzar – interés comercial activo.
+
+Filtros comerciales ARENZ
+Qué: {{8}}
+Dónde: {{9}}
+Cuánto: {{10}}
+Cómo: {{11}}
+Cuándo: {{12}}
+
+Nota generada por el asistente de WhatsApp de ARENZ.
 ```
 
 ## Actualización semanal del inventario
