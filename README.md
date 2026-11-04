@@ -130,7 +130,9 @@ Qué / Dónde / Cuánto / Cómo / Cuándo (lo no declarado figura como "no indic
 Si el aviso falla, se registra en el log y la conversación sigue normal.
 
 WhatsApp solo acepta texto libre hacia un número que escribió al bot en las últimas
-24 h. Para que el aviso llegue siempre, crea en Meta una plantilla de categoría
+24 h. **Costo 0:** cada asesor escribe cada mañana «hola» al número del bot; el bot le
+confirma que la ventana quedó abierta (sin tratarlo como cliente) y las notas de ese día
+llegan gratis. Un mensaje más largo de un asesor se atiende como cliente (sirve para pruebas). Para que el aviso llegue siempre, crea en Meta una plantilla de categoría
 *Utility* y configura `ADVISOR_TEMPLATE`. El bot llena cuatro parámetros del cuerpo:
 
 ```

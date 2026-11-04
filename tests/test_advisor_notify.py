@@ -96,14 +96,15 @@ class AdvisorWebhookTests(unittest.TestCase):
     def tearDown(self):
         self.env.stop(); self.tempdir.cleanup(); app.OPENAI_API_KEY = ""
 
-    def post_message(self, body, message_id, observation, graph_side_effect):
+    def post_message(self, body, message_id, observation, graph_side_effect, sender="51911111111"):
         payload = {"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {"messages": [
-            {"id": message_id, "from": "51911111111", "type": "text", "text": {"body": body}}]}}]}]}
+            {"id": message_id, "from": sender, "type": "text", "text": {"body": body}}]}}]}]}
         raw = json.dumps(payload, separators=(",", ":")).encode()
         headers = {"Content-Type": "application/json",
                    "X-Hub-Signature-256": "sha256=" + hmac.new(app.APP_SECRET.encode(), raw, hashlib.sha256).hexdigest()}
         openai = ok(); openai.json.return_value = {"output_text": json.dumps(observation)}
-        with patch.object(app.requests, "post", side_effect=[openai, *graph_side_effect]) as post:
+        side_effect = [openai, *graph_side_effect] if observation else graph_side_effect
+        with patch.object(app.requests, "post", side_effect=side_effect) as post:
             result = self.client.post("/webhook", data=raw, headers=headers)
         return result, post
 
@@ -128,6 +129,22 @@ class AdvisorWebhookTests(unittest.TestCase):
                        "assistant_reply": "Perfecto, ¿en qué distrito buscas?"}
         result, post = self.post_message("Quiero comprar", "wamid-adv-3", observation, [ok()])
         self.assertEqual(result.status_code, 200); self.assertEqual(post.call_count, 2)
+
+
+    def test_advisor_greeting_opens_the_window_without_a_client_turn(self):
+        for i, saludo in enumerate(("Hola", "buenos días!", "Buen día 👋", "OK")):
+            with self.subTest(saludo=saludo):
+                result, post = self.post_message(saludo, f"wamid-adv-hola-{i}", None, [ok()], sender="51979300318")
+                self.assertEqual(result.get_json(), {"status": "received", "processed": 1})
+                self.assertEqual(post.call_count, 1)  # sin IA ni aviso: solo la confirmación
+                self.assertEqual(post.call_args.kwargs["json"]["to"], "51979300318")
+                self.assertIn("Notas CRM", post.call_args.kwargs["json"]["text"]["body"])
+        self.assertNotIn("51979300318", app.user_sessions)
+
+    def test_advisor_can_still_test_as_a_client(self):
+        self.assertFalse(app.is_advisor_checkin("51979300318", "Hola, busco depa en Surco"))
+        self.assertFalse(app.is_advisor_checkin("51911111111", "hola"))
+        self.assertTrue(app.is_advisor_checkin("51979300318", " ¡Hola! "))
 
 
 if __name__ == "__main__":

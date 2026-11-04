@@ -2987,6 +2987,21 @@ def verify_webhook():
     return "Verification failed", 403
 
 
+# Costo 0 para los avisos: un asesor que escribe al bot abre su ventana de 24 h y las Notas CRM
+# de ese día le llegan como texto libre (gratis). Un saludo corto suyo no es un cliente nuevo.
+ADVISOR_CHECKIN_PATTERN = re.compile(r"^(hola|holi|buen dia|buenos dias|buenas|buenas tardes|buenas noches|ok|listo|activar|activo)$")
+ADVISOR_CHECKIN_REPLY = ("✅ Listo. Durante las próximas 24 h te llegarán aquí las Notas CRM de los clientes que pidan "
+                         "asesor. Escribe «hola» cada mañana para mantenerlo activo.")
+
+
+def is_advisor_checkin(sender, text):
+    """True for a short greeting from an ADVISOR_PHONE number (abre su ventana; no se atiende como cliente)."""
+    if sender not in advisor_notify.advisor_phones():
+        return False
+    plain = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode()
+    return bool(ADVISOR_CHECKIN_PATTERN.match(" ".join(re.sub(r"[^a-z ]", " ", plain).split())))
+
+
 def iter_incoming_messages(data):
     if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account": return []
     return [message for entry in data.get("entry", []) for change in entry.get("changes", []) for message in change.get("value", {}).get("messages", []) if message.get("type") == "text" and message.get("from") and message.get("text", {}).get("body")]
@@ -3016,6 +3031,16 @@ def receive_webhook():
                 continue
             timings["dedupe_ms"] = round((time.monotonic() - started_at) * 1000)
             sender, text = message["from"], message["text"]["body"]
+            if is_advisor_checkin(sender, text):
+                try:
+                    send_whatsapp_message(sender, ADVISOR_CHECKIN_REPLY)
+                except requests.RequestException as error:
+                    logger.warning("Advisor check-in reply failed: category=%s", type(error).__name__)
+                if memory:
+                    memory.finish_work(message_id, claim_token)
+                logger.info("Advisor check-in: 24h window open")
+                processed += 1
+                continue
             raw_text = text
             fallback = generate_reply(sender, text)
             started_at = time.monotonic()
