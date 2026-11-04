@@ -38,6 +38,7 @@ CRM_STEPS = {
                           "Escribir hoy al cliente, resolver sus dudas sobre la unidad y proponer una visita."),
     "advisor": ("Pidió hablar con un asesor.", "Escribir hoy al cliente por WhatsApp para continuar la atención."),
 }
+BROKER_NOTE = "agente inmobiliario que busca para un cliente (colaboración comercial)."
 # Meta rejects template parameters with line breaks, tabs or 4+ consecutive spaces.
 _TEMPLATE_UNSAFE = re.compile(r"[\r\n\t]+| {4,}")
 
@@ -84,22 +85,30 @@ def criteria_lines(criteria):
     ]
 
 
+def crm_fields(client_phone, handoff, criteria, last_message, name=None, broker=False, now=None):
+    """Los datos de la Nota CRM, compartidos por el texto libre y la plantilla."""
+    now = (now or datetime.now(timezone.utc)).astimezone(LIMA)
+    request = REQUEST_LABELS.get(handoff["request_type"], "Pidió atención")
+    situation, next_step = CRM_STEPS.get(handoff["request_type"], ("Pidió atención.", "Escribir hoy al cliente por WhatsApp."))
+    return {"name": name or "Nombre por confirmar", "when": f"{now:%d/%m/%Y %H:%M} – {request}",
+            "client": f"+{client_phone} (https://wa.me/{client_phone})", "reference": handoff.get("property_reference"),
+            "last_message": f"“{last_message.strip()[:300]}”" if last_message and last_message.strip() else None,
+            "situation": situation, "next_step": next_step, "filters": criteria_lines(criteria)}
+
+
 def advisor_text(client_phone, handoff, criteria, last_message, name=None, broker=False, now=None):
     """Nota CRM consolidada (formato ARENZ) para el asesor que atiende el lead."""
-    now = (now or datetime.now(timezone.utc)).astimezone(LIMA)
-    situation, next_step = CRM_STEPS.get(handoff["request_type"], ("Pidió atención.", "Escribir hoy al cliente por WhatsApp."))
-    lines = [f"📋 Nota CRM – {name or 'Nombre por confirmar'}",
-             f"{now:%d/%m/%Y %H:%M} – {REQUEST_LABELS.get(handoff['request_type'], 'Pidió atención')} (bot de WhatsApp)",
-             f"Cliente: +{client_phone} (https://wa.me/{client_phone})"]
+    f = crm_fields(client_phone, handoff, criteria, last_message, name, broker, now)
+    lines = [f"📋 Nota CRM – {f['name']}", f"{f['when']} (bot de WhatsApp)", f"Cliente: {f['client']}"]
     if broker:
-        lines.append("Tipo de contacto: agente inmobiliario que busca para un cliente (colaboración comercial).")
-    if handoff.get("property_reference"):
-        lines.append(f"Inmueble: {handoff['property_reference']}")
-    if last_message:
-        lines.append(f"Último mensaje: “{last_message.strip()[:300]}”")
-    lines += ["", f"Situación actual: {situation}", f"Próxima acción: {next_step}", "Canal: WhatsApp.",
+        lines.append(f"Tipo de contacto: {BROKER_NOTE}")
+    if f["reference"]:
+        lines.append(f"Inmueble: {f['reference']}")
+    if f["last_message"]:
+        lines.append(f"Último mensaje: {f['last_message']}")
+    lines += ["", f"Situación actual: {f['situation']}", f"Próxima acción: {f['next_step']}", "Canal: WhatsApp.",
               "Semáforo ARENZ: 🟢 Avanzar – interés comercial activo.", "", "Filtros comerciales ARENZ"]
-    lines += [f"{label}: {value}" for label, value in criteria_lines(criteria)]
+    lines += [f"{label}: {value}" for label, value in f["filters"]]
     if not name:
         lines += ["", "Observación: confirmar el nombre del cliente."]
     return "\n".join(lines)
@@ -109,11 +118,15 @@ def _template_param(value):
     return _TEMPLATE_UNSAFE.sub(" ", str(value)).strip()[:500] or "-"
 
 
-def template_payload(advisor_phone, template_name, language, client_phone, handoff, criteria, name=None):
-    """Template body parameters: {{1}} cliente, {{2}} solicitud, {{3}} inmueble, {{4}} criterios."""
-    summary = " | ".join(f"{label}: {value}" for label, value in criteria_lines(criteria))
-    params = [f"{name} (+{client_phone})" if name else f"+{client_phone}", REQUEST_LABELS.get(handoff["request_type"], "Pidió atención"),
-              handoff.get("property_reference") or "sin referencia", summary]
+def template_params(client_phone, handoff, criteria, last_message, name=None, broker=False, now=None):
+    """Los 12 parámetros de la plantilla nota_crm_asesor, en el orden de TEMPLATE_BODY (README)."""
+    f = crm_fields(client_phone, handoff, criteria, last_message, name, broker, now)
+    situation = f"{BROKER_NOTE.capitalize()} {f['situation']}" if broker else f["situation"]
+    return [f["name"], f["when"], f["client"], f["reference"] or "sin referencia", f["last_message"] or "-",
+            situation, f["next_step"]] + [value for _, value in f["filters"]]
+
+
+def template_payload(advisor_phone, template_name, language, params):
     return {"messaging_product": "whatsapp", "recipient_type": "individual", "to": advisor_phone, "type": "template",
             "template": {"name": template_name, "language": {"code": language},
                          "components": [{"type": "body", "parameters": [{"type": "text", "text": _template_param(p)} for p in params]}]}}
@@ -134,9 +147,10 @@ def notify_advisors(post, client_phone, handoff, criteria, last_message, name=No
         return 0
     template = os.getenv("ADVISOR_TEMPLATE", "").strip()
     language = os.getenv("ADVISOR_TEMPLATE_LANGUAGE", "es").strip() or "es"
+    params = template_params(client_phone, handoff, criteria, last_message, name, broker) if template else None
     sent = 0
     for phone in phones:
-        payload = (template_payload(phone, template, language, client_phone, handoff, criteria, name) if template
+        payload = (template_payload(phone, template, language, params) if template
                    else text_payload(phone, advisor_text(client_phone, handoff, criteria, last_message, name, broker)))
         try:
             post(payload)
