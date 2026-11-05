@@ -18,6 +18,7 @@ Configúralas en Render o localmente, nunca en Git.
 | `CONVERSACION_IA` | Opcional; `on` u `off` (por defecto `off`). Con `on`, la misma llamada a OpenAI clasifica cómo respondió el cliente a la última pregunta del bot (acepta, rechaza, pide otra cosa, se queja de repetición, cierra u otra) y el código actúa según eso; las preguntas sobre la unidad se responden en esa misma llamada. Precios, áreas y disponibilidad salen siempre del inventario. En `off` el bot funciona como antes. Antes de encenderlo: `OPENAI_API_KEY=... python scripts/probar_ia_real.py`. |
 | `AGENT_COMMISSION_SHARE` | Opcional; por defecto `50 % para cada parte`. Cuando escribe un agente o corredor inmobiliario que busca para un cliente, el bot confirma la colaboración y menciona esta comisión. Vacío: confirma la colaboración sin mencionar comisión. |
 | `SEGUIMIENTO_AUTOMATICO` | Opcional; `on` u `off` (por defecto `off`). Con `on`, `scripts/enviar_seguimientos.py` escribe una vez a quien vio un listado o una ficha y no respondió: “Hola Ana, ¿cómo estás? 😊 … ¿pudiste revisar las opciones que te compartí?”. Nunca tras un cierre, un “no me contacten” o una derivación al asesor, y solo dentro de las 24 h desde el último mensaje del cliente (después WhatsApp no permite texto libre). |
+| `CRON_TOKEN` | Opcional. Contraseña que GitHub Actions envía a `/tareas/seguimientos`; sin ella el seguimiento programado no corre. |
 | `SEGUIMIENTO_HORAS` | Opcional; por defecto `20`. Horas de silencio del cliente antes del seguimiento (debe ser menor que 23,5). |
 | `SEGUIMIENTO_DESDE` / `SEGUIMIENTO_HASTA` | Opcional; por defecto `9` y `20`. Horario de Lima en que se envían seguimientos. |
 | `SUPABASE_URL` | URL del proyecto Supabase para persistencia durable en Render. |
@@ -166,6 +167,16 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
 
 ## Seguimiento automático
 
-`scripts/enviar_seguimientos.py` debe ejecutarse cada hora, con las mismas variables de entorno que el servicio web (Supabase, WhatsApp y `SEGUIMIENTO_AUTOMATICO=on`). En Render: **New → Cron Job**, mismo repositorio, comando `python scripts/enviar_seguimientos.py`, programación `0 * * * *`.
+Se ejecuta cada hora a **costo 0** con GitHub Actions (`.github/workflows/seguimientos.yml`), que
+llama a `POST /tareas/seguimientos` del servicio en Render (despierta el plan gratis si está dormido).
+Para activarlo:
+
+1. En Render, variables `CRON_TOKEN` (una contraseña larga inventada) y `SEGUIMIENTO_AUTOMATICO=on`.
+2. En GitHub, **Settings → Secrets and variables → Actions → New repository secret**: `CRON_TOKEN`
+   con el mismo valor.
+3. En **Actions → Seguimientos → Run workflow** se puede probar a mano.
+
+Sin `CRON_TOKEN` el enlace responde 503; con un token distinto, 403; con `SEGUIMIENTO_AUTOMATICO`
+apagado no envía nada. `scripts/enviar_seguimientos.py` sigue sirviendo para ejecutarlo a mano.
 
 Antes de encenderlo, `python scripts/enviar_seguimientos.py --simular` muestra qué mensajes enviaría, sin enviarlos ni guardar nada.

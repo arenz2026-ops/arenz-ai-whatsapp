@@ -135,5 +135,32 @@ class ScriptTest(unittest.TestCase):
         run.assert_not_called()
 
 
+class TareaProgramadaTest(unittest.TestCase):
+    def setUp(self):
+        self.client = app.app.test_client()
+
+    def llamar(self, token="secreto", **env):
+        with mock.patch.dict(os.environ, {"CRON_TOKEN": "secreto", "SEGUIMIENTO_AUTOMATICO": "on", **env}):
+            return self.client.post("/tareas/seguimientos", headers={"X-Cron-Token": token})
+
+    def test_sin_token_correcto_no_hace_nada(self):
+        with mock.patch.object(followups, "run") as run:
+            self.assertEqual(self.llamar("otro").status_code, 403)
+            self.assertEqual(self.llamar(CRON_TOKEN="").status_code, 503)
+        run.assert_not_called()
+
+    def test_apagado_no_envia(self):
+        with mock.patch.object(followups, "run") as run:
+            self.assertEqual(self.llamar(SEGUIMIENTO_AUTOMATICO="off").get_json(), {"status": "off"})
+        run.assert_not_called()
+
+    def test_encendido_ejecuta_y_resume_sin_telefonos(self):
+        with mock.patch.object(app, "get_conversation_memory_store", return_value=mock.Mock()), \
+                mock.patch.object(followups, "run", return_value=[("51911111111", "enviado", "x"), ("51922222222", "cliente_escribio", None)]):
+            respuesta = self.llamar()
+        self.assertEqual(respuesta.get_json(), {"status": "ok", "results": {"enviado": 1, "cliente_escribio": 1}})
+        self.assertNotIn("519", respuesta.get_data(as_text=True))
+
+
 if __name__ == "__main__":
     unittest.main()
