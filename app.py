@@ -370,6 +370,34 @@ def data_deletion():
     return '<html><head><title>Eliminación de Datos - ARENZ</title></head><body><h1>Solicitud de eliminación de datos</h1><p>Comunícate con ARENZ indicando tu nombre y número de WhatsApp.</p><p>Correo de contacto: arenz2026@gmail.com</p></body></html>', 200
 
 
+@app.route("/tareas/seguimientos", methods=["POST"])
+def run_followups_task():
+    """Seguimiento automático, llamado cada hora por .github/workflows/seguimientos.yml (costo 0).
+
+    Protegido con CRON_TOKEN (cabecera X-Cron-Token). No envía nada si SEGUIMIENTO_AUTOMATICO no es 'on'.
+    """
+    token = os.getenv("CRON_TOKEN", "")
+    if not token:
+        return jsonify({"status": "not_configured"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Cron-Token", ""), token):
+        return jsonify({"status": "forbidden"}), 403
+    if os.getenv("SEGUIMIENTO_AUTOMATICO", "off").strip().lower() != "on":
+        return jsonify({"status": "off"}), 200
+    memory = get_conversation_memory_store()
+    if not memory:
+        return jsonify({"status": "no_memory"}), 503
+    import followups  # followups importa app: se carga aquí para evitar el ciclo
+    try:
+        results = followups.run(followups.FollowupStore(memory))
+    except requests.RequestException as error:
+        logger.warning("Follow-up task failed: category=%s", type(error).__name__)
+        return jsonify({"status": "error"}), 502
+    counts = {}
+    for _, outcome, _ in results:
+        counts[outcome] = counts.get(outcome, 0) + 1
+    return jsonify({"status": "ok", "results": counts}), 200
+
+
 @app.route("/health", methods=["GET"])
 def health():
     try:
