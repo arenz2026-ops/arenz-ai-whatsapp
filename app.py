@@ -917,7 +917,7 @@ def conversation_state(previous):
         criteria = searches[active].get("criteria", {})
     else:
         criteria = state.get("criteria", {}) if isinstance(state, dict) else {}
-    keys = ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences", "delivery_preference", *COMMERCIAL_FIELDS)
+    keys = ("operation", "districts", "budget_max", "currency", "bedrooms", "property_type", "parking_required", "preferences", "delivery_preference", "price_offer", *COMMERCIAL_FIELDS)
     return {key: criteria.get(key) for key in keys if criteria.get(key) not in (None, [], "")}
 
 
@@ -2169,7 +2169,7 @@ def qualification_snapshot(criteria):
     groups = {
         "que": ("operation", "property_type", "bedrooms", "area_min_m2", "bathrooms_min", "parking_required", "preferences"),
         "donde": ("districts",),
-        "cuanto": ("budget_max", "currency"),
+        "cuanto": ("budget_max", "currency", "price_offer"),
         "como": ("payment_method", "credit_status"),
         "cuando": ("purchase_timeline",),
     }
@@ -2478,6 +2478,38 @@ NEGOTIATION_PATTERN = re.compile(
     re.IGNORECASE)
 
 
+OFFER_AMOUNT = re.compile(
+    r"(?P<pre>S/\.?|US\$|\$)?\s*(?P<num>\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)\s*"
+    r"(?P<mult>mil\b|k\b|mill[oó]n(?:es)?\b)?\s*(?P<cur>soles|lucas|lukas|d[oó]lares|cocos|verdes|usd|pen)?", re.IGNORECASE)
+
+
+def offered_amount(text, item):
+    """The amount the client offers for the unit on screen, read from the message (never from the AI).
+
+    "200 mil", "350000", "S/ 300,000" and a bare "380" (thousands, next to a price in the hundreds of
+    thousands) are read; returns {"amount", "currency"} or None when the message names no amount.
+    """
+    listed = float(item["public"]["price_amount"]) if item else 0
+    for match in OFFER_AMOUNT.finditer(text or ""):
+        raw = match.group("num")
+        value = float(raw.replace(".", "").replace(",", "")) if re.fullmatch(r"\d{1,3}(?:[.,]\d{3})+", raw) else float(raw.replace(",", "."))
+        mult = (match.group("mult") or "").casefold()
+        if mult in ("mil", "k"):
+            value *= 1_000
+        elif mult.startswith("mill"):
+            value *= 1_000_000
+        elif value < 1_000 and listed >= 100_000:
+            value *= 1_000
+        if value < 10_000:
+            continue
+        word = (match.group("cur") or match.group("pre") or "").casefold()
+        currency = ("USD" if word in ("us$", "$", "dólares", "dolares", "cocos", "verdes", "usd") else
+                    "PEN" if word in ("s/", "s/.", "soles", "lucas", "lukas", "pen") else
+                    (item["public"]["currency"] if item else None))
+        return {"amount": int(value), "currency": currency}
+    return None
+
+
 def price_proposal_reply(item):
     """The listed price comes from the inventory record; the proposal goes to an advisor, never answered by the bot."""
     if item:
@@ -2657,7 +2689,12 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
     if unit and kind != "cierra" and (request == "negociar_precio" or NEGOTIATION_PATTERN.search(text or "")):
         found = matches()
         item = next((m for m in found[0] or [] if m["public"]["public_reference"] == unit), None)
-        return done(price_proposal_reply(item), stage, f"Cliente propone otro precio por {unit}; se ofrece un asesor.", unit, found=found)
+        # The offer travels with the search so the advisor sees it in CUÁNTO; the budget stays as it was.
+        criteria["price_offer"] = {**(offered_amount(text, item) or {"amount": None, "currency": None}), "reference": unit}
+        offer = criteria["price_offer"]
+        summary = (f"Cliente ofrece {offer['currency'] or ''} {offer['amount']:,} por {unit}; se ofrece un asesor."
+                   if offer["amount"] else f"Cliente pide rebaja por {unit}; se ofrece un asesor.")
+        return done(price_proposal_reply(item), stage, summary.replace("  ", " "), unit, found=found)
 
     if kind == "cierra":
         if offer == "cerrada":

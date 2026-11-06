@@ -247,3 +247,78 @@ class NegociacionTest(unittest.TestCase):
             self.assertTrue(app.NEGOTIATION_PATTERN.search(frase), frase)
         for frase in ("ta caro", "cuánto cuesta?", "busca opciones más baratas", "mi presupuesto es 300 mil", "dónde queda"):
             self.assertFalse(app.NEGOTIATION_PATTERN.search(frase), frase)
+
+
+class ContraofertaEnCuantoTest(unittest.TestCase):
+    """La contraoferta queda en CUÁNTO (aviso al asesor y ficha del lead); el presupuesto no cambia."""
+
+    def test_lee_el_monto(self):
+        casos = {"Tengo 200 mil soles en mano, puedes venderme a ese precio": (200000, "PEN"),
+                 "¿me lo dejas en 250 mil?": (250000, "PEN"), "te ofrezco 350k": (350000, "PEN"),
+                 "¿lo dejas en 380?": (380000, "PEN"), "te doy 90 mil dólares": (90000, "USD"),
+                 "véndemelo en S/ 270,000": (270000, "PEN"), "te ofrezco 260.000 soles": (260000, "PEN")}
+        for texto, (monto, moneda) in casos.items():
+            self.assertEqual(app.offered_amount(texto, banco.LIBERTADOR), {"amount": monto, "currency": moneda}, texto)
+        self.assertIsNone(app.offered_amount("hay descuento?", banco.LIBERTADOR))
+        self.assertIsNone(app.offered_amount("me lo dejas más barato, la unidad 2", banco.LIBERTADOR))
+
+    def test_se_guarda_sin_tocar_el_presupuesto(self):
+        caso = next(c for c in banco.CASOS if c["id"] == "negociacion_real_a_ese_precio")
+        resultado = ejecutar(caso, "on")
+        self.assertEqual(resultado.criterios["budget_max"], 400000)
+        self.assertEqual(resultado.criterios["price_offer"], {"amount": 200000, "currency": "PEN", "reference": "C2-268EAF11F560"})
+
+    def test_cuanto_en_el_aviso(self):
+        import advisor_notify
+        criterios = {**banco.CRITERIOS_PL, "price_offer": {"amount": 200000, "currency": "PEN", "reference": "C2-268EAF11F560"}}
+        cuanto = dict(advisor_notify.criteria_lines(criterios))["Cuánto"]
+        self.assertEqual(cuanto, "PEN 400,000 · contraoferta PEN 200,000 por C2-268EAF11F560")
+        sin_monto = {**banco.CRITERIOS_PL, "price_offer": {"amount": None, "currency": None, "reference": "C2-268EAF11F560"}}
+        self.assertEqual(dict(advisor_notify.criteria_lines(sin_monto))["Cuánto"], "PEN 400,000 · pidió rebaja por C2-268EAF11F560 (sin monto)")
+        self.assertEqual(dict(advisor_notify.criteria_lines(banco.CRITERIOS_PL))["Cuánto"], "PEN 400,000")
+
+    def test_de_punta_a_punta_la_oferta_llega_al_asesor(self):
+        """Turno 1: la contraoferta. Turno 2: 'Sí'. El aviso al asesor trae la oferta en CUÁNTO y la ficha del lead también."""
+        import hashlib
+        import hmac
+        caso = next(c for c in banco.CASOS if c["id"] == "negociacion_real_a_ese_precio")
+        memoria = mock.Mock()
+        memoria.claim_work.return_value = ("claimed", "token")
+        sesion = {"actual": copy.deepcopy(caso["historia"])}
+        memoria.load_session.side_effect = lambda telefono: sesion["actual"]
+
+        def guardar(payload):
+            # Lo que el RPC de Supabase deja como sesión para el turno siguiente.
+            busqueda = payload["p_search"]
+            sesion["actual"] = {"stage": payload["p_session"]["stage"],
+                                "state": {"active_search_id": busqueda["search_id"],
+                                          "searches": {busqueda["search_id"]: busqueda["state"]}}}
+            guardados.append(payload)
+        guardados = []
+        memoria.commit_work.side_effect = guardar
+
+        def enviar(texto, mensaje_id, observacion):
+            openai = banco.OpenAIFalso(observacion)
+            cuerpo = json.dumps({"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {"messages": [
+                {"id": mensaje_id, "from": banco.TELEFONO, "type": "text", "text": {"body": texto}}]}}]}]}).encode()
+            firma = "sha256=" + hmac.new(b"secreto", cuerpo, hashlib.sha256).hexdigest()
+            with mock.patch.dict(os.environ, {"CONVERSACION_IA": "on", "ADVISOR_PHONE": "51900000001", "ADVISOR_TEMPLATE": ""}), \
+                    mock.patch.object(app, "APP_SECRET", "secreto"), mock.patch.object(app, "OPENAI_API_KEY", "clave"), \
+                    mock.patch.object(app, "get_conversation_memory_store", return_value=memoria), \
+                    mock.patch.object(app, "get_inventory_store", return_value=banco.InventarioFalso(banco.TODAS_LIB)), \
+                    mock.patch.object(app, "post_openai_response", openai), \
+                    mock.patch.object(app, "post_graph_message") as graph:
+                self.assertEqual(app.app.test_client().post("/webhook", data=cuerpo, headers={
+                    "Content-Type": "application/json", "X-Hub-Signature-256": firma}).status_code, 200)
+            return [c[0][0] for c in graph.call_args_list]
+
+        enviar(caso["cliente"], "wamid-oferta", caso["ia"])
+        si = banco.ia()
+        si["respuesta_cliente"] = banco.clasificacion("acepta")
+        mensajes = enviar("Sí", "wamid-si", si)
+        aviso = next(m["text"]["body"] for m in mensajes if m["to"] == "51900000001")
+        self.assertIn("Cuánto: PEN 400,000 · contraoferta PEN 200,000 por C2-268EAF11F560", aviso)
+        self.assertIn("Inmueble: C2-268EAF11F560", aviso)
+        perfil = guardados[-1]["p_profile"]["conversation"]["qualification"]["cuanto"]
+        self.assertEqual(perfil["price_offer"]["amount"], 200000)
+        self.assertEqual(guardados[-1]["p_session"]["stage"], "handoff")
