@@ -272,9 +272,9 @@ class ContraofertaEnCuantoTest(unittest.TestCase):
         import advisor_notify
         criterios = {**banco.CRITERIOS_PL, "price_offer": {"amount": 200000, "currency": "PEN", "reference": "C2-268EAF11F560"}}
         cuanto = dict(advisor_notify.criteria_lines(criterios))["Cuánto"]
-        self.assertEqual(cuanto, "PEN 400,000 · contraoferta PEN 200,000 por C2-268EAF11F560")
+        self.assertEqual(cuanto, "Ofrece PEN 200,000 por C2-268EAF11F560")
         sin_monto = {**banco.CRITERIOS_PL, "price_offer": {"amount": None, "currency": None, "reference": "C2-268EAF11F560"}}
-        self.assertEqual(dict(advisor_notify.criteria_lines(sin_monto))["Cuánto"], "PEN 400,000 · pidió rebaja por C2-268EAF11F560 (sin monto)")
+        self.assertEqual(dict(advisor_notify.criteria_lines(sin_monto))["Cuánto"], "Pide rebaja por C2-268EAF11F560, sin monto")
         self.assertEqual(dict(advisor_notify.criteria_lines(banco.CRITERIOS_PL))["Cuánto"], "PEN 400,000")
 
     def test_de_punta_a_punta_la_oferta_llega_al_asesor(self):
@@ -317,8 +317,11 @@ class ContraofertaEnCuantoTest(unittest.TestCase):
         si["respuesta_cliente"] = banco.clasificacion("acepta")
         mensajes = enviar("Sí", "wamid-si", si)
         aviso = next(m["text"]["body"] for m in mensajes if m["to"] == "51900000001")
-        self.assertIn("Cuánto: PEN 400,000 · contraoferta PEN 200,000 por C2-268EAF11F560", aviso)
+        self.assertIn("Cuánto: Ofrece PEN 200,000 por C2-268EAF11F560", aviso)
+        self.assertNotIn("400,000", aviso, "el presupuesto de búsqueda no aparece junto a la oferta")
         self.assertIn("Inmueble: C2-268EAF11F560", aviso)
-        perfil = guardados[-1]["p_profile"]["conversation"]["qualification"]["cuanto"]
-        self.assertEqual(perfil["price_offer"]["amount"], 200000)
+        perfil = guardados[-1]["p_profile"]
+        self.assertEqual(perfil["conversation"]["qualification"]["cuanto"],
+                         {"price_offer": {"amount": 200000, "currency": "PEN", "reference": "C2-268EAF11F560"}})
+        self.assertEqual(perfil["budget"], "PEN 400000", "el presupuesto de búsqueda sigue guardado en su campo")
         self.assertEqual(guardados[-1]["p_session"]["stage"], "handoff")

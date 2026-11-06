@@ -55,21 +55,22 @@ def advisor_phones():
 
 
 def _money(criteria):
+    """CUÁNTO: with a counteroffer for a unit, only what the client offers (the search budget would confuse it)."""
+    if criteria.get("price_offer"):
+        return _offer(criteria)
     amount, currency = criteria.get("budget_max"), criteria.get("currency")
     if amount is None:
-        return _offer(criteria) if criteria.get("price_offer") else NOT_GIVEN
+        return NOT_GIVEN
     amount = int(amount) if float(amount).is_integer() else amount
-    budget = f"{currency or ''} {amount:,}".strip()
-    return f"{budget} · {_offer(criteria)}" if criteria.get("price_offer") else budget
+    return f"{currency or ''} {amount:,}".strip()
 
 
 def _offer(criteria):
-    """A counteroffer for a specific unit, shown next to the budget so the advisor does not miss it."""
     offer = criteria.get("price_offer") or {}
     unit = f" por {offer['reference']}" if offer.get("reference") else ""
     if offer.get("amount"):
-        return f"contraoferta {offer.get('currency') or ''} {int(offer['amount']):,}{unit}".replace("  ", " ")
-    return f"pidió rebaja{unit} (sin monto)"
+        return f"Ofrece {offer.get('currency') or ''} {int(offer['amount']):,}{unit}".replace("  ", " ")
+    return f"Pide rebaja{unit}, sin monto"
 
 
 def criteria_lines(criteria):

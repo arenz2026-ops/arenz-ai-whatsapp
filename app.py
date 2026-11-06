@@ -2173,8 +2173,12 @@ def qualification_snapshot(criteria):
         "como": ("payment_method", "credit_status"),
         "cuando": ("purchase_timeline",),
     }
-    return {group: {key: criteria[key] for key in keys if key in criteria and criteria[key] is not None}
-            for group, keys in groups.items()}
+    snapshot = {group: {key: criteria[key] for key in keys if key in criteria and criteria[key] is not None}
+                for group, keys in groups.items()}
+    if criteria.get("price_offer"):
+        # CUÁNTO is what the client offers for the unit; the search budget stays in the lead's "budget" field.
+        snapshot["cuanto"] = {"price_offer": criteria["price_offer"]}
+    return snapshot
 
 
 def _profile_payload(phone, criteria, inbound, outbound, stage):
