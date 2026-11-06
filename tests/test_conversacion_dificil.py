@@ -191,3 +191,59 @@ for _caso in banco.CASOS:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TarjetaDelProyectoTest(unittest.TestCase):
+    """El recorte de la tarjeta conserva los datos públicos del edificio y sigue quitando los internos."""
+
+    TARJETA_INMUEBLE = (
+        "# _INFORMACIÓN DEL INMUEBLE_\n\n🔴**TÍTULARES DEL INMUEBLE.**\n\n- Registrado a nombre de Persona Ejemplo\n\n"
+        "🔴**NÚMERO DE CONTACTO.**\n\n- Contacto Ejemplo 987654321\n\n🔴**RATIO DE VENTA:**\n\n"
+        "- PRECIO AL MERCADO: 285,000 soles\n- PRECIO AL CIERRE: 280,000 soles\n\n"
+        "DEPARTAMENTO EN VENTA - SURCO\n\n🔍DATOS DEL EDIFICIO:\n🏢Antigüedad de 10 años.\n🏢 Edificio de 8 pisos\n"
+        "📍DIRECCIÓN: Jr. Ejemplo 102, Surco\n🎯 ÁREAS COMUNES:\n👮 Vigilancia 24/7\n💰PRECIO: S/. 285,000 SOLES Negociable\n")
+
+    def test_conserva_antiguedad_y_pisos(self):
+        limpio = app.clean_card_text(self.TARJETA_INMUEBLE)
+        for dato in ("Antigüedad de 10 años", "Edificio de 8 pisos", "Jr. Ejemplo 102", "Vigilancia"):
+            self.assertIn(dato, limpio)
+
+    def test_sigue_quitando_lo_interno(self):
+        limpio = app.clean_card_text(self.TARJETA_INMUEBLE)
+        for interno in ("Persona Ejemplo", "Contacto Ejemplo", "987654321", "280,000", "285,000", "Negociable"):
+            self.assertNotIn(interno, limpio)
+
+    def test_variantes_del_encabezado(self):
+        for encabezado in ("🔍 **DATOS DEL EDIFICIO:**", "🔍DATOS DE EDIFICIO:", "🔍 DATOS DEL EDIFICIO:"):
+            tarjeta = f"🔴**CONTACTO**\n- Interno\n\n{encabezado}\n🏢 Antigüedad: De estreno\n📍 DIRECCIÓN: Jr. X 1"
+            limpio = app.clean_card_text(tarjeta)
+            self.assertIn("De estreno", limpio, encabezado)
+            self.assertNotIn("Interno", limpio, encabezado)
+
+    def test_sin_bloque_de_edificio_no_cambia(self):
+        tarjeta = "🔴**CONTACTO**\n- Interno\n\n📍 DIRECCIÓN: Jr. X 1\nParque cercano"
+        self.assertEqual(app.clean_card_text(tarjeta).strip(), "📍 DIRECCIÓN: Jr. X 1\nParque cercano")
+
+    def test_la_ia_recibe_la_antiguedad(self):
+        """La pregunta del 02/11 ('¿cuántos años de antigüedad?') ahora llega con el dato en ficha_proyecto."""
+        with mock.patch.dict(os.environ, {"CONVERSACION_IA": "on"}), \
+                mock.patch.object(app, "get_inventory_store", return_value=banco.InventarioFalso()):
+            payload = app.build_observation_payload(banco.H_MAS_FOTOS, "Cuántos años de antigüedad tiene?")
+        contexto = json.loads(payload["input"].split("\n", 1)[0].removeprefix("Contexto: "))
+        self.assertIn("Antigüedad: De estreno", contexto["ficha_proyecto"])
+        self.assertIn("12 pisos", contexto["ficha_proyecto"])
+        self.assertNotIn("999888777", contexto["ficha_proyecto"])
+
+
+class NegociacionTest(unittest.TestCase):
+    def test_respuesta_con_precio_del_inventario(self):
+        texto = app.price_proposal_reply(banco.LIBERTADOR)
+        self.assertIn("S/ 289,460", texto)
+        self.assertIn("te contacte un asesor", texto)
+
+    def test_frases_de_negociacion(self):
+        for frase in ("puedes venderme a ese precio", "¿me lo dejas en 250 mil?", "véndemelo en 300", "hay descuento?",
+                      "¿es negociable?", "te ofrezco 350 mil", "cuál es el último precio", "¿lo dejas en 380?"):
+            self.assertTrue(app.NEGOTIATION_PATTERN.search(frase), frase)
+        for frase in ("ta caro", "cuánto cuesta?", "busca opciones más baratas", "mi presupuesto es 300 mil", "dónde queda"):
+            self.assertFalse(app.NEGOTIATION_PATTERN.search(frase), frase)

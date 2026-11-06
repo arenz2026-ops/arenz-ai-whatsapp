@@ -82,7 +82,8 @@ OBSERVATION_SCHEMA["properties"]["criteria_actions"]["items"]["properties"]["fie
 
 # CONVERSACION_IA=on: the same single call also classifies the reply to the bot's last question.
 CUSTOMER_REPLY_TYPES = ["acepta", "rechaza", "pide_otra_cosa", "queja_repeticion", "cierra", "otra"]
-CUSTOMER_REQUESTS = ["ninguno", "otras_opciones", "fotos", "opcion", "cambiar_criterios", "dato_unidad", "asesor"]
+CUSTOMER_REQUESTS = ["ninguno", "otras_opciones", "fotos", "opcion", "cambiar_criterios", "dato_unidad", "asesor",
+                     "negociar_precio"]
 UNIT_FACTS_ASKED = ["ninguno", "precio", "area", "dormitorios", "banos", "piso", "entrega", "estacionamiento",
                     "ubicacion", "areas_comunes", "otro"]
 OBSERVATION_SCHEMA_IA = copy.deepcopy(OBSERVATION_SCHEMA)
@@ -104,6 +105,8 @@ CUSTOMER_REPLY_POLICY = (
     "(máx. 280 caracteres). En queja_repeticion discúlpate y ofrece otro paso (otra opción, fotos o asesor). "
     "pedido es lo que el Mensaje pide, no lo que el bot ofreció: un 'no' o 'todavía no' a una oferta es rechaza con pedido "
     "ninguno. Si pregunta un dato de la unidad ('¿tiene cochera?', '¿cuánto cuesta?') es pide_otra_cosa con pedido dato_unidad. "
+    "Si ofrece otro monto o pide rebaja por la unidad mostrada ('tengo 200 mil, ¿me lo vendes a ese precio?', '¿me lo "
+    "dejas en 380?') es pide_otra_cosa con pedido negociar_precio y no cambia el presupuesto. "
     "assistant_reply nunca lleva precios, montos, metrajes, unidad, piso ni disponibilidad, ni repite al bot."
 )
 
@@ -1576,14 +1579,24 @@ def with_notice(text, item):
     return f"{text}\n\n{notice}" if notice and notice not in text else text
 
 
+# "🔍 DATOS DEL EDIFICIO" (antigüedad, pisos) sits right before the 📍 address in 14 cards and holds only public
+# building data; cutting at 📍 lost it ("¿cuántos años de antigüedad?" went unanswered on 02/11).
+BUILDING_DATA_HEADER = re.compile(r"🔍\W*DATOS DEL? EDIFICIO", re.IGNORECASE)
+
+
 def clean_card_text(card):
     """Drop the internal header of a Trello card (owner, contacts, internal comments) before the model sees it."""
     text = card or ""
+    start = 0
     for marker in ("📍", "DIRECCI", "UBICACI", "TITULO DEL INMUEBLE", "DESCRIPCI"):
         position = text.find(marker)
         if position > 0:
-            text = text[position:]
+            start = position
             break
+    building = BUILDING_DATA_HEADER.search(text)
+    if building and 0 < building.start() < start:
+        start = building.start()
+    text = text[start:]
     text = re.sub(r"(?im)^.*(n[uú]mero de contacto|contacto de visitas|t[ií]tulares?|empresa desarrolladora|precio al cierre|embargo).*$", "", text)
     # Ningún precio de la tarjeta: puede diferir del inventario (Universo 407: tarjeta S/ 285,000 "negociable",
     # inventario S/ 295,000) y el cliente recibía dos precios distintos.
@@ -1697,7 +1710,7 @@ def accepted_advisor_offer(previous, user_text):
     last = last_assistant_message(previous)
     if VISIT_OFFER in last:
         return "visit"
-    if BROCHURE_OFFER in last:
+    if BROCHURE_OFFER in last or PRICE_PROPOSAL_OFFER in last:
         return "property_interest"
     if "te contacte un asesor" in last:
         return "advisor"
@@ -2456,6 +2469,27 @@ def plain_refusal(text):
     return bool(found) and not REQUEST_AFTER_NO.search(normalized[found.end():])
 
 
+# Una contraoferta por la unidad en pantalla no es un presupuesto nuevo. El 02/11, "Tengo 200 mil soles en mano,
+# ¿puedes venderme a ese precio?" ante una unidad de S/ 420,000 cambió la búsqueda a S/ 200,000.
+PRICE_PROPOSAL_OFFER = "presentar tu propuesta"
+NEGOTIATION_PATTERN = re.compile(
+    r"\bv[eé]nd[ae]me(?:l[oa])?\b|\bvend[ée]rme(?:l[oa])?\b|\bme l[oa] dej[aá]s\b|\bl[oa] dej[aá]s? en\b|\brebaj|\bdescuento"
+    r"|\bnegocia|\b(?:te|les?) ofrezco\b|\b(?:a|por|en) ese (?:precio|monto)\b|\b(?:precio final|[uú]ltimo precio)\b",
+    re.IGNORECASE)
+
+
+def price_proposal_reply(item):
+    """The listed price comes from the inventory record; the proposal goes to an advisor, never answered by the bot."""
+    if item:
+        public = item["public"]
+        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
+        listed = f"El precio publicado de {unit_display_name(item)} es {symbol} {float(public['price_amount']):,.0f}. "
+    else:
+        listed = ""
+    return (f"Entiendo tu propuesta 🙂 {listed}Una oferta distinta la revisa un asesor de {COMMERCIAL_BRAND}. "
+            f"¿Quieres que te contacte un asesor para {PRICE_PROPOSAL_OFFER} por esta unidad?")
+
+
 def corrected_reply_class(reply_class, text):
     """Corrige dos confusiones que la IA real tuvo en la prueba del 02/11 (scripts/probar_ia_real.py).
 
@@ -2619,6 +2653,11 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
         return ({"observation": observation, "search_state": turn_state, "criteria": criteria, "stage": new_stage,
                  "summary": summary, "plan": plan or {"stored": stored, "text": reply, "photos": []},
                  "inventory_matches": found[0], "inventory_cutoff": found[1]}, text)
+
+    if unit and kind != "cierra" and (request == "negociar_precio" or NEGOTIATION_PATTERN.search(text or "")):
+        found = matches()
+        item = next((m for m in found[0] or [] if m["public"]["public_reference"] == unit), None)
+        return done(price_proposal_reply(item), stage, f"Cliente propone otro precio por {unit}; se ofrece un asesor.", unit, found=found)
 
     if kind == "cierra":
         if offer == "cerrada":
