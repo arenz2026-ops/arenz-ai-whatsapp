@@ -3030,6 +3030,40 @@ def is_advisor_checkin(sender, text):
     return bool(ADVISOR_CHECKIN_PATTERN.match(" ".join(re.sub(r"[^a-z ]", " ", plain).split())))
 
 
+AD_REFERRAL_FIELDS = ("source_id", "source_type", "source_url", "headline", "body", "ctwa_clid")
+
+
+def ad_referral_row(sender, message):
+    """La etiqueta que WhatsApp adjunta cuando el cliente llega desde un anuncio de Meta (clic a WhatsApp).
+
+    Devuelve la fila para crm_ad_referrals, o None si el mensaje no vino de un anuncio.
+    """
+    referral = message.get("referral") if isinstance(message, dict) else None
+    if not isinstance(referral, dict) or not referral.get("source_id"):
+        return None
+    row = {"phone": sender}
+    for field in AD_REFERRAL_FIELDS:
+        value = referral.get(field)
+        row[field] = str(value)[:500] if value not in (None, "") else None
+    return row
+
+
+def record_ad_referral(memory, sender, message):
+    """Guarda de qué anuncio vino el cliente, para el CRM CREENZIA. Nunca afecta la respuesta al cliente."""
+    row = ad_referral_row(sender, message)
+    if not row or not memory:
+        return False
+    try:
+        response = requests.post(f"{memory.url}/rest/v1/crm_ad_referrals", headers={**memory.headers, "Prefer": "return=minimal"},
+                                 json=row, timeout=5)
+        response.raise_for_status()
+        logger.info("Ad referral recorded: source_type=%s", row.get("source_type"))
+        return True
+    except requests.RequestException as error:
+        logger.warning("Ad referral not recorded: category=%s", type(error).__name__)
+        return False
+
+
 def iter_incoming_messages(data):
     if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account": return []
     return [message for entry in data.get("entry", []) for change in entry.get("changes", []) for message in change.get("value", {}).get("messages", []) if message.get("type") == "text" and message.get("from") and message.get("text", {}).get("body")]
@@ -3059,6 +3093,7 @@ def receive_webhook():
                 continue
             timings["dedupe_ms"] = round((time.monotonic() - started_at) * 1000)
             sender, text = message["from"], message["text"]["body"]
+            record_ad_referral(memory, sender, message)
             if is_advisor_checkin(sender, text):
                 try:
                     send_whatsapp_message(sender, ADVISOR_CHECKIN_REPLY)
