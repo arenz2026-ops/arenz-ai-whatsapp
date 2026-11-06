@@ -180,3 +180,18 @@ Sin `CRON_TOKEN` el enlace responde 503; con un token distinto, 403; con `SEGUIM
 apagado no envía nada. `scripts/enviar_seguimientos.py` sigue sirviendo para ejecutarlo a mano.
 
 Antes de encenderlo, `python scripts/enviar_seguimientos.py --simular` muestra qué mensajes enviaría, sin enviarlos ni guardar nada.
+
+## Tokens de OpenAI por mensaje
+
+Cada mensaje entrante guarda en `conversation_messages.extraction._uso_openai` las llamadas que hizo a OpenAI
+(tipo `observacion` o `ficha`, modelo, tokens de entrada y salida). Para medir el consumo real en Supabase:
+
+```sql
+select count(distinct m.id) mensajes,
+       round(avg(t.entrada) filter (where t.tipo = 'observacion')) obs_entrada_prom,
+       round(avg(t.salida)  filter (where t.tipo = 'observacion')) obs_salida_prom,
+       round(sum(t.total)::numeric / count(distinct m.id)) total_por_mensaje
+from conversation_messages m,
+     jsonb_to_recordset(m.extraction->'_uso_openai') as t(tipo text, entrada int, salida int, total int)
+where m.direction = 'inbound' and m.created_at > now() - interval '7 days';
+```
