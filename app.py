@@ -928,6 +928,7 @@ def active_search_id(previous):
 
 
 RESUME_QUESTION = "¿Quieres retomar tu búsqueda anterior o comenzar una nueva?"
+RESUME_AGAIN_QUESTION = "¿La retomamos o prefieres comenzar una nueva?"
 NEW_SEARCH_ANSWER = re.compile(r"^(no\b|nueva|nuevo|otra|otro|comenzar|empezar|desde cero|de cero|una nueva)", re.IGNORECASE)
 
 
@@ -938,7 +939,7 @@ def resume_answer_as_command(previous, text):
     for turn in turns:
         if turn["direction"] == "assistant":
             asked = turn["content"]
-    if RESUME_QUESTION in asked and NEW_SEARCH_ANSWER.match((text or "").strip()):
+    if (RESUME_QUESTION in asked or RESUME_AGAIN_QUESTION in asked) and NEW_SEARCH_ANSWER.match((text or "").strip()):
         return "nueva búsqueda"
     return text
 
@@ -2038,7 +2039,12 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if greeting in {"hola", "buenos días", "buenos dias", "buenas tardes", "buenas noches"}:
         criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
         if criteria:
-            reply = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} 😊 ¿Quieres retomar tu búsqueda anterior o comenzar una nueva?"
+            reply = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} 😊 {RESUME_QUESTION}"
+            if RESUME_QUESTION in last_assistant_message(previous):
+                # A second "hola" got the very same greeting (04/11 and 05/11): say what the earlier search was instead.
+                summary = criteria_summary(criteria)
+                reply = (f"¡Hola de nuevo! 😊 Tu búsqueda anterior era: {summary}. {RESUME_AGAIN_QUESTION}"
+                         if summary else f"¡Hola de nuevo! 😊 {RESUME_QUESTION}")
             return reply, criteria, "conversation", "Saludo atendido; criterios conservados sin consultar inventario."
         return INTRODUCTION, criteria, "qualification", "Saludo atendido antes de la calificación."
     observation = with_explicit_operation(observation, user_text)
@@ -2939,8 +2945,29 @@ def _with_reply(result, reply, **state):
 NOT_UNDERSTOOD = "Perdona, no te entendí bien 😅"
 
 
-def repeated_question_reply(previous, reply):
-    """Si el bot vuelve a hacer la misma pregunta, es que no entendió: lo dice en vez de repetirla como si nada."""
+def noted_change(before, after):
+    """'corregí tu presupuesto a US$ 250,000' when this turn changed a known criterion; 'anoté…' for a new one."""
+    before, after = before or {}, after or {}
+    labels = []
+    if (after.get("budget_max"), after.get("currency")) != (before.get("budget_max"), before.get("currency")) and after.get("budget_max"):
+        symbol = {"PEN": "S/", "USD": "US$"}.get(after.get("currency"), after.get("currency") or "")
+        labels.append(("budget_max", f"tu presupuesto a {symbol} {float(after['budget_max']):,.0f}".replace("  ", " ")))
+    if after.get("districts") and after.get("districts") != before.get("districts"):
+        labels.append(("districts", "los distritos: " + ", ".join(after["districts"])))
+    if after.get("bedrooms") and after.get("bedrooms") != before.get("bedrooms"):
+        labels.append(("bedrooms", f"{after['bedrooms']} dormitorios"))
+    if not labels:
+        return None
+    corrected = any(before.get(key) for key, _ in labels)
+    return f"Perfecto, {'corregí' if corrected else 'anoté'} {' y '.join(text for _, text in labels)} 👍"
+
+
+def repeated_question_reply(previous, reply, criteria=None):
+    """Si el bot vuelve a hacer la misma pregunta, es que no entendió: lo dice en vez de repetirla como si nada.
+
+    Salvo que el cliente haya corregido otro dato: "250 mil dólares" mientras se preguntaban los dormitorios
+    (02/11) sí se entendió y se guardó; el bot lo confirma y repite su pregunta, sin decir "no te entendí".
+    """
     if not reply or "Responde con el número" in reply or NOT_UNDERSTOOD in reply:
         return None
     second_time = NOT_UNDERSTOOD in last_bot_message(previous)
@@ -2956,6 +2983,9 @@ def repeated_question_reply(previous, reply):
         return None
     question = reply[reply.rindex(questions[-1]):]
     question = f"¿{question[1:2].upper()}{question[2:]}"
+    change = noted_change(conversation_state(previous), criteria) if criteria is not None else None
+    if change:
+        return f"{change} {question}"
     if second_time:
         return (f"Disculpa, aún no logro entenderte 😅 {question} Si prefieres, escribe «asesor» y te atiende una "
                 f"persona de {COMMERCIAL_BRAND}.")
@@ -3063,7 +3093,7 @@ def plan_turn(sender, previous, text, observation, fallback, inventory_store):
                 plan[key] = first_contact_reply(plan.get(key), name)
             result = {**result, "plan": plan}
     elif not result["plan"].get("photos"):
-        clarified = repeated_question_reply(previous, result["plan"].get("text"))
+        clarified = repeated_question_reply(previous, result["plan"].get("text"), result.get("criteria"))
         if clarified:
             result = _with_reply(result, clarified)
     return with_unit_reference(previous, result)
