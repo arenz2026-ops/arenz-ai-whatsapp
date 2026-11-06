@@ -2399,6 +2399,50 @@ def post_graph_message(payload):
     return response
 
 
+# All 2,442 cards with an address write it as "DIRECCIÓN:" (bold or not); the colon keeps out prose like
+# "sin dirección en esta tarjeta".
+CARD_ADDRESS = re.compile(r"DIRECCI[OÓ]N[\s*_]*:[\s*_]*([^\n]+)", re.IGNORECASE)
+
+
+def card_address(card):
+    """The address line of a Trello card (87 % of cards have one), without markdown; '' if missing."""
+    found = CARD_ADDRESS.search(card or "")
+    if not found:
+        return ""
+    address = re.sub(r"[*_`]+", "", found.group(1)).strip(" ,.;:-")
+    return address[:160]
+
+
+def advisor_unit(reference, inventory_matches=None):
+    """What the advisor needs to recognise the unit: project, unit, floor, district, price and address.
+
+    Everything comes from the inventory record and its card. Returns None if the unit cannot be read,
+    and the notice then shows the code alone, as before.
+    """
+    if not reference:
+        return None
+    try:
+        item = next((m for m in inventory_matches or [] if m["public"]["public_reference"] == reference), None)
+        store = get_inventory_store()
+        row = item["public"] if item else (store.unit_row(reference) if store else None)
+        if not row:
+            return None
+        description = row.get("public_description") or ""
+        identity = re.match(r"^Proyecto (.*?); unidad (.*?)\.", description)
+        floor = re.search(r"\bPiso ([^.]+)\.", description)
+        short = " · ".join(part for part in (
+            identity.group(1) if identity else (row.get("property_type") or "Departamento").capitalize(),
+            f"unidad {identity.group(2)}" if identity else None) if part)
+        symbol = {"PEN": "S/", "USD": "US$"}.get(row.get("currency"), row.get("currency") or "")
+        price = f"{symbol} {float(row['price_amount']):,.0f}" if row.get("price_amount") is not None else None
+        label = " · ".join(part for part in (short, f"piso {floor.group(1)}" if floor else None, row.get("district"), price) if part)
+        address = card_address(store.project_card(reference)) if store else ""
+        return {"reference": reference, "short": short, "label": f"{label} ({reference})", "address": address}
+    except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+        logger.warning("Advisor unit details unavailable; notice shows the code only")
+        return None
+
+
 def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None, turn_state=None, summary=None):
     """After the client has their reply, tell the advisor (nota CRM ARENZ). Best effort; never raises."""
     if stage != "handoff":
@@ -2407,7 +2451,9 @@ def notify_advisor_of_handoff(sender, stage, previous, observation, text, criter
         handoff = detected_handoff(previous, sanitize_new_search_observation(observation, text), text, inventory_matches)
         name = (turn_state or {}).get("customer_name") or customer_name(previous)
         broker = BROKER_SUMMARY in (summary or "") or broker_terms_told(previous)
-        return advisor_notify.notify_advisors(post_graph_message, sender, handoff, criteria, text, name, broker)
+        reference = (handoff or {}).get("property_reference") or ((criteria or {}).get("price_offer") or {}).get("reference")
+        unit = advisor_unit(reference, inventory_matches)
+        return advisor_notify.notify_advisors(post_graph_message, sender, handoff, criteria, text, name, broker, unit)
     except Exception:
         logger.exception("Advisor notice skipped")
         return 0
