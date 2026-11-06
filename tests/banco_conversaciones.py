@@ -56,7 +56,9 @@ def tarjeta(item):
     proyecto = re.match(r"Proyecto (.*?);", p["public_description"]).group(1)
     return (
         "# _INFORMACIÓN DEL PROYECTO_\n\n🔴**EMPRESA DESARROLLADORA**\n\n- Constructora de prueba\n\n"
+        "🔴**NÚMERO DE CONTACTO DE VISITAS.**\n\n- Contacto Interno 999888777\n\n"
         "🔴**COMENTARIOS DEL PROYECTO..**\n\n- En construcción. **Precio de entrada:** Desde **S/ 381,200**.\n\n"
+        "🔍 **DATOS DEL EDIFICIO:**\n🏢 Antigüedad: De estreno\n🏢 Edificio de 12 pisos\n"
         f"📍**DIRECCIÓN**: Jr. Los Pinos 450, {p['district']}\n\n"
         "📍**UBICACIÓN MAPS**: [https://maps.app.goo.gl/prueba](https://maps.app.goo.gl/prueba)\n\n"
         f"### 📍 Entorno y Conectividad\n\nLa zona de {proyecto} destaca por su tranquilidad y cercanía a todo lo necesario:\n\n"
@@ -368,6 +370,7 @@ def ficha(ref):
 
 # ---------------------------------------------------------------- casos
 
+PROPUESTA_LIBERTADOR = app.price_proposal_reply(LIBERTADOR) + "\nRef. C2-268EAF11F560"
 H_BROCHURE = historial("property_detail", CRITERIOS_PL, "Sí", MAS_FOTOS_LIBERTADOR, "Sí", BROCHURE_LIBERTADOR)
 H_MAS_FOTOS = historial("property_detail", CRITERIOS_PL, FICHA_LIBERTADOR, "Sí", MAS_FOTOS_9_LIBERTADOR, "Sí", MAS_FOTOS_LIBERTADOR)
 H_FICHA = historial("property_detail", CRITERIOS_PL, LISTADO_PL, "1", FICHA_LIBERTADOR)
@@ -532,6 +535,23 @@ CASOS = [
          ia=ia(respuesta="Disculpa, este depa cuesta S/ 250,000 y tiene 60 m², está disponible."),
          espera=[no_contiene("250,000"), no_contiene("disponible"), NO_REPITE_LIBERTADOR],
          hoy_falla="vuelve a describir el departamento"),
+    # ---- negociación de precio (02/11: la contraoferta se tomó como presupuesto nuevo)
+    dict(id="negociacion_real_a_ese_precio", grupo="negociacion", real=True, historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB,
+         cliente="Tengo 200 mil soles en mano, puedes venderme a ese precio",
+         ia=ia("change_criteria", None, [{"field": "budget_max", "action": "UPDATE", "values": [200000]}], True, budget_max=200000, currency="PEN"),
+         espera=[criterio("budget_max", 400000), contiene("289,460"), contiene("propuesta"), NO_LISTADO, NO_CIERRA],
+         hoy_falla="cambia el presupuesto a S/ 200,000 y vuelve a buscar"),
+    dict(id="negociacion_me_lo_dejas", grupo="negociacion", historia=H_MAS_FOTOS, enviadas=ONCE_LIB, cliente="¿me lo dejas en 250 mil?",
+         ia=ia("general_question", "Entiendo, consulto con un asesor."),
+         espera=[criterio("budget_max", 400000), contiene("propuesta"), NO_REPITE_LIBERTADOR],
+         hoy_falla="la IA de unidad vuelve a describir el departamento"),
+    dict(id="negociacion_si_al_asesor", grupo="negociacion", cliente="Sí", ia=ia(),
+         historia=historial("property_detail", CRITERIOS_PL, "Tengo 200 mil, ¿me lo vendes?", PROPUESTA_LIBERTADOR),
+         espera=[DERIVA, contiene("interés")]),
+    dict(id="negociacion_no_al_asesor", grupo="negociacion", cliente="no, gracias", ia=ia(),
+         historia=historial("property_detail", CRITERIOS_PL, "Tengo 200 mil, ¿me lo vendes?", PROPUESTA_LIBERTADOR),
+         espera=[CIERRA, NO_DERIVA]),
+
     dict(id="jerga_ta_caro", grupo="jerga", historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB, cliente="ta caro",
          ia=ia("general_question", "Entiendo. ¿Quieres que busque opciones con un presupuesto menor?"),
          espera=[NO_REPITE_LIBERTADOR, NO_CIERRA], hoy_falla="vuelve a describir el departamento en vez de ofrecer opciones más baratas"),
@@ -582,6 +602,10 @@ CLASES = {
     "dato_cuanto_cuesta": ("pide_otra_cosa", "dato_unidad", None, "precio"),
     "dato_donde_queda": ("pide_otra_cosa", "dato_unidad", None, "ubicacion"),
     "seguridad_ia_inventa_precio": ("queja_repeticion",),
+    "negociacion_real_a_ese_precio": ("otra",),  # lo que devolvió la IA real: la regla de respaldo lo detecta
+    "negociacion_me_lo_dejas": ("pide_otra_cosa", "negociar_precio"),
+    "negociacion_si_al_asesor": ("acepta",),
+    "negociacion_no_al_asesor": ("rechaza",),
 }
 
 
