@@ -272,9 +272,9 @@ class ContraofertaEnCuantoTest(unittest.TestCase):
         import advisor_notify
         criterios = {**banco.CRITERIOS_PL, "price_offer": {"amount": 200000, "currency": "PEN", "reference": "C2-268EAF11F560"}}
         cuanto = dict(advisor_notify.criteria_lines(criterios))["Cuánto"]
-        self.assertEqual(cuanto, "PEN 400,000 · contraoferta PEN 200,000 por C2-268EAF11F560")
+        self.assertEqual(cuanto, "Ofrece PEN 200,000 por C2-268EAF11F560")
         sin_monto = {**banco.CRITERIOS_PL, "price_offer": {"amount": None, "currency": None, "reference": "C2-268EAF11F560"}}
-        self.assertEqual(dict(advisor_notify.criteria_lines(sin_monto))["Cuánto"], "PEN 400,000 · pidió rebaja por C2-268EAF11F560 (sin monto)")
+        self.assertEqual(dict(advisor_notify.criteria_lines(sin_monto))["Cuánto"], "Pide rebaja por C2-268EAF11F560, sin monto")
         self.assertEqual(dict(advisor_notify.criteria_lines(banco.CRITERIOS_PL))["Cuánto"], "PEN 400,000")
 
     def test_de_punta_a_punta_la_oferta_llega_al_asesor(self):
@@ -317,8 +317,55 @@ class ContraofertaEnCuantoTest(unittest.TestCase):
         si["respuesta_cliente"] = banco.clasificacion("acepta")
         mensajes = enviar("Sí", "wamid-si", si)
         aviso = next(m["text"]["body"] for m in mensajes if m["to"] == "51900000001")
-        self.assertIn("Cuánto: PEN 400,000 · contraoferta PEN 200,000 por C2-268EAF11F560", aviso)
-        self.assertIn("Inmueble: C2-268EAF11F560", aviso)
-        perfil = guardados[-1]["p_profile"]["conversation"]["qualification"]["cuanto"]
-        self.assertEqual(perfil["price_offer"]["amount"], 200000)
+        self.assertIn("Inmueble: Libertador · unidad 502 · piso 5 · Pueblo Libre · S/ 289,460 (C2-268EAF11F560)", aviso)
+        self.assertIn("Dirección: Jr. Los Pinos 450, Pueblo Libre", aviso)
+        self.assertIn("Cuánto: Ofrece PEN 200,000 por Libertador · unidad 502", aviso)
+        self.assertNotIn("400,000", aviso, "el presupuesto de búsqueda no aparece junto a la oferta")
+        perfil = guardados[-1]["p_profile"]
+        self.assertEqual(perfil["conversation"]["qualification"]["cuanto"],
+                         {"price_offer": {"amount": 200000, "currency": "PEN", "reference": "C2-268EAF11F560"}})
+        self.assertEqual(perfil["budget"], "PEN 400000", "el presupuesto de búsqueda sigue guardado en su campo")
         self.assertEqual(guardados[-1]["p_session"]["stage"], "handoff")
+
+
+class UnidadEnElAvisoTest(unittest.TestCase):
+    """El asesor reconoce el departamento sin buscar el código: proyecto, unidad, piso, distrito, precio y dirección."""
+
+    def test_direccion_de_la_tarjeta(self):
+        casos = {"📍**DIRECCIÓN**: Jr. Los Pinos 450, Pueblo Libre\n": "Jr. Los Pinos 450, Pueblo Libre",
+                 "📍 **Dirección:** Dpto. C-407, Jr. Universo N°305, Chorrillos\n": "Dpto. C-407, Jr. Universo N°305, Chorrillos",
+                 "📍DIRECCIÓN:  Av. Los Faisanes 485, Chorrillos**,\n": "Av. Los Faisanes 485, Chorrillos",
+                 "📍 DIRECCION: Av. Talara 726, Jesús María, Lima\n": "Av. Talara 726, Jesús María, Lima",
+                 "Sin dirección en esta tarjeta": "", "": ""}
+        for tarjeta, esperado in casos.items():
+            self.assertEqual(app.card_address(tarjeta), esperado, tarjeta)
+
+    def test_datos_desde_el_inventario(self):
+        with mock.patch.object(app, "get_inventory_store", return_value=banco.InventarioFalso()):
+            unidad = app.advisor_unit("C2-268EAF11F560", [banco.LIBERTADOR])
+        self.assertEqual(unidad["label"], "Libertador · unidad 502 · piso 5 · Pueblo Libre · S/ 289,460 (C2-268EAF11F560)")
+        self.assertEqual(unidad["short"], "Libertador · unidad 502")
+        self.assertEqual(unidad["address"], "Jr. Los Pinos 450, Pueblo Libre")
+
+    def test_sin_datos_el_aviso_muestra_el_codigo(self):
+        import requests
+        import advisor_notify
+        falla = mock.Mock()
+        falla.unit_row.side_effect = requests.ConnectionError
+        with mock.patch.object(app, "get_inventory_store", return_value=falla):
+            self.assertIsNone(app.advisor_unit("C2-XYZ999", None))
+        texto = advisor_notify.advisor_text("51900003549", {"request_type": "visit", "property_reference": "C2-XYZ999"},
+                                            banco.CRITERIOS_PL, "Sí")
+        self.assertIn("Inmueble: C2-XYZ999", texto)
+        self.assertNotIn("Dirección:", texto)
+
+    def test_plantilla_lleva_unidad_y_direccion(self):
+        import advisor_notify
+        unidad = {"reference": "C2-268EAF11F560", "short": "Libertador · unidad 502",
+                  "label": "Libertador · unidad 502 · piso 5 · Pueblo Libre · S/ 289,460 (C2-268EAF11F560)",
+                  "address": "Jr. Los Pinos 450, Pueblo Libre"}
+        payload = advisor_notify.template_payload("51900000001", "aviso", "es", "51900003549",
+                                                  {"request_type": "visit", "property_reference": "C2-268EAF11F560"},
+                                                  banco.CRITERIOS_PL, unit=unidad)
+        parametros = [p["text"] for p in payload["template"]["components"][0]["parameters"]]
+        self.assertEqual(parametros[2], "Libertador · unidad 502 · piso 5 · Pueblo Libre · S/ 289,460 (C2-268EAF11F560) – Jr. Los Pinos 450, Pueblo Libre")

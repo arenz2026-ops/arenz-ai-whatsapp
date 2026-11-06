@@ -54,25 +54,28 @@ def advisor_phones():
     return phones
 
 
-def _money(criteria):
+def _money(criteria, unit=None):
+    """CUÁNTO: with a counteroffer for a unit, only what the client offers (the search budget would confuse it)."""
+    if criteria.get("price_offer"):
+        return _offer(criteria, unit)
     amount, currency = criteria.get("budget_max"), criteria.get("currency")
     if amount is None:
-        return _offer(criteria) if criteria.get("price_offer") else NOT_GIVEN
+        return NOT_GIVEN
     amount = int(amount) if float(amount).is_integer() else amount
-    budget = f"{currency or ''} {amount:,}".strip()
-    return f"{budget} · {_offer(criteria)}" if criteria.get("price_offer") else budget
+    return f"{currency or ''} {amount:,}".strip()
 
 
-def _offer(criteria):
-    """A counteroffer for a specific unit, shown next to the budget so the advisor does not miss it."""
+def _offer(criteria, unit_details=None):
     offer = criteria.get("price_offer") or {}
-    unit = f" por {offer['reference']}" if offer.get("reference") else ""
+    name = (unit_details["short"] if unit_details and unit_details.get("reference") == offer.get("reference")
+            else offer.get("reference"))
+    unit = f" por {name}" if name else ""
     if offer.get("amount"):
-        return f"contraoferta {offer.get('currency') or ''} {int(offer['amount']):,}{unit}".replace("  ", " ")
-    return f"pidió rebaja{unit} (sin monto)"
+        return f"Ofrece {offer.get('currency') or ''} {int(offer['amount']):,}{unit}".replace("  ", " ")
+    return f"Pide rebaja{unit}, sin monto"
 
 
-def criteria_lines(criteria):
+def criteria_lines(criteria, unit=None):
     """The five filters (qué, dónde, cuánto, cómo, cuándo) as short labelled lines."""
     criteria = criteria or {}
     que = [value for value in (criteria.get("operation"), criteria.get("property_type")) if value]
@@ -88,13 +91,13 @@ def criteria_lines(criteria):
     return [
         ("Qué", " · ".join(que) or NOT_GIVEN),
         ("Dónde", ", ".join(criteria.get("districts") or []) or NOT_GIVEN),
-        ("Cuánto", _money(criteria)),
+        ("Cuánto", _money(criteria, unit)),
         ("Cómo", " · ".join(como) or NOT_GIVEN),
         ("Cuándo", criteria.get("purchase_timeline") or NOT_GIVEN),
     ]
 
 
-def advisor_text(client_phone, handoff, criteria, last_message, name=None, broker=False, now=None):
+def advisor_text(client_phone, handoff, criteria, last_message, name=None, broker=False, now=None, unit=None):
     """Nota CRM consolidada (formato ARENZ) para el asesor que atiende el lead."""
     now = (now or datetime.now(timezone.utc)).astimezone(LIMA)
     situation, next_step = CRM_STEPS.get(handoff["request_type"], ("Pidió atención.", "Escribir hoy al cliente por WhatsApp."))
@@ -104,12 +107,15 @@ def advisor_text(client_phone, handoff, criteria, last_message, name=None, broke
     if broker:
         lines.append("Tipo de contacto: agente inmobiliario que busca para un cliente (colaboración comercial).")
     if handoff.get("property_reference"):
-        lines.append(f"Inmueble: {handoff['property_reference']}")
+        details = unit if unit and unit.get("reference") == handoff["property_reference"] else None
+        lines.append(f"Inmueble: {details['label'] if details else handoff['property_reference']}")
+        if details and details.get("address"):
+            lines.append(f"Dirección: {details['address']}")
     if last_message:
         lines.append(f"Último mensaje: “{last_message.strip()[:300]}”")
     lines += ["", f"Situación actual: {situation}", f"Próxima acción: {next_step}", "Canal: WhatsApp.",
               "Semáforo ARENZ: 🟢 Avanzar – interés comercial activo.", "", "Filtros comerciales ARENZ"]
-    lines += [f"{label}: {value}" for label, value in criteria_lines(criteria)]
+    lines += [f"{label}: {value}" for label, value in criteria_lines(criteria, unit)]
     if not name:
         lines += ["", "Observación: confirmar el nombre del cliente."]
     return "\n".join(lines)
@@ -119,11 +125,14 @@ def _template_param(value):
     return _TEMPLATE_UNSAFE.sub(" ", str(value)).strip()[:500] or "-"
 
 
-def template_payload(advisor_phone, template_name, language, client_phone, handoff, criteria, name=None):
+def template_payload(advisor_phone, template_name, language, client_phone, handoff, criteria, name=None, unit=None):
     """Template body parameters: {{1}} cliente, {{2}} solicitud, {{3}} inmueble, {{4}} criterios."""
-    summary = " | ".join(f"{label}: {value}" for label, value in criteria_lines(criteria))
+    summary = " | ".join(f"{label}: {value}" for label, value in criteria_lines(criteria, unit))
+    reference = handoff.get("property_reference")
+    details = unit if unit and reference and unit.get("reference") == reference else None
+    place = (details["label"] + (f" – {details['address']}" if details.get("address") else "")) if details else reference
     params = [f"{name} (+{client_phone})" if name else f"+{client_phone}", REQUEST_LABELS.get(handoff["request_type"], "Pidió atención"),
-              handoff.get("property_reference") or "sin referencia", summary]
+              place or "sin referencia", summary]
     return {"messaging_product": "whatsapp", "recipient_type": "individual", "to": advisor_phone, "type": "template",
             "template": {"name": template_name, "language": {"code": language},
                          "components": [{"type": "body", "parameters": [{"type": "text", "text": _template_param(p)} for p in params]}]}}
@@ -134,7 +143,7 @@ def text_payload(advisor_phone, body):
             "type": "text", "text": {"body": body}}
 
 
-def notify_advisors(post, client_phone, handoff, criteria, last_message, name=None, broker=False):
+def notify_advisors(post, client_phone, handoff, criteria, last_message, name=None, broker=False, unit=None):
     """Send the notice to every advisor; return how many accepted it. Never raises.
 
     `post` sends one Graph API messages payload and raises on rejection.
@@ -146,8 +155,8 @@ def notify_advisors(post, client_phone, handoff, criteria, last_message, name=No
     language = os.getenv("ADVISOR_TEMPLATE_LANGUAGE", "es").strip() or "es"
     sent = 0
     for phone in phones:
-        payload = (template_payload(phone, template, language, client_phone, handoff, criteria, name) if template
-                   else text_payload(phone, advisor_text(client_phone, handoff, criteria, last_message, name, broker)))
+        payload = (template_payload(phone, template, language, client_phone, handoff, criteria, name, unit) if template
+                   else text_payload(phone, advisor_text(client_phone, handoff, criteria, last_message, name, broker, unit=unit)))
         try:
             post(payload)
             sent += 1
