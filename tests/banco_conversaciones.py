@@ -216,7 +216,7 @@ VISITA_UNIVERSO = "Perfecto. ¿Quieres que coordinemos una visita al departament
 MAS_FOTOS_UNIVERSO = "📷 Tengo 4 fotos más de este proyecto. ¿Quieres que te envíe más fotos?\nRef. C2-D5ACE8F77103"
 VISITA_REGISTRADA = ("Perfecto. Registré tu solicitud de visita para la referencia C2-D5ACE8F77103; un asesor de C2 "
                      "Inmobiliaria coordinará contigo.")
-SIN_FOTOS_ASESOR = ("Por ahora no tengo las fotos cargadas en el chat. Un asesor de C2 Inmobiliaria puede enviarte las fotos "
+SIN_FOTOS_ASESOR = ("Por ahora no tengo las fotos cargadas en el chat. Un asesor de CREENZIA Inversiones puede enviarte las fotos "
                     "de la Ref. C2-268EAF11F560. ¿Quieres que te contacte un asesor?")
 PREGUNTA_FUTURA_PL = ("Con lo que me contaste (departamento, en Pueblo Libre, hasta S/ 400,000, 2 dormitorios) tengo 105 con "
                       "entrega entre 2027 y 2029. Por ahora no tengo de entrega inmediata con esos criterios. ¿Te muestro las "
@@ -571,7 +571,7 @@ CASOS = [
          ia=ia("unknown", ""), espera=[contiene("no te entendí"), contiene("¿Cuántos dormitorios necesitas?")]),
     dict(id="real_0414_hola_repetido", grupo="saludo", real=True, cliente="Hola",
          historia=historial("conversation", CRITERIOS_PL, "Hola",
-                            f"Hola, soy {app.ASSISTANT_NAME}, asesora de {app.COMMERCIAL_BRAND} 😊 {app.RESUME_QUESTION}"),
+                            f"Hola, soy {app.ASSISTANT_NAME}, asistente virtual de {app.COMMERCIAL_BRAND} 😊 {app.RESUME_QUESTION}"),
          ia=ia("greeting", ""),
          espera=[contiene("Hola de nuevo"), contiene("Pueblo Libre"), NO_REPITE_MENSAJE]),
     dict(id="nueva_tras_hola_de_nuevo", grupo="saludo", cliente="nueva",

@@ -217,3 +217,64 @@ class PausaDelBotTest(unittest.TestCase):
         self.assertEqual(guardados[0][0]["message_key"], "paused:wamid.p1")
         self.assertEqual(guardados[0][0]["content"], "ya llegué al depa")
         memory.finish_work.assert_called_once_with("wamid.p1", "token-1")
+
+
+class AvisoPrivacidadTest(unittest.TestCase):
+    def test_botones_validos_para_whatsapp(self):
+        payload = app.consent_prompt_payload("51911111111")
+        botones = payload["interactive"]["action"]["buttons"]
+        self.assertEqual(len(botones), 2)
+        self.assertTrue(all(len(b["reply"]["title"]) <= 20 for b in botones))
+        self.assertIn(app.PRIVACY_URL, payload["interactive"]["body"]["text"])
+        self.assertIn("inteligencia artificial", payload["interactive"]["body"]["text"])
+        self.assertLessEqual(len(payload["interactive"]["body"]["text"]), 1024)
+
+    def test_envia_el_aviso_una_sola_vez(self):
+        memory = mock.Mock(url="https://x.supabase.co", headers={})
+        enviados, guardados = [], []
+        with mock.patch.object(app.requests, "get", return_value=respuesta([])), \
+             mock.patch.object(app, "post_graph_message", side_effect=lambda p: enviados.append(p)), \
+             mock.patch.object(app.requests, "post", side_effect=lambda url, **kw: guardados.append(kw["json"]) or respuesta()):
+            self.assertTrue(app.send_privacy_notice(memory, "51911111111"))
+        self.assertEqual(enviados[0]["type"], "interactive")
+        self.assertEqual(guardados[0]["phone"], "51911111111")
+        with mock.patch.object(app.requests, "get", return_value=respuesta([{"phone": "51911111111"}])), \
+             mock.patch.object(app, "post_graph_message") as enviar:
+            self.assertFalse(app.send_privacy_notice(memory, "51911111111"))
+        enviar.assert_not_called()
+
+    def test_si_no_se_puede_leer_no_insiste(self):
+        memory = mock.Mock(url="https://x.supabase.co", headers={})
+        with mock.patch.object(app.requests, "get", side_effect=requests.ConnectionError()), \
+             mock.patch.object(app, "post_graph_message") as enviar:
+            self.assertFalse(app.send_privacy_notice(memory, "51911111111"))
+        enviar.assert_not_called()
+
+    def test_respuesta_al_boton_queda_registrada(self):
+        memory = mock.Mock(url="https://x.supabase.co", headers={})
+        memory.claim_work.return_value = ("claimed", "tok")
+        payload = {"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {"messages": [
+            {"from": "51911111111", "id": "wamid.c1", "type": "interactive",
+             "interactive": {"type": "button_reply", "button_reply": {"id": app.CONSENT_YES, "title": "Sí, autorizo"}}}]}}]}]}
+        with mock.patch.object(app, "valid_meta_signature", return_value=True), \
+             mock.patch.object(app, "get_conversation_memory_store", return_value=memory), \
+             mock.patch.object(app, "send_whatsapp_message") as enviar:
+            r = app.app.test_client().post("/webhook", json=payload)
+        self.assertEqual(r.get_json()["processed"], 1)
+        nombre, args = memory.rpc.call_args.args
+        self.assertEqual(nombre, "crm_record_consent_by_phone")
+        self.assertEqual(args["p_purpose"], "comercial")
+        self.assertTrue(args["p_granted"])
+        self.assertEqual(args["p_evidence"], "Sí, autorizo")
+        self.assertIn("nuevas opciones", enviar.call_args.args[1])
+        memory.finish_work.assert_called_once_with("wamid.c1", "tok")
+
+    def test_paginas_legales_llevan_a_la_politica_de_creenzia(self):
+        client = app.app.test_client()
+        for ruta in ("/privacy", "/terminos", "/data-deletion"):
+            r = client.get(ruta)
+            self.assertEqual(r.status_code, 302)
+            self.assertTrue(r.headers["Location"].startswith(app.PRIVACY_URL))
+
+    def test_se_presenta_como_asistente_virtual_de_creenzia(self):
+        self.assertIn("asistente virtual de CREENZIA Inversiones", app.INTRODUCTION)

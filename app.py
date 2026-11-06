@@ -16,7 +16,7 @@ from text_normalizer import closest_district, is_known_district, normalize_clien
 from datetime import datetime, timedelta, timezone
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, redirect, request
 
 import advisor_notify
 import embedded_signup
@@ -56,8 +56,9 @@ def conversacion_ia_activa():
 
 logger.info("CONVERSACION_IA=%s", "on" if conversacion_ia_activa() else "off")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
-COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "C2 Inmobiliaria")
-INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} 😊 Te ayudo a encontrar tu departamento ideal 🏡 ¿En qué distrito o distritos lo buscas?"
+COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "CREENZIA Inversiones")
+PRIVACY_URL = os.getenv("PRIVACY_URL", "https://creenzia-crm.vercel.app/privacidad")
+INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND} 😊 Te ayudo a encontrar tu departamento ideal 🏡 ¿En qué distrito o distritos lo buscas?"
 user_sessions = {}
 
 OBSERVATION_SCHEMA = {
@@ -120,7 +121,7 @@ CUSTOMER_REPLY_POLICY = (
 
 
 COMMERCIAL_POLICY = (
-    f" Preséntate como {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND}, con trato cálido y sin presión. "
+    f" Preséntate como {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND}, con trato cálido y sin presión. "
     "Sigue los cinco filtros QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO de manera progresiva, "
     "con una sola pregunta por mensaje. Responde primero la consulta concreta; no repitas datos ya conocidos. "
     "En el primer saludo explica brevemente que ayudas a orientar su búsqueda, sin un menú numérico. "
@@ -361,7 +362,8 @@ def home():
 
 @app.route("/privacy", methods=["GET"])
 def privacy():
-    return '<html><head><title>Política de Privacidad - ARENZ</title></head><body><h1>Política de Privacidad de ARENZ</h1><p>ARENZ utiliza WhatsApp para atender consultas inmobiliarias.</p><p>Los datos se usan únicamente para atender consultas y mejorar la atención.</p><p>ARENZ no vende ni comercializa información personal.</p><p>Los usuarios pueden solicitar eliminación de datos contactando a ARENZ.</p><p>Última actualización: agosto de 2026.</p></body></html>', 200
+    """La política vigente es la de CREENZIA Inversiones (responsable del banco de datos)."""
+    return redirect(PRIVACY_URL, code=302)
 
 
 @app.route("/logo.png", methods=["GET"])
@@ -373,12 +375,12 @@ def logo():
 
 @app.route("/terminos", methods=["GET"])
 def terms():
-    return '<html lang="es"><head><meta charset="utf-8"><title>Condiciones del servicio - ARENZ</title></head><body><h1>Condiciones del servicio de ARENZ</h1><p>ARENZ ofrece orientación inmobiliaria por WhatsApp, incluida la atención automatizada de consultas.</p><p>La información de inmuebles es referencial y debe confirmarse con un asesor antes de cualquier decisión u operación.</p><p>Al escribirnos aceptas que usemos tus mensajes solo para atender tu consulta, según nuestra <a href="/privacy">Política de Privacidad</a>.</p><p>Puedes pedir hablar con una persona o solicitar la <a href="/data-deletion">eliminación de tus datos</a> en cualquier momento.</p><p>Contacto: arenz2026@gmail.com</p><p>Última actualización: octubre de 2026.</p></body></html>', 200
+    return redirect(PRIVACY_URL, code=302)
 
 
 @app.route("/data-deletion", methods=["GET"])
 def data_deletion():
-    return '<html><head><title>Eliminación de Datos - ARENZ</title></head><body><h1>Solicitud de eliminación de datos</h1><p>Comunícate con ARENZ indicando tu nombre y número de WhatsApp.</p><p>Correo de contacto: arenz2026@gmail.com</p></body></html>', 200
+    return redirect(PRIVACY_URL + "#derechos", code=302)
 
 
 @app.route("/tareas/seguimientos", methods=["POST"])
@@ -514,7 +516,7 @@ def record_openai_usage(payload, response):
 
 def generate_ai_reply(sender, text, fallback):
     if not OPENAI_API_KEY: return fallback
-    payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":f"Eres {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
+    payload = {"model":OPENAI_MODEL, "store":False, "max_output_tokens":220, "instructions":f"Eres {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND} en Lima. Responde en español, breve y profesional. No inventes inmuebles, precios ni disponibilidad. Conserva la intención de la respuesta base y pide solo el siguiente dato necesario.", "input":f"Mensaje del usuario: {text}\nRespuesta base: {fallback}"}
     try:
         response = post_openai_response(payload)
         response.raise_for_status()
@@ -1397,7 +1399,7 @@ def get_inventory_store():
 
 
 THIRD_PARTY_LABEL = "publicada por un tercero"
-THIRD_PARTY_NOTE = ("Las publicadas por terceros no son captaciones de ARENZ: reconfirmamos "
+THIRD_PARTY_NOTE = (f"Las publicadas por terceros no son captaciones de {COMMERCIAL_BRAND}: reconfirmamos "
                     "disponibilidad con el anunciante antes de coordinar una visita.")
 
 
@@ -2083,7 +2085,7 @@ def progressive_reply(previous, observation, fallback, user_text=None, prior_cri
     if greeting in {"hola", "buenos días", "buenos dias", "buenas tardes", "buenas noches"}:
         criteria = dict(prior_criteria if prior_criteria is not None else conversation_state(previous))
         if criteria:
-            reply = f"Hola, soy {ASSISTANT_NAME}, asesora de {COMMERCIAL_BRAND} 😊 {RESUME_QUESTION}"
+            reply = f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND} 😊 {RESUME_QUESTION}"
             if RESUME_QUESTION in last_assistant_message(previous):
                 # A second "hola" got the very same greeting (04/11 and 05/11): say what the earlier search was instead.
                 summary = criteria_summary(criteria)
@@ -3387,6 +3389,90 @@ def crm_send_message():
     return jsonify(reply[0]), reply[1]
 
 
+CONSENT_TEXT_VERSION = "aviso-v1"
+CONSENT_YES, CONSENT_NO = "consent_comercial_si", "consent_comercial_no"
+CONSENT_PROMPT = (f"Soy un asistente virtual con inteligencia artificial de {COMMERCIAL_BRAND}. Usamos tus datos solo para "
+                  f"atender esta consulta; más detalles en {PRIVACY_URL}\n\n"
+                  "¿Te gustaría además recibir por aquí nuevas opciones de departamentos que calcen con tu búsqueda? "
+                  "Puedes cambiar de opinión cuando quieras.")
+CONSENT_REPLIES = {CONSENT_YES: (True, "¡Gracias! ✅ Te enviaremos nuevas opciones que calcen con tu búsqueda. "
+                                       "Si en algún momento ya no quieres que te escribamos, envíanos «no me contacten»."),
+                   CONSENT_NO: (False, "Entendido ✅ Solo te escribiremos sobre esta consulta.")}
+
+
+def consent_prompt_payload(to):
+    return {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "interactive",
+            "interactive": {"type": "button", "body": {"text": CONSENT_PROMPT},
+                            "action": {"buttons": [{"type": "reply", "reply": {"id": CONSENT_YES, "title": "Sí, autorizo"}},
+                                                   {"type": "reply", "reply": {"id": CONSENT_NO, "title": "Solo esta consulta"}}]}}}
+
+
+def privacy_notice_pending(memory, phone):
+    """True si a este número aún no se le envió el aviso de privacidad con la pregunta de autorización."""
+    try:
+        response = requests.get(f"{memory.url}/rest/v1/crm_privacy_notices", headers=memory.headers, timeout=5,
+                                params={"select": "phone", "phone": f"eq.{phone}"})
+        response.raise_for_status()
+        return not response.json()
+    except (requests.RequestException, ValueError) as error:
+        logger.warning("Privacy notice state unavailable: category=%s", type(error).__name__)
+        return False
+
+
+def send_privacy_notice(memory, phone):
+    """Aviso de privacidad y botones de autorización comercial, una sola vez por número. Nunca afecta la atención."""
+    if not memory or not privacy_notice_pending(memory, phone):
+        return False
+    try:
+        post_graph_message(consent_prompt_payload(phone))
+        requests.post(f"{memory.url}/rest/v1/crm_privacy_notices", timeout=10,
+                      headers={**memory.headers, "Prefer": "resolution=ignore-duplicates,return=minimal"},
+                      json={"phone": phone, "text_version": CONSENT_TEXT_VERSION}).raise_for_status()
+        logger.info("Privacy notice sent")
+        return True
+    except (requests.RequestException, RuntimeError) as error:
+        logger.warning("Privacy notice not sent: category=%s", type(error).__name__)
+        return False
+
+
+def iter_consent_replies(data):
+    """Respuestas del cliente a los botones de autorización (mensajes interactive/button_reply)."""
+    if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account": return []
+    found = []
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            for message in change.get("value", {}).get("messages", []):
+                reply = (message.get("interactive") or {}).get("button_reply") or {}
+                if message.get("type") == "interactive" and message.get("from") and reply.get("id") in CONSENT_REPLIES:
+                    found.append(message)
+    return found
+
+
+def handle_consent_reply(memory, message):
+    """Registra la autorización en el CRM (con fecha, texto del botón y versión del aviso) y confirma al cliente."""
+    sender, reply = message["from"], message["interactive"]["button_reply"]
+    granted, answer = CONSENT_REPLIES[reply["id"]]
+    claim_token = None
+    if memory:
+        outcome, claim_token = memory.claim_work(message.get("id"))
+        if outcome not in ("claimed", "reclaimed"):
+            return False
+        try:
+            memory.rpc("crm_record_consent_by_phone", {"p_phone": sender, "p_purpose": "comercial", "p_granted": granted,
+                                                       "p_evidence": reply.get("title") or reply["id"],
+                                                       "p_text_version": CONSENT_TEXT_VERSION})
+        except requests.RequestException as error:
+            logger.warning("Consent not recorded: category=%s", type(error).__name__)
+    try:
+        send_whatsapp_message(sender, answer)
+    except (requests.RequestException, RuntimeError) as error:
+        logger.warning("Consent acknowledgement failed: category=%s", type(error).__name__)
+    if memory:
+        memory.finish_work(message.get("id"), claim_token)
+    logger.info("Consent reply handled: granted=%s", granted)
+    return True
+
+
 def iter_incoming_messages(data):
     if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account": return []
     return [message for entry in data.get("entry", []) for change in entry.get("changes", []) for message in change.get("value", {}).get("messages", []) if message.get("type") == "text" and message.get("from") and message.get("text", {}).get("body")]
@@ -3398,7 +3484,13 @@ def receive_webhook():
     raw = request.get_data(cache=True)
     if not valid_meta_signature(raw, request.headers.get("X-Hub-Signature-256", "")):
         logger.warning("Rejected webhook with invalid signature"); return jsonify({"status":"invalid_signature"}), 401
-    messages = iter_incoming_messages(request.get_json(silent=True))
+    data = request.get_json(silent=True)
+    consent_replies = iter_consent_replies(data)
+    if consent_replies:
+        memory = get_conversation_memory_store()
+        handled = sum(1 for message in consent_replies if handle_consent_reply(memory, message))
+        return jsonify({"status": "received", "processed": handled}), 200
+    messages = iter_incoming_messages(data)
     if not messages: return jsonify({"status":"ignored"}), 200
     try:
         processed = 0
@@ -3476,6 +3568,8 @@ def receive_webhook():
                     if sent < len(plan["photos"]) and plan["photos"][-1].get("caption") and not plan["text"]:
                         send_whatsapp_message(sender, plan["photos"][-1]["caption"])
                 if memory: memory.record_delivery(message_id, "sent")
+                if memory and is_first_contact(previous):
+                    send_privacy_notice(memory, sender)
             except requests.RequestException as error:
                 # Internal commit remains processed. Never retry Meta automatically.
                 if memory:
