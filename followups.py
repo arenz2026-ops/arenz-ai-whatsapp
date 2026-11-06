@@ -7,7 +7,8 @@ compartí?"), pero con límites:
 - Un solo seguimiento por silencio: si el cliente no contesta, no se insiste.
 - Solo dentro de las 24 h desde su último mensaje (WhatsApp no permite texto libre después)
   y solo en horario comercial de Lima.
-- Nunca a quien el equipo marcó en el CRM CREENZIA con «No hacer seguimiento» (crm_leads.follow_up = 'no').
+- Nunca a quien el equipo marcó en el CRM CREENZIA con «No hacer seguimiento» (crm_leads.follow_up = 'no')
+  ni a quien atiende una persona (crm_leads.bot_paused).
 
 Se ejecuta desde scripts/enviar_seguimientos.py (por ejemplo, una tarea programada cada hora).
 """
@@ -98,10 +99,10 @@ class FollowupStore:
         return [row for row in response.json() if not already_followed(row) and row.get("phone") not in blocked]
 
     def blocked_phones(self):
-        """Números que el equipo marcó en el CRM CREENZIA con «No hacer seguimiento». None si no se pudo leer."""
+        """Números marcados en el CRM CREENZIA con «No hacer seguimiento» o con el bot en pausa. None si no se pudo leer."""
         try:
             response = requests.get(f"{self.url}/rest/v1/crm_leads", headers=self.headers, timeout=10,
-                                    params={"select": "phone", "follow_up": "eq.no"})
+                                    params={"select": "phone", "or": "(follow_up.eq.no,bot_paused.is.true)"})
             response.raise_for_status()
             return {row["phone"] for row in response.json() if row.get("phone")}
         except requests.RequestException as error:
