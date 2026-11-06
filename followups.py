@@ -7,6 +7,7 @@ compartí?"), pero con límites:
 - Un solo seguimiento por silencio: si el cliente no contesta, no se insiste.
 - Solo dentro de las 24 h desde su último mensaje (WhatsApp no permite texto libre después)
   y solo en horario comercial de Lima.
+- Nunca a quien el equipo marcó en el CRM CREENZIA con «No hacer seguimiento» (crm_leads.follow_up = 'no').
 
 Se ejecuta desde scripts/enviar_seguimientos.py (por ejemplo, una tarea programada cada hora).
 """
@@ -91,7 +92,21 @@ class FollowupStore:
             ("select", "phone,stage,state,summary,updated_at"), ("stage", f"in.({','.join(FOLLOWUP_STAGES)})"),
             ("updated_at", f"lt.{newest}"), ("updated_at", f"gt.{oldest}")])
         response.raise_for_status()
-        return [row for row in response.json() if not already_followed(row)]
+        blocked = self.blocked_phones()
+        if blocked is None:
+            return []  # sin saber qué marcó el equipo en el CRM, no se escribe a nadie
+        return [row for row in response.json() if not already_followed(row) and row.get("phone") not in blocked]
+
+    def blocked_phones(self):
+        """Números que el equipo marcó en el CRM CREENZIA con «No hacer seguimiento». None si no se pudo leer."""
+        try:
+            response = requests.get(f"{self.url}/rest/v1/crm_leads", headers=self.headers, timeout=10,
+                                    params={"select": "phone", "follow_up": "eq.no"})
+            response.raise_for_status()
+            return {row["phone"] for row in response.json() if row.get("phone")}
+        except requests.RequestException as error:
+            logger.warning("CRM follow-up decisions unavailable: category=%s", type(error).__name__)
+            return None
 
     def claim(self, session, now):
         """Marca el seguimiento solo si el cliente no escribió desde la consulta (updated_at sin cambios)."""

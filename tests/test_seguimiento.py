@@ -107,9 +107,10 @@ class EnvioTest(unittest.TestCase):
         respuesta = mock.Mock(); respuesta.json.return_value = []
         with mock.patch.object(followups.requests, "get", return_value=respuesta) as get:
             followups.FollowupStore(memoria).due_sessions(AHORA, followups.settings())
-        params = dict((k, v) for k, v in get.call_args.kwargs["params"] if k != "updated_at")
+        consulta = get.call_args_list[0]  # la segunda lectura es la de decisiones del CRM
+        params = dict((k, v) for k, v in consulta.kwargs["params"] if k != "updated_at")
         self.assertEqual(params["stage"], "in.(qualified,property_detail)")
-        ventana = [v for k, v in get.call_args.kwargs["params"] if k == "updated_at"]
+        ventana = [v for k, v in consulta.kwargs["params"] if k == "updated_at"]
         self.assertEqual(ventana, [f"lt.{(AHORA - timedelta(hours=20)).isoformat()}",
                                    f"gt.{(AHORA - timedelta(hours=23.5)).isoformat()}"])
 
