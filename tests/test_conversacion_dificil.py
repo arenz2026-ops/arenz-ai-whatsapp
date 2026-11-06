@@ -32,16 +32,20 @@ def llamadas_sin_ficha(resultado):
 
 
 class InterruptorConversacionIATest(unittest.TestCase):
-    def test_apagado_por_defecto(self):
+    def test_encendido_por_defecto(self):
+        """Si la variable se borra en Render, el bot no vuelve al comportamiento anterior al 02/11."""
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CONVERSACION_IA", None)
-            self.assertFalse(app.conversacion_ia_activa())
+            self.assertTrue(app.conversacion_ia_activa())
 
     def test_valores_reconocidos(self):
+        """Solo un apagado explícito apaga; vacío o mal escrito deja la IA conversacional encendida."""
         for valor, esperado in (("on", True), ("ON", True), (" 1 ", True), ("true", True), ("sí", True),
-                                ("off", False), ("0", False), ("", False), ("no", False), ("cualquiera", False)):
+                                ("", True), ("   ", True), ("onn", True), ("cualquiera", True),
+                                ("off", False), ("OFF", False), (" off ", False), ("0", False), ("false", False),
+                                ("False", False), ("no", False)):
             with mock.patch.dict(os.environ, {"CONVERSACION_IA": valor}):
-                self.assertEqual(app.conversacion_ia_activa(), esperado, valor)
+                self.assertEqual(app.conversacion_ia_activa(), esperado, repr(valor))
 
     def test_apagado_ignora_la_clasificacion(self):
         """En off, que la IA traiga o no respuesta_cliente no cambia nada: el comportamiento es el anterior."""

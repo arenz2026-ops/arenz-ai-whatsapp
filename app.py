@@ -42,9 +42,16 @@ GRAPH_API_VERSION = "v26.0"
 SERVICE_COMMIT = os.getenv("RENDER_GIT_COMMIT", "")[:7]
 
 
+CONVERSACION_IA_OFF = {"off", "0", "false", "no"}
+
+
 def conversacion_ia_activa():
-    """Interruptor CONVERSACION_IA (on/off, por defecto off). En off el bot conserva el comportamiento anterior."""
-    return os.getenv("CONVERSACION_IA", "off").strip().casefold() in {"on", "1", "true", "si", "sí"}
+    """Interruptor CONVERSACION_IA, encendido por defecto (en producción desde el 02/11).
+
+    Solo un apagado explícito ("off", "0", "false", "no") vuelve al comportamiento anterior: si la variable se
+    borra, queda vacía o se escribe mal en Render, el bot sigue con la IA conversacional.
+    """
+    return os.getenv("CONVERSACION_IA", "on").strip().casefold() not in CONVERSACION_IA_OFF
 
 
 logger.info("CONVERSACION_IA=%s", "on" if conversacion_ia_activa() else "off")
