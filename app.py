@@ -58,6 +58,8 @@ logger.info("CONVERSACION_IA=%s", "on" if conversacion_ia_activa() else "off")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
 COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "CREENZIA Inversiones")
 PRIVACY_URL = os.getenv("PRIVACY_URL", "https://creenzia-crm.vercel.app/privacidad")
+# Aviso de privacidad con botones al primer contacto: apagado por defecto para que la conversación sea directa.
+PRIVACY_NOTICE_ENABLED = os.getenv("PRIVACY_NOTICE_ENABLED", "").strip().lower() in ("1", "true", "si", "sí", "yes")
 INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND} 😊 Te ayudo a encontrar tu departamento ideal 🏡 ¿En qué distrito o distritos lo buscas?"
 user_sessions = {}
 
@@ -3652,7 +3654,7 @@ def receive_webhook():
                     if sent < len(plan["photos"]) and plan["photos"][-1].get("caption") and not plan["text"]:
                         send_whatsapp_message(sender, plan["photos"][-1]["caption"])
                 if memory: memory.record_delivery(message_id, "sent")
-                if memory and is_first_contact(previous):
+                if memory and PRIVACY_NOTICE_ENABLED and is_first_contact(previous):
                     send_privacy_notice(memory, sender)
             except requests.RequestException as error:
                 # Internal commit remains processed. Never retry Meta automatically.

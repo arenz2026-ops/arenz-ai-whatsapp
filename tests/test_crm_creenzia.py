@@ -243,6 +243,9 @@ class AvisoPrivacidadTest(unittest.TestCase):
             self.assertFalse(app.send_privacy_notice(memory, "51911111111"))
         enviar.assert_not_called()
 
+    def test_aviso_apagado_por_defecto(self):
+        self.assertFalse(app.PRIVACY_NOTICE_ENABLED)
+
     def test_si_no_se_puede_leer_no_insiste(self):
         memory = mock.Mock(url="https://x.supabase.co", headers={})
         with mock.patch.object(app.requests, "get", side_effect=requests.ConnectionError()), \
