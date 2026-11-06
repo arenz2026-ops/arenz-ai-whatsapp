@@ -3064,6 +3064,129 @@ def record_ad_referral(memory, sender, message):
         return False
 
 
+CRM_ORIGIN = os.getenv("CRM_ORIGIN", "https://creenzia-crm.vercel.app").rstrip("/")
+CRM_MAX_TEXT = 4096
+WHATSAPP_OUTSIDE_WINDOW_CODES = {131047, 131026, 470}
+
+
+def crm_bot_paused(memory, phone):
+    """True si en el CRM CREENZIA una persona tomó la conversación («Pausar bot»). Ante un error, el bot atiende."""
+    try:
+        response = requests.get(f"{memory.url}/rest/v1/crm_leads", headers=memory.headers, timeout=5,
+                                params={"select": "bot_paused", "phone": f"eq.{phone}"})
+        response.raise_for_status()
+        rows = response.json()
+        return bool(rows and rows[0].get("bot_paused"))
+    except (requests.RequestException, ValueError) as error:
+        logger.warning("CRM pause state unavailable: category=%s", type(error).__name__)
+        return False
+
+
+def save_paused_inbound(memory, phone, message_id, text):
+    """Con el bot en pausa, el mensaje del cliente se guarda para que el equipo lo vea en el CRM; no se responde."""
+    response = requests.post(f"{memory.url}/rest/v1/conversation_messages?on_conflict=message_key",
+                             headers={**memory.headers, "Prefer": "resolution=ignore-duplicates,return=minimal"}, timeout=10,
+                             json=[{"phone": phone, "message_key": f"paused:{message_id}", "direction": "inbound",
+                                    "content": text, "extraction": None}])
+    response.raise_for_status()
+
+
+def crm_user_from_token(memory, token):
+    """Usuario activo del CRM dueño del token de sesión de Supabase, o None."""
+    if not token:
+        return None
+    response = requests.get(f"{memory.url}/auth/v1/user", timeout=10,
+                            headers={"apikey": memory.headers.get("apikey", ""), "Authorization": f"Bearer {token}"})
+    if response.status_code != 200:
+        return None
+    auth_id = (response.json() or {}).get("id")
+    if not auth_id:
+        return None
+    response = requests.get(f"{memory.url}/rest/v1/crm_users", headers=memory.headers, timeout=10,
+                            params={"select": "id,full_name", "auth_user_id": f"eq.{auth_id}", "active": "eq.true"})
+    response.raise_for_status()
+    rows = response.json()
+    return rows[0] if rows else None
+
+
+def graph_error_code(error):
+    try:
+        return int(error.response.json().get("error", {}).get("code"))
+    except (AttributeError, ValueError, TypeError):
+        return None
+
+
+@app.after_request
+def crm_cors(response):
+    if request.path.startswith("/crm/") and request.headers.get("Origin", "").rstrip("/") == CRM_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = CRM_ORIGIN
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Vary"] = "Origin"
+    return response
+
+
+@app.route("/crm/enviar", methods=["POST", "OPTIONS"])
+def crm_send_message():
+    """Una persona del equipo responde al cliente desde el CRM CREENZIA. El bot queda en pausa con ese cliente."""
+    if request.method == "OPTIONS":
+        return "", 204
+    memory = get_conversation_memory_store()
+    if not memory:
+        return jsonify({"status": "no_memory"}), 503
+    body = request.get_json(silent=True) or {}
+    text, lead_id = str(body.get("text") or "").strip(), str(body.get("lead_id") or "").strip()
+    if not text or not lead_id:
+        return jsonify({"status": "invalid", "error": "Falta el mensaje o el cliente."}), 400
+    if len(text) > CRM_MAX_TEXT:
+        return jsonify({"status": "invalid", "error": "El mensaje es demasiado largo."}), 400
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    try:
+        user = crm_user_from_token(memory, token)
+        if not user:
+            return jsonify({"status": "forbidden", "error": "Tu sesión venció. Vuelve a ingresar al CRM."}), 403
+        response = requests.get(f"{memory.url}/rest/v1/crm_leads", headers=memory.headers, timeout=10,
+                                params={"select": "id,phone", "id": f"eq.{lead_id}"})
+        response.raise_for_status()
+        rows = response.json()
+    except (requests.RequestException, ValueError):
+        return jsonify({"status": "error", "error": "No se pudo verificar el acceso. Intenta de nuevo."}), 502
+    if not rows:
+        return jsonify({"status": "not_found", "error": "No se encontró el cliente."}), 404
+    phone = rows[0]["phone"]
+    status, error_code, reply = "sent", None, ({"status": "sent"}, 200)
+    try:
+        send_whatsapp_message(phone, text)
+    except requests.RequestException as error:
+        code = graph_error_code(error)
+        status, error_code = "failed", str(code or type(error).__name__)
+        if code in WHATSAPP_OUTSIDE_WINDOW_CODES:
+            reply = ({"status": "outside_window", "error": "Pasaron más de 24 horas desde el último mensaje del cliente: "
+                      "WhatsApp no permite escribirle texto libre. Llámalo o escríbele desde tu WhatsApp."}, 409)
+        else:
+            reply = ({"status": "failed", "error": "WhatsApp no aceptó el mensaje. Intenta de nuevo."}, 502)
+    except RuntimeError:
+        status, error_code = "failed", "not_configured"
+        reply = ({"status": "failed", "error": "El envío por WhatsApp no está configurado."}, 503)
+    try:
+        writes = [("crm_outbound_messages", {"lead_id": lead_id, "author_id": user["id"], "body": text,
+                                             "status": status, "error_code": error_code})]
+        if status == "sent":
+            writes.append(("conversation_messages", {"phone": phone, "message_key": f"crm:{uuid.uuid4()}",
+                                                     "direction": "outbound", "content": text, "extraction": None}))
+        for table, row in writes:
+            requests.post(f"{memory.url}/rest/v1/{table}", headers={**memory.headers, "Prefer": "return=minimal"},
+                          json=row, timeout=10).raise_for_status()
+        if status == "sent":
+            requests.patch(f"{memory.url}/rest/v1/crm_leads", headers={**memory.headers, "Prefer": "return=minimal"},
+                           params={"id": f"eq.{lead_id}", "bot_paused": "is.false"},
+                           json={"bot_paused": True, "bot_paused_by": user["id"]}, timeout=10).raise_for_status()
+    except requests.RequestException as error:
+        logger.warning("CRM message record failed: category=%s", type(error).__name__)
+    logger.info("CRM human message: status=%s", status)
+    return jsonify(reply[0]), reply[1]
+
+
 def iter_incoming_messages(data):
     if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account": return []
     return [message for entry in data.get("entry", []) for change in entry.get("changes", []) for message in change.get("value", {}).get("messages", []) if message.get("type") == "text" and message.get("from") and message.get("text", {}).get("body")]
@@ -3102,6 +3225,13 @@ def receive_webhook():
                 if memory:
                     memory.finish_work(message_id, claim_token)
                 logger.info("Advisor check-in: 24h window open")
+                processed += 1
+                continue
+            if memory and crm_bot_paused(memory, sender):
+                # Una persona atiende a este cliente desde el CRM: se guarda su mensaje y el bot no responde.
+                save_paused_inbound(memory, sender, message_id, text)
+                memory.finish_work(message_id, claim_token)
+                logger.info("Bot paused by CRM: inbound stored, no reply")
                 processed += 1
                 continue
             raw_text = text
