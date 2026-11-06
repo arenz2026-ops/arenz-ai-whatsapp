@@ -136,13 +136,16 @@ def ia(intent="confirmation", respuesta="", acciones=(), cambio=False, handoff=F
 
 
 def _ficha_simulada(payload):
-    """Lo que devuelve el modelo al redactar la ficha: solo datos de la unidad, con la pregunta de cierre pedida."""
-    datos = json.loads(re.search(r"Datos de la unidad: (\{.*?\})\n", payload["input"]).group(1))
-    cierre = re.search(r"Termina con una sola pregunta de cierre: '(.*?)'", payload["instructions"]).group(1)
-    proyecto = re.match(r"Proyecto (.*?);", datos["public_description"]).group(1)
-    return (f"🏠 DEPARTAMENTO EN VENTA – {proyecto.upper()}, {datos['district'].upper()}\n"
-            f"💰 PRECIO DE VENTA: S/ {datos['price_amount']:,.0f}\n"
-            f"🏡 {datos['bedrooms']} dormitorios · {datos['bathrooms']} baños · {datos['area_total_m2']:g} m²\n\n{cierre}")
+    """Lo que devuelve el modelo al redactar la parte descriptiva de la ficha. A propósito trae líneas prohibidas
+    (precio y metrajes de la tarjeta, una fecha de entrega) que el sistema debe descartar."""
+    distrito = re.search(r"Proyecto y distrito: [^,]*, (.*)\n", payload["input"]).group(1)
+    return ("✨ Departamento moderno con excelente iluminación natural.\n"
+            "💰 PRECIO DE VENTA: Desde S/ 381,200\n"
+            "🏗️ CARACTERÍSTICAS DEL EDIFICIO\n🏢 Edificio de 12 pisos\n📅 Entrega estimada en Dic 2027\n"
+            "🏡 Metrajes desde 56 m² hasta 119.66 m²\n\n"
+            "🌟 ÁREAS COMUNES\n🛋️ SUM y zona BBQ\n\n"
+            f"📍 UBICACIÓN\nJr. Los Pinos 450, {distrito}\n\n"
+            "📑 FINANCIAMIENTO\n💳 Separación con 2,000 soles")
 
 
 def _respuesta_sobre_unidad(payload):

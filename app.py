@@ -1660,20 +1660,17 @@ def unit_facts(item):
 
 
 FICHA_RULES = (
-    "Eres la asesora de {brand}. Redacta la ficha de UN departamento para WhatsApp en español, con este formato y orden "
-    "(omite una sección o línea si no hay datos: nunca escribas 'no especificado', 'no indicado' ni similares; nunca inventes): "
-    "'🏠 DEPARTAMENTO EN VENTA – <PROYECTO>, <DISTRITO>' en mayúsculas; '✨' resumen de 1-2 líneas; "
-    "'💰 PRECIO DE VENTA: <moneda y monto>'; '🚗' estacionamiento (si no está confirmado: 'Estacionamiento: por confirmar'); "
-    "'🏡 CARACTERÍSTICAS DEL DEPARTAMENTO' (área, piso, dormitorios, baños, vista, acabados) con un emoji por línea; "
-    "'🏗️ CARACTERÍSTICAS DEL EDIFICIO' (pisos, antigüedad o etapa y fecha de entrega, financiamiento bancario si lo hay); "
-    "'🌟 ÁREAS COMUNES'; '📍 UBICACIÓN' (dirección); '📌 ENTORNO Y CONECTIVIDAD' (avenidas, colegios, comercios); "
-    "'🗺️ GOOGLE MAPS' (solo el enlace si existe); '📑 FINANCIAMIENTO' (crédito hipotecario, AFP si aplica). "
-    "Los datos de la UNIDAD (precio, dormitorios, área, piso, entrega) mandan sobre la tarjeta del proyecto. "
+    "Eres la asesora de {brand}. Redacta la ficha descriptiva de UN departamento para WhatsApp en español, usando la "
+    "tarjeta del proyecto, con este orden y omitiendo lo que no tenga datos (nunca escribas 'no especificado' ni similares; "
+    "nunca inventes): una línea '✨' con un resumen de 1-2 frases; '🏗️ CARACTERÍSTICAS DEL EDIFICIO' (pisos, antigüedad o "
+    "etapa, acabados); '🌟 ÁREAS COMUNES'; '📍 UBICACIÓN' (dirección); '📌 ENTORNO Y CONECTIVIDAD' (avenidas, colegios, "
+    "comercios); '🗺️ GOOGLE MAPS' (solo el enlace si existe); '📑 FINANCIAMIENTO' (crédito hipotecario, AFP si aplica), con "
+    "un emoji por línea. El sistema escribe aparte el título, el precio, el estacionamiento, el área, el piso, los dormitorios, "
+    "los baños, la vista y la entrega de la unidad: NO los escribas, ni montos, metrajes ni fechas de entrega de la tarjeta. "
     "PROHIBIDO mencionar el nombre de la inmobiliaria, constructora, desarrolladora o empresa comercializadora, titulares, "
     "nombres de contactos internos, teléfonos, 'XXXXX', precios de cierre u observaciones internas, "
     "ni embargos, cargas, hipotecas o situación legal (eso lo informa el sistema aparte). "
-    "Escribe los montos como 'S/ 295,000' para soles y 'US$ 150,000' para dólares (nunca PEN ni USD). "
-    "Termina con una sola pregunta de cierre: {closing} Máximo 2500 caracteres. Solo el texto de la ficha."
+    "Sin título y sin pregunta final. Máximo 1800 caracteres. Solo ese texto."
 )
 
 
@@ -1690,18 +1687,105 @@ def ai_text(instructions, content, max_tokens):
         return None
 
 
+FICHA_MONTHS = r"ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic"
+# A line the AI wrote with a unit fact (price, area, delivery date, availability) is dropped: the system writes those.
+FICHA_LINE_FORBIDDEN = re.compile(
+    r"\bprecio\b|\bentrega(?:do|da)?\b.*(?:20\d\d|\b(?:" + FICHA_MONTHS + r")\w*|inmediat|\d-\d\d)", re.IGNORECASE)
+FICHA_HEADER_LINE = re.compile(r"^[^\wáéíóúñ]*[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ ,.&/()-]{3,}:?\s*$")
+
+
+def ficha_closing_question(item):
+    return ("¿Quieres que coordinemos una visita al departamento?" if item_delivery(item) == "inmediata"
+            else "¿Quieres que un asesor te envíe los planos y el brochure del proyecto?")
+
+
+def ficha_parking_line(item):
+    public = item["public"]
+    spaces = public.get("parking_spaces")
+    included = "incluido según ficha" in (public.get("public_description") or "")
+    if spaces is None:
+        return "🚗 Estacionamiento: por confirmar"
+    if spaces == 0:
+        return "🚗 Sin estacionamiento incluido"
+    noun = "estacionamiento" if spaces == 1 else "estacionamientos"
+    return f"🚗 {spaces} {noun}" + (" incluido" + ("" if spaces == 1 else "s") if included else ", por confirmar si está incluido en el precio")
+
+
+def ficha_unit_facts(item):
+    """Title, price, parking and the unit's own features, written from the inventory record (never by the AI)."""
+    public = item["public"]
+    description = public.get("public_description") or ""
+    project = unit_project_name(item) or public.get("property_type", "departamento").capitalize()
+    symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
+    lines = [f"🏠 DEPARTAMENTO EN VENTA – {project.upper()}, {public['district'].upper()}"]
+    facts = []
+    area = public.get("area_total_m2") or public.get("area_m2")
+    if area:
+        facts.append(f"📐 Área: {float(area):g} m²")
+    floor = re.search(r"\bPiso ([^.]+)\.", description)
+    if floor:
+        facts.append(f"🏢 Piso: {floor.group(1)}")
+    if public.get("bedrooms") is not None:
+        facts.append(f"🛏️ Dormitorios: {float(public['bedrooms']):g}")
+    if public.get("bathrooms") is not None:
+        facts.append(f"🛁 Baños: {float(public['bathrooms']):g}")
+    view = re.search(r"\bVista ([^.]+)\.", description)
+    if view:
+        words = view.group(1).strip().split()
+        # "INTERIOR B" -> "Interior B": a one-letter tower or block keeps its capital.
+        facts.append("🌄 Vista: " + " ".join(w.upper() if len(w) == 1 else (w.capitalize() if i == 0 else w.lower())
+                                             for i, w in enumerate(words)))
+    when = re.search(r"Entrega según fuente: ([^.]+)\.", description)
+    delivery = item_delivery(item)
+    label = when.group(1).strip() if when else ""
+    # "May-27" -> "May 2027"; the price lists write the year short.
+    label = re.sub(r"^([A-Za-zÁÉÍÓÚáéíóú]{3,})[-/ ](\d{2})$", lambda m: f"{m.group(1).capitalize()} 20{m.group(2)}", label)
+    facts.append("📅 Entrega inmediata" if delivery == "inmediata" else
+                 f"📅 Entrega: {label}" if delivery == "futura" and label else "📅 Entrega: por confirmar")
+    amount = float(public["price_amount"])
+    price = f"{amount:,.0f}" if amount.is_integer() else f"{amount:,.2f}"
+    return lines, [f"💰 PRECIO DE VENTA: {symbol} {price}", ficha_parking_line(item)], facts
+
+
+def ficha_ai_sections(text):
+    """The AI's summary and descriptive sections, without any line that states a unit fact."""
+    kept = [line.rstrip() for line in (text or "").splitlines()
+            if not AI_TEXT_FORBIDDEN.search(line) and not FICHA_LINE_FORBIDDEN.search(line)
+            and not line.lstrip().startswith(("🏠", "💰", "🚗", "¿"))]
+    summary = next((line for line in kept if line.lstrip().startswith("✨")), None)
+    body = [line for line in kept if line is not summary]
+    # A section whose every line was dropped leaves no orphan header behind.
+    cleaned = []
+    for index, line in enumerate(body):
+        if FICHA_HEADER_LINE.match(line.strip()):
+            following = next((b for b in body[index + 1:] if b.strip()), None)
+            if following is None or FICHA_HEADER_LINE.match(following.strip()):
+                continue
+        cleaned.append(line)
+    return summary, re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()
+
+
 def full_unit_reply(item):
-    """The complete ficha, sent once the client picks a unit; the brief card stays as fallback."""
+    """The complete ficha, sent once the client picks a unit.
+
+    The title, price, parking, unit features and closing question come from the inventory record; the AI only writes
+    the summary and the descriptive sections from the project card. Without the AI the ficha still goes out, with
+    every inventory fact.
+    """
     reference = item["public"]["public_reference"]
-    closing = ("'¿Quieres que coordinemos una visita al departamento?'" if item_delivery(item) == "inmediata"
-               else "'¿Quieres que un asesor te envíe los planos y el brochure del proyecto?'")
     card = clean_card_text(project_card_text(item))
-    text = ai_text(FICHA_RULES.format(brand=COMMERCIAL_BRAND, closing=closing),
-                   f"Datos de la unidad: {unit_facts(item)}\nTarjeta del proyecto:\n{card or '(sin tarjeta)'}", 1400)
-    if not text:
-        return with_notice(selected_unit_reply(item), item)
+    text = ai_text(FICHA_RULES.format(brand=COMMERCIAL_BRAND),
+                   f"Proyecto y distrito: {unit_project_name(item) or ''}, {item['public']['district']}\n"
+                   f"Tarjeta del proyecto:\n{card or '(sin tarjeta)'}", 1000) if card else None
+    summary, sections = ficha_ai_sections(text)
+    title, price, facts = ficha_unit_facts(item)
+    parts = ["\n".join(title + ([summary] if summary else []) + price),
+             "\n".join(["🏡 CARACTERÍSTICAS DEL DEPARTAMENTO"] + facts)]
+    if sections:
+        parts.append(sections)
+    parts.append(ficha_closing_question(item))
     # The general notice goes last, after the closing question, as the operator asked.
-    return with_notice(f"{text}\n\nRef. {reference}", item)
+    return with_notice("\n\n".join(parts) + f"\n\nRef. {reference}", item)
 
 
 def parking_question_reply(item):
