@@ -1,3 +1,4 @@
+import contextvars
 import copy
 import difflib
 import hashlib
@@ -465,7 +466,43 @@ def post_openai_response(payload):
             OPENAI_MODEL = OPENAI_FALLBACK_MODEL
             payload = {**payload, "model": OPENAI_FALLBACK_MODEL}
             response = requests.post("https://api.openai.com/v1/responses", headers=headers, json=payload, timeout=15)
+    record_openai_usage(payload, response)
     return response
+
+
+# OpenAI usage of the message being handled, saved with it in Supabase (extraction._uso_openai), so token
+# cost per message can be measured from the database without reading Render's logs.
+_openai_calls = contextvars.ContextVar("openai_calls", default=None)
+
+
+def start_openai_usage():
+    _openai_calls.set([])
+
+
+def openai_usage():
+    return list(_openai_calls.get() or [])
+
+
+def record_openai_usage(payload, response):
+    """Best effort and silent: usage bookkeeping must never break a turn."""
+    calls = _openai_calls.get()
+    if calls is None:
+        return
+    try:
+        status = getattr(response, "status_code", None)
+        ok = isinstance(status, int) and status < 400
+        body = response.json() if ok else {}
+        body = body if isinstance(body, dict) else {}
+        usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+        name = ((payload.get("text") or {}).get("format") or {}).get("name")
+        kind = ("observacion" if name == "arenz_conversation_observation" else
+                "ficha" if "Redacta la ficha" in (payload.get("instructions") or "") else "otra")
+        number = lambda key: usage.get(key) if isinstance(usage.get(key), int) else None
+        calls.append({"tipo": kind, "modelo": body.get("model") if isinstance(body.get("model"), str) else None,
+                      "entrada": number("input_tokens"), "salida": number("output_tokens"), "total": number("total_tokens"),
+                      "ok": ok})
+    except Exception:  # noqa: BLE001 — never let accounting reach the client's turn
+        pass
 
 
 def generate_ai_reply(sender, text, fallback):
@@ -3372,6 +3409,7 @@ def receive_webhook():
                 continue
             timings["dedupe_ms"] = round((time.monotonic() - started_at) * 1000)
             sender, text = message["from"], message["text"]["body"]
+            start_openai_usage()
             record_ad_referral(memory, sender, message)
             if is_advisor_checkin(sender, text):
                 try:
@@ -3406,6 +3444,8 @@ def receive_webhook():
             turn = plan_turn(sender, previous, text, observation, fallback, inventory_store)
             effective_observation, turn_state, criteria, stage, summary, plan = (
                 turn["observation"], turn["search_state"], turn["criteria"], turn["stage"], turn["summary"], turn["plan"])
+            if isinstance(effective_observation, dict) and openai_usage():
+                effective_observation = {**effective_observation, "_uso_openai": openai_usage()}
             inventory_matches, inventory_cutoff = turn["inventory_matches"], turn["inventory_cutoff"]
             reply = plan["stored"]
             started_at = time.monotonic()

@@ -369,3 +369,52 @@ class UnidadEnElAvisoTest(unittest.TestCase):
                                                   banco.CRITERIOS_PL, unit=unidad)
         parametros = [p["text"] for p in payload["template"]["components"][0]["parameters"]]
         self.assertEqual(parametros[2], "Libertador · unidad 502 · piso 5 · Pueblo Libre · S/ 289,460 (C2-268EAF11F560) – Jr. Los Pinos 450, Pueblo Libre")
+
+
+class TokensEnSupabaseTest(unittest.TestCase):
+    """Cada mensaje guarda en extraction._uso_openai lo que gastó en OpenAI, para medir tokens sin los logs de Render."""
+
+    def _openai(self, observacion, entrada, salida):
+        respuesta = mock.Mock(status_code=200)
+        respuesta.raise_for_status.return_value = None
+        respuesta.json.return_value = {"model": "gpt-4.1-mini-2025-04-14", "output_text": json.dumps(observacion),
+                                       "usage": {"input_tokens": entrada, "output_tokens": salida, "total_tokens": entrada + salida}}
+        return respuesta
+
+    def test_se_guarda_con_el_mensaje(self):
+        import hashlib
+        import hmac
+        caso = next(c for c in banco.CASOS if c["id"] == "rep_ya_me_lo_dijiste")
+        memoria = mock.Mock()
+        memoria.claim_work.return_value = ("claimed", "token")
+        memoria.load_session.return_value = caso["historia"]
+        cuerpo = json.dumps({"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {"messages": [
+            {"id": "wamid-tokens", "from": banco.TELEFONO, "type": "text", "text": {"body": caso["cliente"]}}]}}]}]}).encode()
+        firma = "sha256=" + hmac.new(b"secreto", cuerpo, hashlib.sha256).hexdigest()
+        with mock.patch.dict(os.environ, {"CONVERSACION_IA": "on"}), \
+                mock.patch.object(app, "APP_SECRET", "secreto"), mock.patch.object(app, "OPENAI_API_KEY", "clave"), \
+                mock.patch.object(app, "get_conversation_memory_store", return_value=memoria), \
+                mock.patch.object(app, "get_inventory_store", return_value=banco.InventarioFalso(banco.TODAS_LIB)), \
+                mock.patch.object(app.requests, "post", return_value=self._openai(caso["ia"], 2431, 168)), \
+                mock.patch.object(app, "post_graph_message"):
+            self.assertEqual(app.app.test_client().post("/webhook", data=cuerpo, headers={
+                "Content-Type": "application/json", "X-Hub-Signature-256": firma}).status_code, 200)
+        guardado = memoria.commit_work.call_args[0][0]["p_inbound"]["extraction"]
+        self.assertEqual(guardado["_uso_openai"], [{"tipo": "observacion", "modelo": "gpt-4.1-mini-2025-04-14",
+                                                     "entrada": 2431, "salida": 168, "total": 2599, "ok": True}])
+
+    def test_un_mensaje_no_arrastra_el_consumo_del_anterior(self):
+        app.start_openai_usage()
+        app.record_openai_usage({"instructions": "x"}, self._openai({}, 10, 5))
+        self.assertEqual(len(app.openai_usage()), 1)
+        app.start_openai_usage()
+        self.assertEqual(app.openai_usage(), [])
+
+    def test_nunca_rompe_el_turno(self):
+        app.start_openai_usage()
+        for respuesta in (mock.Mock(status_code=mock.Mock()), mock.Mock(status_code=500), object(), None):
+            app.record_openai_usage({"instructions": "x"}, respuesta)
+        rara = mock.Mock(status_code=200)
+        rara.json.side_effect = ValueError
+        app.record_openai_usage({"text": None}, rara)
+        self.assertTrue(all(not llamada["ok"] or llamada["entrada"] is None for llamada in app.openai_usage()))
