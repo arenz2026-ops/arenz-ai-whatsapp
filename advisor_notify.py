@@ -57,9 +57,19 @@ def advisor_phones():
 def _money(criteria):
     amount, currency = criteria.get("budget_max"), criteria.get("currency")
     if amount is None:
-        return NOT_GIVEN
+        return _offer(criteria) if criteria.get("price_offer") else NOT_GIVEN
     amount = int(amount) if float(amount).is_integer() else amount
-    return f"{currency or ''} {amount:,}".strip()
+    budget = f"{currency or ''} {amount:,}".strip()
+    return f"{budget} · {_offer(criteria)}" if criteria.get("price_offer") else budget
+
+
+def _offer(criteria):
+    """A counteroffer for a specific unit, shown next to the budget so the advisor does not miss it."""
+    offer = criteria.get("price_offer") or {}
+    unit = f" por {offer['reference']}" if offer.get("reference") else ""
+    if offer.get("amount"):
+        return f"contraoferta {offer.get('currency') or ''} {int(offer['amount']):,}{unit}".replace("  ", " ")
+    return f"pidió rebaja{unit} (sin monto)"
 
 
 def criteria_lines(criteria):
