@@ -89,8 +89,10 @@ class FichaTests(unittest.TestCase):
         from unittest.mock import patch
         with patch("app.project_card_text", return_value=""), patch("app.ai_text", return_value="🏠 DEPARTAMENTO EN VENTA"):
             self.assertTrue(app.full_unit_reply(it).endswith("Ref. C2-X1"))
-        with patch("app.project_card_text", return_value=""), patch("app.ai_text", return_value=None):
-            self.assertIn("Revisemos esta unidad", app.full_unit_reply(it))
+        # Sin IA la ficha sale igual, con los datos del inventario.
+        with patch("app.project_card_text", return_value="📍 DIRECCIÓN: Calle 1"), patch("app.ai_text", return_value=None):
+            ficha = app.full_unit_reply(it)
+        self.assertIn("DEPARTAMENTO EN VENTA", ficha); self.assertIn("PRECIO DE VENTA", ficha); self.assertTrue(ficha.endswith("Ref. C2-X1"))
 
 
 class SaleOnlyFlowTests(unittest.TestCase):

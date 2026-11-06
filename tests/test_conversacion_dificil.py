@@ -422,3 +422,95 @@ class TokensEnSupabaseTest(unittest.TestCase):
         rara.json.side_effect = ValueError
         app.record_openai_usage({"text": None}, rara)
         self.assertTrue(all(not llamada["ok"] or llamada["entrada"] is None for llamada in app.openai_usage()))
+
+
+class FichaDelInventarioTest(unittest.TestCase):
+    """La IA nunca escribe precio, área ni entrega en la ficha: esos datos salen del inventario."""
+
+    def ficha(self, item, texto_ia, tarjeta="📍 DIRECCIÓN: Jr. Los Pinos 450"):
+        with mock.patch.object(app, "project_card_text", return_value=tarjeta), \
+                mock.patch.object(app, "ai_text", return_value=texto_ia) as ia, \
+                mock.patch.object(app, "unit_notice_text", return_value=""):
+            return app.full_unit_reply(item), ia
+
+    def test_datos_del_inventario_aunque_la_ia_escriba_otros(self):
+        texto, _ = self.ficha(banco.LIBERTADOR, "✨ Lindo depa.\n💰 PRECIO DE VENTA: S/ 999,999\n📐 Área: 200 m²\n"
+                                               "📅 Entrega: Ene 2030\n🛏️ 5 dormitorios\nDisponible para mudarse ya")
+        for dato in ("💰 PRECIO DE VENTA: S/ 289,460", "📐 Área: 56.4 m²", "🏢 Piso: 5", "🛏️ Dormitorios: 2",
+                     "🛁 Baños: 2", "📅 Entrega: Dic 2027", "✨ Lindo depa."):
+            self.assertIn(dato, texto)
+        for inventado in ("999,999", "200 m²", "2030", "5 dormitorios", "Disponible"):
+            self.assertNotIn(inventado, texto)
+
+    def test_nunca_pen_ni_usd(self):
+        dolares = copy.deepcopy(banco.UNIVERSO)
+        dolares["public"]["currency"] = "USD"
+        texto, _ = self.ficha(dolares, None)
+        self.assertIn("💰 PRECIO DE VENTA: US$ 295,000", texto)
+        texto, _ = self.ficha(banco.UNIVERSO, None)
+        self.assertIn("💰 PRECIO DE VENTA: S/ 295,000", texto)
+        self.assertNotRegex(texto, r"\b(PEN|USD)\b")
+
+    def test_estacionamiento_siempre_igual_para_la_misma_unidad(self):
+        """El 31/10 dos fichas de Universo dijeron 'no incluido' y 'por confirmar': ahora sale del registro."""
+        casos = {None: "🚗 Estacionamiento: por confirmar", 0: "🚗 Sin estacionamiento incluido",
+                 2: "🚗 2 estacionamientos, por confirmar si está incluido en el precio"}
+        for espacios, linea in casos.items():
+            item = copy.deepcopy(banco.UNIVERSO)
+            item["public"]["parking_spaces"] = espacios
+            self.assertEqual(app.ficha_parking_line(item), linea)
+        item = copy.deepcopy(banco.UNIVERSO)
+        item["public"].update(parking_spaces=1, public_description="Proyecto Universo; unidad 604. Un estacionamiento incluido según ficha.")
+        self.assertEqual(app.ficha_parking_line(item), "🚗 1 estacionamiento incluido")
+        primera, _ = self.ficha(banco.UNIVERSO, "🚗 Estacionamiento: no incluido")
+        segunda, _ = self.ficha(banco.UNIVERSO, "🚗 Estacionamiento: incluido")
+        self.assertEqual(primera.count("🚗"), 1)
+        self.assertEqual(primera, segunda)
+
+    def test_pregunta_de_cierre_segun_entrega(self):
+        inmediata, _ = self.ficha(banco.UNIVERSO, None)
+        futura, _ = self.ficha(banco.LIBERTADOR, "✨ Ok.\n¿Te gustaría agendar una visita hoy mismo?")
+        self.assertIn("📅 Entrega inmediata", inmediata)
+        self.assertIn("¿Quieres que coordinemos una visita al departamento?", inmediata)
+        self.assertIn("¿Quieres que un asesor te envíe los planos y el brochure del proyecto?", futura)
+        self.assertNotIn("agendar una visita hoy", futura, "la pregunta de la IA no reemplaza la del sistema")
+
+    def test_sin_ia_sale_la_ficha_completa(self):
+        texto, ia = self.ficha(banco.LIBERTADOR, None)
+        self.assertIn("🏠 DEPARTAMENTO EN VENTA – LIBERTADOR, PUEBLO LIBRE", texto)
+        self.assertIn("💰 PRECIO DE VENTA: S/ 289,460", texto)
+        self.assertTrue(texto.endswith("Ref. C2-268EAF11F560"))
+        _, ia = self.ficha(banco.LIBERTADOR, "✨ x", tarjeta="")
+        ia.assert_not_called()
+
+    def test_seccion_vacia_no_deja_titulo_suelto(self):
+        texto, _ = self.ficha(banco.LIBERTADOR, "✨ Ok.\n📑 FINANCIAMIENTO\n💳 Separación con 2,000 soles\n🌟 ÁREAS COMUNES\n🛋️ SUM")
+        self.assertNotIn("FINANCIAMIENTO", texto)
+        self.assertIn("🌟 ÁREAS COMUNES\n🛋️ SUM", texto)
+
+    def test_la_foto_toma_la_pregunta_de_cierre(self):
+        """photo_turn sigue quitando la pregunta de cierre para ponerla bajo la última foto."""
+        texto, _ = self.ficha(banco.LIBERTADOR, "✨ Ok.")
+        self.assertNotIn("brochure", app.FICHA_CLOSING.sub("", texto))
+
+
+class FichaFormatosRealesTest(unittest.TestCase):
+    """Descripciones tal como vienen de Power BI, la lista de precios y Trello."""
+
+    def facts(self, descripcion, precio=443000, **extra):
+        public = {**banco.LIBERTADOR["public"], "public_description": descripcion, "price_amount": precio, **extra}
+        return app.ficha_unit_facts({"public": public, "delivery": app.property_delivery(public)})
+
+    def test_entrega_por_confirmar_de_la_lista(self):
+        _, _, facts = self.facts("Proyecto Mondrian; unidad 806-B. Vista INTERIOR B. Entrega según fuente: X Confirmar. Estacionamiento no confirmado como incluido en el precio.")
+        self.assertIn("📅 Entrega: por confirmar", facts)
+        self.assertIn("🌄 Vista: Interior B", facts)
+
+    def test_fecha_corta_de_power_bi(self):
+        _, _, facts = self.facts("Proyecto TORRE TALE; unidad A-2103. Piso 21. Vista Exterior. Entrega según fuente: May-27. Estacionamiento no confirmado como incluido en el precio.")
+        self.assertIn("📅 Entrega: May 2027", facts)
+        self.assertIn("🏢 Piso: 21", facts)
+
+    def test_precio_con_centimos_no_se_redondea(self):
+        _, precio, _ = self.facts("Proyecto Unico Canevaro; unidad 702. Piso 7. Entrega según fuente: Abril 2028.", precio=465070.87)
+        self.assertEqual(precio[0], "💰 PRECIO DE VENTA: S/ 465,070.87")
