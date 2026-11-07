@@ -57,7 +57,7 @@ def conversacion_ia_activa():
 logger.info("CONVERSACION_IA=%s", "on" if conversacion_ia_activa() else "off")
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cecilia")
 COMMERCIAL_BRAND = os.getenv("COMMERCIAL_BRAND", "CREENZIA Inversiones")
-PRIVACY_URL = os.getenv("PRIVACY_URL", "https://creenzia-crm.vercel.app/privacidad")
+PRIVACY_URL = os.getenv("PRIVACY_URL", "https://creenzia-crm.onrender.com/privacidad")
 # Aviso de privacidad con botones al primer contacto: apagado por defecto para que la conversación sea directa.
 PRIVACY_NOTICE_ENABLED = os.getenv("PRIVACY_NOTICE_ENABLED", "").strip().lower() in ("1", "true", "si", "sí", "yes")
 INTRODUCTION = f"Hola, soy {ASSISTANT_NAME}, asistente virtual de {COMMERCIAL_BRAND} 😊 Te ayudo a encontrar tu departamento ideal 🏡 ¿En qué distrito o distritos lo buscas?"
@@ -3358,7 +3358,7 @@ def record_ad_referral(memory, sender, message):
         return False
 
 
-CRM_ORIGIN = os.getenv("CRM_ORIGIN", "https://creenzia-crm.vercel.app").rstrip("/")
+CRM_ORIGIN = os.getenv("CRM_ORIGIN", "https://creenzia-crm.onrender.com").rstrip("/")
 CRM_MAX_TEXT = 4096
 WHATSAPP_OUTSIDE_WINDOW_CODES = {131047, 131026, 470}
 

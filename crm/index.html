@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0B1F3A">
+<title>CRM CREENZIA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;500;600;700&family=Archivo:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --navy:#0B1F3A; --navy-2:#13305A; --gold:#C9A227; --gold-soft:#F4EBCB;
+  --paper:#FFFFFF; --mist:#EEF1F6; --line:#D7DDE6; --ink:#16243A; --muted:#5B6B82;
+  --ok:#2E7D4F; --warn:#B4541A; --danger:#A42A2A;
+  --narrow:"Arial Narrow","Archivo Narrow",Arial,sans-serif;
+  --body:"Archivo",Arial,sans-serif;
+  --r-s:6px; --r-m:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--mist);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.45}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.hidden{display:none!important}
+
+/* ---------- Acceso ---------- */
+#login{min-height:100vh;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}
+.login-brand{background:var(--navy);color:#fff;padding:48px;display:flex;flex-direction:column;justify-content:space-between}
+.wordmark{font-family:var(--narrow);font-weight:700;letter-spacing:.14em;font-size:28px}
+.wordmark small{display:block;font-weight:500;letter-spacing:.02em;font-size:15px;color:var(--gold);margin-top:2px}
+.login-brand h1{font-family:var(--narrow);font-weight:600;font-size:clamp(30px,4vw,46px);line-height:1.05;margin:0 0 14px;max-width:14ch}
+.login-brand p{color:#C9D3E3;max-width:40ch;margin:0}
+.funnel-mark{display:flex;flex-direction:column;gap:6px;margin:28px 0}
+.funnel-mark span{height:8px;background:var(--gold);border-radius:4px;opacity:.9}
+.login-panel{display:flex;align-items:center;justify-content:center;padding:32px 20px;background:var(--paper)}
+.login-card{width:100%;max-width:360px}
+.login-card h2{font-family:var(--narrow);font-size:26px;margin:0 0 4px;color:var(--navy)}
+.login-card .hint{color:var(--muted);margin:0 0 22px}
+label{display:block;font-weight:500;font-size:13px;color:var(--muted);margin:14px 0 6px}
+input[type=email],input[type=password],input[type=text],input[type=date],input[type=datetime-local],input[type=number],select,textarea{
+  width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-s);background:#fff}
+textarea{min-height:76px;resize:vertical}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:0;border-radius:var(--r-s);padding:10px 16px;font-weight:600;cursor:pointer}
+.btn-primary{background:var(--navy);color:#fff}
+.btn-primary:hover{background:var(--navy-2)}
+.btn-gold{background:var(--gold);color:var(--navy)}
+.btn-ghost{background:transparent;color:var(--navy);border:1px solid var(--line)}
+.btn-link{background:none;border:0;color:var(--navy);text-decoration:underline;cursor:pointer;padding:0}
+.btn:disabled{opacity:.55;cursor:default}
+.full{width:100%;margin-top:20px}
+.msg{margin-top:14px;padding:10px 12px;border-radius:var(--r-s);font-size:14px}
+.msg.err{background:#FBEAEA;color:var(--danger)}
+.msg.ok{background:#E7F3EC;color:var(--ok)}
+.swap{margin-top:16px;font-size:14px;color:var(--muted)}
+
+/* ---------- App ---------- */
+header.bar{position:sticky;top:0;z-index:20;background:var(--navy);color:#fff;display:flex;align-items:center;gap:18px;padding:10px 20px}
+header.bar .wordmark{font-size:19px}
+header.bar .wordmark small{display:inline;margin-left:8px;font-size:13px}
+nav.tabs{display:flex;gap:4px;margin-left:12px}
+nav.tabs button{background:none;border:0;color:#C9D3E3;padding:8px 12px;border-radius:var(--r-s);cursor:pointer;font-weight:500}
+nav.tabs button[aria-selected=true]{color:#fff;background:rgba(255,255,255,.1);box-shadow:inset 0 -2px 0 var(--gold)}
+.bar .spacer{flex:1}
+.bar .who{font-size:13px;color:#C9D3E3}
+.bar .btn-ghost{color:#fff;border-color:rgba(255,255,255,.3);padding:6px 12px}
+
+/* Resumen del embudo */
+.funnel{background:var(--paper);border-bottom:1px solid var(--line);padding:14px 20px;display:flex;gap:0;overflow-x:auto}
+.f-step{flex:1 0 auto;min-width:96px;padding:2px 14px;border-left:1px solid var(--line);cursor:pointer;background:none;border-top:0;border-bottom:0;border-right:0;text-align:left}
+.f-step:first-child{border-left:0;padding-left:0}
+.f-step b{display:block;font-family:var(--narrow);font-size:26px;line-height:1;color:var(--navy)}
+.f-step span{font-size:12px;color:var(--muted);white-space:nowrap}
+.f-step.human b{color:#8C6F12}
+.f-step[aria-pressed=true] span{color:var(--navy);font-weight:600}
+
+.toolbar{display:flex;gap:10px;align-items:center;padding:12px 20px;flex-wrap:wrap}
+.toolbar input[type=text]{max-width:280px}
+.toolbar select{width:auto}
+.chk{display:inline-flex;gap:6px;align-items:center;font-size:14px;color:var(--muted)}
+.sync{margin-left:auto;font-size:12px;color:var(--muted)}
+
+/* Tablero */
+.board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(250px,1fr);gap:12px;padding:0 20px 24px;overflow-x:auto;align-items:start}
+.col{background:#E3E8F0;border-radius:var(--r-m);padding:10px;min-height:120px;border-top:3px solid var(--navy)}
+.col.human{border-top-color:var(--gold)}
+.col h3{font-family:var(--narrow);font-size:16px;margin:2px 4px 2px;color:var(--navy);display:flex;justify-content:space-between}
+.col .who-moves{font-size:11px;color:var(--muted);margin:0 4px 10px}
+.card{background:#fff;border-radius:var(--r-s);padding:10px 12px;margin-bottom:8px;border:1px solid var(--line);cursor:pointer;display:block;width:100%;text-align:left}
+.card:hover{border-color:var(--navy)}
+.card .ph{font-family:var(--narrow);font-weight:600;font-size:16px;color:var(--navy)}
+.card .crit{font-size:13px;color:var(--ink);margin-top:2px}
+.card .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.tag{font-size:11px;padding:2px 7px;border-radius:20px;background:var(--mist);color:var(--muted);font-weight:500}
+.tag.gold{background:var(--gold-soft);color:#6E5610}
+.tag.warn{background:#FCEBDD;color:var(--warn)}
+.tag.test{background:#ECECEC;color:#666}
+.tag.decide{background:#E4ECF8;color:var(--navy);font-weight:600}
+.follow{border:1px solid var(--line);border-left:4px solid var(--gold);border-radius:var(--r-s);padding:12px 14px;margin-top:14px;background:#FBFAF5}
+.follow.done{border-left-color:var(--navy);background:#fff}
+.follow p{margin:0 0 4px;font-weight:600;color:var(--navy)}
+.follow small{display:block;color:var(--muted);margin-bottom:10px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-s);overflow:hidden}
+.seg button{background:#fff;border:0;border-left:1px solid var(--line);padding:8px 14px;cursor:pointer;font-weight:600;color:var(--muted)}
+.seg button:first-child{border-left:0}
+.seg button[aria-pressed=true]{background:var(--navy);color:#fff}
+.empty{color:var(--muted);font-size:13px;padding:10px 4px}
+
+/* Tareas */
+.list{padding:0 20px 24px;max-width:900px}
+.task{background:#fff;border:1px solid var(--line);border-radius:var(--r-s);padding:12px 14px;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start}
+.task input{margin-top:4px;width:18px;height:18px;accent-color:var(--navy)}
+.task .t{font-weight:600}
+.task .d{font-size:13px;color:var(--muted)}
+.task.overdue .due{color:var(--danger);font-weight:600}
+.task.done .t{text-decoration:line-through;color:var(--muted)}
+.linky{background:none;border:0;padding:0;color:var(--navy);text-decoration:underline;cursor:pointer;font-size:13px}
+
+/* Campañas */
+table.grid{border-collapse:collapse;width:100%;background:#fff;border:1px solid var(--line);border-radius:var(--r-s);overflow:hidden}
+table.grid th{background:var(--navy);color:#fff;text-align:left;font-weight:600;font-size:13px;padding:9px 12px}
+table.grid td{border-top:1px solid var(--line);padding:9px 12px;font-size:14px}
+.form-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;align-items:end;margin:14px 0}
+
+/* Ficha del lead */
+.scrim{position:fixed;inset:0;background:rgba(11,31,58,.45);z-index:40}
+aside.sheet{position:fixed;top:0;right:0;bottom:0;width:min(760px,100%);background:var(--paper);z-index:41;display:flex;flex-direction:column;box-shadow:-8px 0 30px rgba(11,31,58,.25)}
+.sheet-head{background:var(--navy);color:#fff;padding:16px 20px;display:flex;gap:12px;align-items:flex-start}
+.sheet-head h2{font-family:var(--narrow);margin:0;font-size:24px}
+.sheet-head .sub{color:#C9D3E3;font-size:13px}
+.sheet-head .close{margin-left:auto;background:none;border:0;color:#fff;font-size:26px;line-height:1;cursor:pointer}
+.sheet-body{overflow:auto;padding:16px 20px 40px}
+.controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.controls label{margin-top:0}
+.section{margin-top:22px}
+.section h4{font-family:var(--narrow);font-size:17px;color:var(--navy);margin:0 0 8px;padding-bottom:6px;border-bottom:2px solid var(--gold);display:inline-block}
+.facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.fact{background:var(--mist);border-radius:var(--r-s);padding:8px 10px}
+.fact small{display:block;color:var(--muted);font-size:11px}
+.fact b{font-weight:600}
+.summary{background:var(--gold-soft);border-radius:var(--r-s);padding:10px 12px;font-size:14px;margin-top:8px}
+.chat{background:#E9EEF4;border-radius:var(--r-m);padding:12px;max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.bubble{max-width:82%;padding:7px 10px;border-radius:10px;font-size:14px;white-space:pre-wrap;word-wrap:break-word}
+.bubble.in{background:#fff;align-self:flex-start;border-top-left-radius:2px}
+.bubble.out{background:#DCE6F4;align-self:flex-end;border-top-right-radius:2px}
+.bubble.human{background:var(--gold-soft)}
+.bubble .who{display:block;font-size:10px;font-weight:600;color:var(--muted);margin-bottom:2px}
+.attend{border:1px solid var(--line);border-radius:var(--r-m);padding:12px 14px;background:#fff}
+.attend .state{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+.attend .state b{color:var(--navy)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--ok)}
+.dot.paused{background:var(--gold)}
+.window{font-size:12px;color:var(--muted);margin:10px 0 6px}
+.window.closed{color:var(--warn)}
+.reply{display:flex;gap:8px;align-items:flex-end}
+.reply textarea{min-height:60px}
+.tag.paused{background:var(--gold-soft);color:#6E5610;font-weight:600}
+.tag.stop{background:#FBEAEA;color:var(--danger);font-weight:600}
+.perm{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.perm .fact b.ok{color:var(--ok)} .perm .fact b.no{color:var(--danger)}
+.consent-form{display:grid;grid-template-columns:1.3fr 1fr 1fr 1.6fr auto;gap:8px;align-items:end;margin-top:6px}
+.consent-form label{margin-top:0}
+@media (max-width:820px){.consent-form{grid-template-columns:1fr 1fr}}
+/* Resultados */
+.res{padding:0 20px 32px;max-width:1100px}
+.res .toolbar{padding:12px 0}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:var(--r-s);padding:12px 14px}
+.kpi b{display:block;font-family:var(--narrow);font-size:28px;line-height:1.1;color:var(--navy);font-variant-numeric:tabular-nums}
+.kpi span{font-size:12px;color:var(--muted)}
+.kpi small{display:block;font-size:12px;color:var(--muted);margin-top:2px}
+.panel{background:#fff;border:1px solid var(--line);border-radius:var(--r-m);padding:14px 16px;margin-top:14px}
+.panel h4{font-family:var(--narrow);font-size:17px;color:var(--navy);margin:0 0 4px}
+.panel .note{font-size:12px;color:var(--muted);margin:0 0 12px}
+.fun{display:grid;grid-template-columns:minmax(120px,190px) 1fr 92px;gap:6px 12px;align-items:center}
+.fun .lbl{font-size:13px}
+.fun .track{height:18px;background:var(--mist);border-radius:4px;overflow:hidden}
+.fun .bar{height:100%;background:var(--navy);border-radius:0 4px 4px 0}
+.fun .bar.human{background:var(--gold)}
+.fun .val{font-size:13px;text-align:right;font-variant-numeric:tabular-nums}
+.fun .val small{color:var(--muted)}
+.days{position:relative;display:flex;align-items:flex-end;gap:2px;height:150px;border-bottom:1px solid var(--line);padding-top:16px}
+.days .d{flex:1;position:relative;height:100%;display:flex;align-items:flex-end;cursor:default}
+.days .d i{display:block;width:100%;background:var(--navy);border-radius:4px 4px 0 0;min-height:0}
+.days .d:hover i{background:var(--gold)}
+.days .d .tip{display:none;position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;font-size:11px;padding:3px 7px;border-radius:4px;white-space:nowrap;z-index:2}
+.days .d:hover .tip,.days .d:focus .tip{display:block}
+.axis{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
+.scroll{overflow-x:auto}
+table.grid td.num,table.grid th.num{text-align:right;font-variant-numeric:tabular-nums}
+table.grid td.num{white-space:nowrap}
+.reasons{display:flex;flex-wrap:wrap;gap:8px}
+.spend{display:flex;gap:6px;align-items:center}
+.spend input{width:110px;padding:6px 8px}
+.spend button{padding:6px 10px}
+@media (max-width:820px){
+  .res{padding:0 16px 32px}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .fun{grid-template-columns:minmax(96px,130px) 1fr 70px}
+}
+.bubble time{display:block;font-size:10px;color:var(--muted);margin-top:3px;text-align:right}
+.units{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.unit{border:1px solid var(--line);border-radius:var(--r-s);padding:8px 10px;font-size:13px}
+.unit b{font-family:var(--narrow);font-size:15px;color:var(--navy)}
+.note{border-left:3px solid var(--gold);padding:6px 10px;margin-bottom:8px;background:#FBFAF5}
+.note small{color:var(--muted)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.hist{font-size:13px;color:var(--muted);margin:3px 0}
+.wa{color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.35);padding:6px 10px;border-radius:var(--r-s);font-size:13px;white-space:nowrap}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:10px 16px;border-radius:var(--r-s);z-index:60;font-size:14px}
+
+/* Celular */
+@media (max-width:820px){
+  #login{grid-template-columns:1fr}
+  .login-brand{padding:28px 20px}
+  .login-brand h1{font-size:28px}
+  .funnel-mark{display:none}
+  header.bar{flex-wrap:wrap;padding:10px 16px;gap:8px}
+  nav.tabs{order:3;width:100%;margin-left:0;overflow-x:auto}
+  .bar .who{display:none}
+  .funnel{padding:12px 16px}
+  .toolbar{padding:12px 16px}
+  .board{grid-auto-flow:row;grid-auto-columns:auto;padding:0 16px 24px}
+  .col{min-height:0}
+  .list{padding:0 16px 24px}
+  .controls,.facts,.units,.form-row{grid-template-columns:1fr 1fr}
+  .sheet-body{padding:14px 16px 40px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<!-- ACCESO -->
+<section id="login" class="hidden">
+  <div class="login-brand">
+    <div class="wordmark">CREENZIA<small>Inversiones</small></div>
+    <div>
+      <div class="funnel-mark" aria-hidden="true">
+        <span style="width:100%"></span><span style="width:82%"></span><span style="width:64%"></span><span style="width:46%"></span><span style="width:28%"></span>
+      </div>
+      <h1>Cada lead, de la conversación al cierre.</h1>
+      <p>El bot califica y registra. Tú y Cecilia toman la visita, la negociación y el cierre.</p>
+    </div>
+    <p style="font-size:12px;color:#8FA0BA">Acceso solo para el equipo CREENZIA.</p>
+  </div>
+  <div class="login-panel">
+    <form class="login-card" id="authForm" novalidate>
+      <h2 id="authTitle">Ingresar</h2>
+      <p class="hint" id="authHint">Usa tu correo y tu clave.</p>
+      <label for="email">Correo</label>
+      <input id="email" type="email" autocomplete="email" required>
+      <label for="pass">Clave</label>
+      <input id="pass" type="password" autocomplete="current-password" required minlength="8">
+      <div id="pass2Wrap" class="hidden">
+        <label for="pass2">Repite la clave</label>
+        <input id="pass2" type="password" autocomplete="new-password" minlength="8">
+      </div>
+      <button class="btn btn-primary full" id="authBtn" type="submit">Ingresar</button>
+      <div id="authMsg" class="msg hidden" role="status"></div>
+      <p class="swap" id="swapWrap"><span id="swapText">¿Primera vez?</span> <button type="button" class="btn-link" id="swapBtn">Crear mi clave</button></p>
+    </form>
+  </div>
+</section>
+
+<!-- APP -->
+<section id="app" class="hidden">
+  <header class="bar">
+    <div class="wordmark">CREENZIA<small>CRM</small></div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-view="board" aria-selected="true">Embudo</button>
+      <button role="tab" data-view="tasks" aria-selected="false">Tareas <span id="taskCount"></span></button>
+      <button role="tab" data-view="campaigns" aria-selected="false">Campañas</button>
+      <button role="tab" data-view="results" aria-selected="false">Resultados</button>
+    </nav>
+    <div class="spacer"></div>
+    <span class="who" id="who"></span>
+    <button class="btn btn-ghost" id="logout">Salir</button>
+  </header>
+
+  <div id="view-board">
+    <div class="funnel" id="funnel"></div>
+    <div class="toolbar">
+      <input type="text" id="q" placeholder="Buscar por número o distrito" aria-label="Buscar">
+      <select id="fAssigned" aria-label="Responsable"><option value="">Todos los responsables</option></select>
+      <select id="fCampaign" aria-label="Campaña"><option value="">Todas las campañas</option></select>
+      <label class="chk"><input type="checkbox" id="fNoResp"> Solo sin respuesta</label>
+      <label class="chk"><input type="checkbox" id="fDecide"> Seguimiento por decidir</label>
+      <label class="chk"><input type="checkbox" id="fTest"> Ver pruebas</label>
+      <span class="sync" id="syncInfo"></span>
+    </div>
+    <div class="board" id="board"></div>
+  </div>
+
+  <div id="view-tasks" class="hidden">
+    <div class="toolbar">
+      <select id="tWho" aria-label="Responsable"><option value="me">Mis tareas</option><option value="">Todas</option></select>
+      <label class="chk"><input type="checkbox" id="tDone"> Ver completadas</label>
+    </div>
+    <div class="list" id="taskList"></div>
+  </div>
+
+  <div id="view-campaigns" class="hidden">
+    <div class="list">
+      <p style="color:var(--muted);margin-top:16px">Códigos con formato CANAL-ANUNCIO, por ejemplo FB-A1, IG-B1, TK-C1, QR-1. En TikTok, volantes o tu web, el enlace de WhatsApp lleva el mensaje “Hola, vi el anuncio TK-C1”.</p>
+      <form id="campForm" class="form-row hidden">
+        <div><label for="cCode">Código</label><input id="cCode" type="text" placeholder="FB-A1" required></div>
+        <div><label for="cChannel">Canal</label>
+          <select id="cChannel"><option value="facebook">Facebook</option><option value="instagram">Instagram</option><option value="tiktok">TikTok</option><option value="qr">QR / volante</option><option value="web">Web</option><option value="referido">Referido</option><option value="otro">Otro</option></select></div>
+        <div><label for="cName">Descripción</label><input id="cName" type="text" placeholder="Entrega inmediata Chorrillos" required></div>
+        <div><label for="cSpend">Gasto (S/)</label><input id="cSpend" type="number" min="0" step="0.01" value="0"></div>
+        <div><button class="btn btn-primary" type="submit">Agregar campaña</button></div>
+      </form>
+      <div class="scroll"><table class="grid"><thead><tr><th>Código</th><th>Canal</th><th>Descripción</th><th>Gasto</th><th class="num">Leads</th><th class="num">Costo por lead</th></tr></thead><tbody id="campRows"></tbody></table></div>
+    </div>
+  </div>
+
+  <div id="view-results" class="hidden">
+    <div class="res">
+      <div class="toolbar">
+        <select id="rPeriod" aria-label="Periodo">
+          <option value="7">Últimos 7 días</option>
+          <option value="30" selected>Últimos 30 días</option>
+          <option value="90">Últimos 90 días</option>
+          <option value="0">Todo</option>
+        </select>
+        <select id="rCampaign" aria-label="Campaña"><option value="">Todas las campañas</option></select>
+        <label class="chk"><input type="checkbox" id="rTest"> Incluir pruebas</label>
+      </div>
+      <div class="kpis" id="rKpis"></div>
+      <div class="panel">
+        <h4>Embudo del periodo</h4>
+        <p class="note">Leads que ingresaron en el periodo y la etapa más avanzada que alcanzaron. En azul lo que avanza el bot; en dorado lo que avanzan ustedes.</p>
+        <div class="fun" id="rFunnel"></div>
+      </div>
+      <div class="panel">
+        <h4>Leads nuevos por día</h4>
+        <p class="note" id="rDaysNote"></p>
+        <div class="days" id="rDays" role="img"></div>
+        <div class="axis" id="rAxis"></div>
+      </div>
+      <div class="panel">
+        <h4>Por campaña</h4>
+        <p class="note">El costo usa el gasto que registras en la pestaña Campañas.</p>
+        <div class="scroll"><table class="grid"><thead><tr><th>Campaña</th><th>Canal</th><th class="num">Leads</th><th class="num">Calificados</th><th class="num">Pidieron asesor o visita</th><th class="num">Visitas</th><th class="num">Cierres</th><th class="num">Gasto</th><th class="num">Costo por lead</th><th class="num">Costo por calificado</th></tr></thead><tbody id="rCamp"></tbody></table></div>
+      </div>
+      <div class="panel">
+        <h4>Motivos de pérdida</h4>
+        <p class="note">Leads del periodo cerrados como perdidos.</p>
+        <div class="reasons" id="rLost"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="scrim hidden" id="scrim"></div>
+<aside class="sheet hidden" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"></aside>
+<div class="toast hidden" id="toast" role="status"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script>
+const SUPABASE_URL = "https://gxywmiqmsesirkuwrsbs.supabase.co";
+const SUPABASE_KEY = "sb_publishable_EFyj-nnkH8ShrSnBNv7bog_QdBGOnoW";
+const BOT_URL = "https://arenz-ai-whatsapp-prod.onrender.com";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
+
+const S = { me:null, users:[], stages:[], reasons:[], campaigns:[], leads:[], tasks:[], stageFilter:null, signup:false, timer:null };
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtPhone = p => { const d = String(p||"").replace(/\D/g,""); if (d.length===11 && d.startsWith("51")) return "+51 "+d.slice(2,5)+" "+d.slice(5,8)+" "+d.slice(8); return p || "Sin número"; };
+const waLink = p => { const d = String(p||"").replace(/\D/g,""); return d.length>=9 ? "https://wa.me/"+d : null; };
+const fmtDate = (s, withTime=true) => s ? new Date(s).toLocaleString("es-PE", withTime ? {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"} : {day:"2-digit",month:"short",year:"numeric"}) : "—";
+const ago = s => { if(!s) return ""; const m = Math.round((Date.now()-new Date(s))/60000); if(m<60) return "hace "+m+" min"; const h=Math.round(m/60); if(h<48) return "hace "+h+" h"; return "hace "+Math.round(h/24)+" días"; };
+const money = (n, cur) => n==null ? "—" : (cur==="USD"?"US$ ":"S/ ")+Number(n).toLocaleString("es-PE",{maximumFractionDigits:0});
+function toast(t){ const el=$("toast"); el.textContent=t; el.classList.remove("hidden"); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.add("hidden"),2600); }
+function showMsg(text, kind="err"){ const el=$("authMsg"); el.textContent=text; el.className="msg "+kind; }
+
+/* ---------- Acceso ---------- */
+function setMode(signup){
+  S.signup = signup;
+  $("authTitle").textContent = signup ? "Crear mi clave" : "Ingresar";
+  $("authHint").textContent = signup ? "Solo para correos autorizados del equipo. Mínimo 8 caracteres." : "Usa tu correo y tu clave.";
+  $("authBtn").textContent = signup ? "Crear clave e ingresar" : "Ingresar";
+  $("pass2Wrap").classList.toggle("hidden", !signup);
+  $("pass").autocomplete = signup ? "new-password" : "current-password";
+  $("swapText").textContent = signup ? "¿Ya tienes clave?" : "¿Primera vez?";
+  $("swapBtn").textContent = signup ? "Ingresar" : "Crear mi clave";
+  $("authMsg").className = "msg hidden";
+}
+$("swapBtn").onclick = () => setMode(!S.signup);
+$("authForm").onsubmit = async e => {
+  e.preventDefault();
+  const email = $("email").value.trim().toLowerCase(), pass = $("pass").value;
+  if (!email || pass.length < 8) return showMsg("Escribe tu correo y una clave de al menos 8 caracteres.");
+  $("authBtn").disabled = true;
+  try {
+    if (S.signup) {
+      if (pass !== $("pass2").value) return showMsg("Las dos claves no coinciden.");
+      const { data, error } = await sb.auth.signUp({ email, password: pass });
+      if (error) {
+        if (/no autorizado|Database error/i.test(error.message)) return showMsg("Este correo no está autorizado para el CRM.");
+        if (/already|registered/i.test(error.message)) return showMsg("Este correo ya tiene clave. Usa “Ingresar”.");
+        if (/confirm|email/i.test(error.message)) return showMsg("Falta un ajuste en Supabase: desactivar la confirmación por correo. Avísale a Rildo.");
+        return showMsg(error.message);
+      }
+      if (!data.session) return showMsg("Clave creada. Falta un ajuste en Supabase (confirmación por correo) para poder ingresar. Avísale a Rildo.", "ok");
+    } else {
+      const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+      if (error) {
+        if (/not confirmed/i.test(error.message)) return showMsg("Tu correo aún no está habilitado. Falta un ajuste en Supabase; avísale a Rildo.");
+        return showMsg("Correo o clave incorrectos.");
+      }
+    }
+    await start();
+  } finally { $("authBtn").disabled = false; }
+};
+$("logout").onclick = async () => { await sb.auth.signOut(); clearInterval(S.timer); location.reload(); };
+
+/* ---------- Carga ---------- */
+async function start(){
+  const { data:{ session } } = await sb.auth.getSession();
+  if (!session) { $("login").classList.remove("hidden"); $("app").classList.add("hidden"); return; }
+  const [u, st, lr, cp] = await Promise.all([
+    sb.from("crm_users").select("*").order("created_at"),
+    sb.from("crm_stages").select("*").order("position"),
+    sb.from("crm_lost_reasons").select("*").order("position"),
+    sb.from("crm_campaigns").select("*").order("created_at"),
+  ]);
+  S.users = u.data || [];
+  S.me = S.users.find(x => x.auth_user_id === session.user.id);
+  if (!S.me) { await sb.auth.signOut(); $("login").classList.remove("hidden"); showMsg("Tu correo no está habilitado como usuario del CRM."); return; }
+  S.stages = st.data||[]; S.reasons = lr.data||[]; S.campaigns = cp.data||[];
+  $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+  $("who").textContent = S.me.full_name + (S.me.role==="admin" ? " · administrador" : " · asesora");
+  $("campForm").classList.toggle("hidden", S.me.role !== "admin");
+  $("fAssigned").innerHTML = '<option value="">Todos los responsables</option>' + S.users.map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join("");
+  fillCampaignFilter();
+  await refresh(true);
+  clearInterval(S.timer); S.timer = setInterval(() => refresh(true), 60000);
+}
+function fillCampaignFilter(){
+  const cur = $("fCampaign").value;
+  $("fCampaign").innerHTML = '<option value="">Todas las campañas</option>' + S.campaigns.map(c=>`<option value="${c.code}">${esc(c.code)} · ${esc(c.name)}</option>`).join("");
+  $("fCampaign").value = cur;
+}
+async function refresh(sync){
+  if (sync) { const r = await sb.rpc("crm_sync_from_bot"); if (r.error) console.warn(r.error); }
+  const [b, t] = await Promise.all([ sb.rpc("crm_board"), sb.from("crm_tasks").select("*").order("due_at",{ascending:true,nullsFirst:false}) ]);
+  if (b.error) { toast("No se pudo cargar el embudo: "+b.error.message); return; }
+  S.leads = b.data || []; S.tasks = t.data || [];
+  $("syncInfo").textContent = "Actualizado " + new Date().toLocaleTimeString("es-PE",{hour:"2-digit",minute:"2-digit"});
+  renderBoard(); renderTasks(); renderCampaigns();
+}
+
+/* ---------- Embudo ---------- */
+function filteredLeads(){
+  const q = $("q").value.trim().toLowerCase(), a = $("fAssigned").value, c = $("fCampaign").value;
+  return S.leads.filter(l =>
+    ($("fTest").checked || !l.is_test) &&
+    (!a || l.assigned_to === a) && (!c || l.campaign_code === c) &&
+    (!$("fNoResp").checked || l.no_response) &&
+    (!$("fDecide").checked || !l.follow_up) &&
+    (!q || [l.phone,l.district,l.full_name,l.budget].join(" ").toLowerCase().includes(q)));
+}
+function critLine(l){ return [l.district, l.budget, l.bedrooms ? l.bedrooms+" dorm." : null].filter(Boolean).map(esc).join(" · ") || "Sin criterios aún"; }
+function renderBoard(){
+  const leads = filteredLeads();
+  $("funnel").innerHTML = S.stages.map(s => {
+    const n = leads.filter(l=>l.stage_code===s.code).length;
+    return `<button class="f-step ${s.owner==="humano"?"human":""}" data-stage="${s.code}" aria-pressed="${S.stageFilter===s.code}"><b>${n}</b><span>${esc(s.name)}</span></button>`;
+  }).join("");
+  $("funnel").querySelectorAll(".f-step").forEach(b => b.onclick = () => { S.stageFilter = S.stageFilter===b.dataset.stage ? null : b.dataset.stage; renderBoard(); });
+  const stages = S.stageFilter ? S.stages.filter(s=>s.code===S.stageFilter) : S.stages;
+  $("board").innerHTML = stages.map(s => {
+    const items = leads.filter(l=>l.stage_code===s.code);
+    return `<div class="col ${s.owner==="humano"?"human":""}">
+      <h3><span>${esc(s.name)}</span><span>${items.length}</span></h3>
+      <div class="who-moves">${s.owner==="bot" ? "La mueve el bot" : "La mueven tú o Cecilia"}</div>
+      ${items.map(cardHTML).join("") || '<div class="empty">Sin leads en esta etapa.</div>'}
+    </div>`;
+  }).join("");
+  $("board").querySelectorAll(".card").forEach(c => c.onclick = () => openLead(c.dataset.id));
+}
+function cardHTML(l){
+  const tags = [];
+  tags.push(`<span class="tag">${esc(l.campaign_code)}</span>`);
+  if (l.open_tasks) tags.push(`<span class="tag gold">${l.open_tasks} tarea${l.open_tasks>1?"s":""}</span>`);
+  if (l.no_response) tags.push(`<span class="tag warn">Sin respuesta</span>`);
+  if (l.is_test) tags.push(`<span class="tag test">Prueba</span>`);
+  if (l.bot_paused) tags.push(`<span class="tag paused">Bot en pausa</span>`);
+  if (l.opted_out) tags.push(`<span class="tag stop">No contactar</span>`);
+  if (l.follow_up === "si") tags.push(`<span class="tag">Seguimiento: sí</span>`);
+  else if (l.follow_up === "no") tags.push(`<span class="tag">Seguimiento: no</span>`);
+  else if (l.no_response) tags.push(`<span class="tag decide">Decidir seguimiento</span>`);
+  if (l.assigned_to !== S.me.id && l.assigned_name) tags.push(`<span class="tag">${esc(l.assigned_name)}</span>`);
+  return `<button class="card" data-id="${l.id}">
+    <div class="ph">${esc(l.full_name || fmtPhone(l.phone))}</div>
+    <div class="crit">${critLine(l)}</div>
+    <div class="meta">${tags.join("")}<span class="tag">${ago(l.last_activity)}</span></div>
+  </button>`;
+}
+["q","fAssigned","fCampaign","fNoResp","fDecide","fTest"].forEach(id => $(id).addEventListener("input", renderBoard));
+
+/* ---------- Ficha ---------- */
+async function openLead(id){
+  const l = S.leads.find(x=>x.id===id); if(!l) return;
+  $("scrim").classList.remove("hidden"); const sh = $("sheet"); sh.classList.remove("hidden");
+  sh.innerHTML = `<div class="sheet-head"><div><h2 id="sheetTitle">${esc(l.full_name || fmtPhone(l.phone))}</h2><div class="sub">Cargando ficha…</div></div><button class="close" aria-label="Cerrar">×</button></div>`;
+  sh.querySelector(".close").onclick = closeLead;
+  const [d, notes, cons] = await Promise.all([ sb.rpc("crm_lead_detail",{ p_lead_id:id }), sb.from("crm_notes").select("*").eq("lead_id",id).order("created_at",{ascending:false}), sb.from("crm_consents").select("*").eq("lead_id",id).order("recorded_at",{ascending:false}) ]);
+  if (d.error) { toast(d.error.message); return; }
+  renderLead(l, { ...(d.data || {}), consents: cons.data || [] }, notes.data || []);
+}
+function closeLead(){ $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
+$("scrim").onclick = closeLead;
+document.addEventListener("keydown", e => { if (e.key==="Escape") closeLead(); });
+
+function renderLead(l, d, notes){
+  const p = d.profile || {}, ses = d.session || {}, wa = waLink(l.phone);
+  const tasks = S.tasks.filter(t=>t.lead_id===l.id);
+  const userName = id => (S.users.find(u=>u.id===id)||{}).full_name || "—";
+  const stageName = c => (S.stages.find(s=>s.code===c)||{}).name || c || "—";
+  const sh = $("sheet");
+  sh.innerHTML = `
+  <div class="sheet-head">
+    <div><h2 id="sheetTitle">${esc(l.full_name || fmtPhone(l.phone))}</h2>
+      <div class="sub">${esc(fmtPhone(l.phone))} · Ingresó ${fmtDate(l.created_at,false)} · Origen ${esc(l.campaign_code)}${d.referral && d.referral.headline ? " · Anuncio: " + esc(d.referral.headline) : ""}</div></div>
+    ${wa ? `<a class="wa" href="${wa}" target="_blank" rel="noopener">Escribir por WhatsApp</a>` : ""}
+    <button class="close" aria-label="Cerrar">×</button>
+  </div>
+  <div class="sheet-body">
+    <div class="controls">
+      <div><label for="dStage">Etapa</label><select id="dStage">${S.stages.map(s=>`<option value="${s.code}" ${s.code===l.stage_code?"selected":""}>${esc(s.name)}</option>`).join("")}</select></div>
+      <div><label for="dAssigned">Responsable</label><select id="dAssigned">${S.users.map(u=>`<option value="${u.id}" ${u.id===l.assigned_to?"selected":""}>${esc(u.full_name)}</option>`).join("")}</select></div>
+      <div><label for="dCampaign">Campaña</label><select id="dCampaign">${S.campaigns.map(c=>`<option value="${c.code}" ${c.code===l.campaign_code?"selected":""}>${esc(c.code)}</option>`).join("")}</select></div>
+      <div id="lostWrap" class="${l.stage_code==="cerrado_perdido"?"":"hidden"}"><label for="dLost">Motivo de pérdida</label><select id="dLost"><option value="">Elige un motivo</option>${S.reasons.map(r=>`<option value="${r.code}" ${r.code===l.lost_reason_code?"selected":""}>${esc(r.name)}</option>`).join("")}</select></div>
+      <div><label for="dName">Nombre del cliente</label><input id="dName" type="text" value="${esc(l.full_name||"")}" placeholder="Opcional"></div>
+      <div><label>&nbsp;</label><label class="chk" style="margin:10px 0 0"><input type="checkbox" id="dTest" ${l.is_test?"checked":""}> Es una prueba</label></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn btn-primary" id="dSave">Guardar cambios</button></div>
+
+    <div class="follow ${l.follow_up ? "done" : ""}" id="followBox">
+      <p>¿Quieres que el bot le haga seguimiento si deja de responder?</p>
+      <small>Con “Sí” o sin decidir, el bot le envía un solo recordatorio gratis si no responde en unas 20 horas. Con “No”, el bot no le escribe por su cuenta. ${l.follow_up ? "Decidido por " + esc(l.follow_up_decided_name || "—") + " · " + fmtDate(l.follow_up_decided_at) + "." : "Aún no se decide."}</small>
+      <div class="seg" role="group" aria-label="Seguimiento del bot">
+        <button type="button" data-fu="si" aria-pressed="${l.follow_up==="si"}">Sí, hacer seguimiento</button>
+        <button type="button" data-fu="no" aria-pressed="${l.follow_up==="no"}">No</button>
+        <button type="button" data-fu="" aria-pressed="${!l.follow_up}">Decidir después</button>
+      </div>
+    </div>
+
+    <div class="section"><h4>Lo que busca</h4>
+      <div class="facts">
+        <div class="fact"><small>Qué</small><b>${esc(p.intent||"—")}</b></div>
+        <div class="fact"><small>Dónde</small><b>${esc(p.district||"—")}</b></div>
+        <div class="fact"><small>Cuánto</small><b>${esc(p.budget||"—")}</b></div>
+        <div class="fact"><small>Dormitorios</small><b>${esc(p.bedrooms||"—")}</b></div>
+      </div>
+      ${ses.summary ? `<div class="summary"><b>Resumen del bot:</b> ${esc(ses.summary)}</div>` : ""}
+    </div>
+
+    ${permsHTML(l, d.consents || [])}
+
+    <div class="section"><h4>Tareas</h4>
+      ${tasks.map(t=>taskHTML(t,false)).join("") || '<div class="empty">Sin tareas.</div>'}
+      <div class="form-row" style="grid-template-columns:2fr 1fr 1fr auto">
+        <div><label for="ntTitle">Nueva tarea</label><input id="ntTitle" type="text" placeholder="Llamar para confirmar visita"></div>
+        <div><label for="ntDue">Para</label><input id="ntDue" type="datetime-local"></div>
+        <div><label for="ntWho">Responsable</label><select id="ntWho">${S.users.map(u=>`<option value="${u.id}" ${u.id===l.assigned_to?"selected":""}>${esc(u.full_name)}</option>`).join("")}</select></div>
+        <div><button class="btn btn-gold" id="ntAdd">Agregar</button></div>
+      </div>
+    </div>
+
+    <div class="section"><h4>Notas</h4>
+      <textarea id="noteText" placeholder="Qué conversaste, acuerdos, objeciones…"></textarea>
+      <div class="row" style="margin:8px 0 12px"><button class="btn btn-gold" id="noteAdd">Guardar nota</button></div>
+      ${notes.map(n=>`<div class="note">${esc(n.body)}<br><small>${esc(userName(n.author_id))} · ${fmtDate(n.created_at)}</small></div>`).join("") || '<div class="empty">Sin notas.</div>'}
+    </div>
+
+    <div class="section"><h4>Conversación</h4>
+      <div class="chat" id="chat">${(d.messages||[]).map(m=>`<div class="bubble ${m.dir==="inbound"?"in":"out"} ${m.human?"human":""}"><span class="who">${m.dir==="inbound"?"Cliente":m.human?"Equipo CREENZIA":m.followup?"Bot · recordatorio":"Bot"}</span>${esc(m.text)}<time>${fmtDate(m.at)}</time></div>`).join("") || '<div class="empty">Sin mensajes.</div>'}</div>
+      ${attendHTML(l)}
+    </div>
+
+    <div class="section"><h4>Unidades que vio (${(d.units||[]).length})</h4>
+      <div class="units">${(d.units||[]).slice(0,30).map(u=>{ const s=u.snap||{}; return `<div class="unit"><b>${esc(s.public_reference||"")}</b> · ${esc(s.district||"")}<br>${money(s.price_amount,s.currency)} · ${s.bedrooms??"—"} dorm. · ${s.area_m2? Math.round(s.area_m2)+" m²":"—"}<br><span style="color:var(--muted)">${esc((s.public_description||"").slice(0,110))}</span></div>`; }).join("") || '<div class="empty">Aún no se le mostraron unidades.</div>'}</div>
+      ${(d.units||[]).length>30 ? `<p class="hist">Se muestran las 30 más recientes.</p>` : ""}
+    </div>
+
+    <div class="section"><h4>Historial</h4>
+      ${(d.history||[]).map(h=>`<p class="hist">${fmtDate(h.at)} · ${h.from?esc(stageName(h.from))+" → ":""}<b>${esc(stageName(h.to))}</b> · ${esc(h.by||"Bot / sistema")}</p>`).join("")}
+      ${(d.handoffs||[]).length ? `<p class="hist" style="margin-top:10px">Pedidos al bot: ${(d.handoffs||[]).length}</p>` : ""}
+    </div>
+  </div>`;
+  sh.querySelector(".close").onclick = closeLead;
+  const chat = $("chat"); chat.scrollTop = chat.scrollHeight;
+  bindAttend(l);
+  bindPerms(l);
+  $("dStage").onchange = () => $("lostWrap").classList.toggle("hidden", $("dStage").value !== "cerrado_perdido");
+  $("dSave").onclick = async () => {
+    const stage = $("dStage").value, lost = $("dLost").value || null;
+    if (stage === "cerrado_perdido" && !lost) return toast("Elige el motivo de pérdida.");
+    const upd = { stage_code:stage, assigned_to:$("dAssigned").value, campaign_code:$("dCampaign").value,
+                  lost_reason_code: stage==="cerrado_perdido" ? lost : null, full_name:$("dName").value.trim()||null, is_test:$("dTest").checked };
+    const { error } = await sb.from("crm_leads").update(upd).eq("id", l.id);
+    if (error) return toast("No se guardó: "+error.message);
+    toast("Cambios guardados"); await refresh(false); openLead(l.id);
+  };
+  $("followBox").querySelectorAll("[data-fu]").forEach(b => b.onclick = async () => {
+    const val = b.dataset.fu || null;
+    const { error } = await sb.from("crm_leads").update({ follow_up: val }).eq("id", l.id);
+    if (error) return toast("No se guardó: "+error.message);
+    toast(val==="si" ? "El bot hará seguimiento a este lead" : val==="no" ? "El bot no hará seguimiento a este lead" : "Seguimiento pendiente de decidir");
+    await refresh(false); openLead(l.id);
+  });
+  $("noteAdd").onclick = async () => {
+    const body = $("noteText").value.trim(); if (!body) return toast("Escribe la nota.");
+    const { error } = await sb.from("crm_notes").insert({ lead_id:l.id, author_id:S.me.id, body });
+    if (error) return toast("No se guardó la nota: "+error.message);
+    toast("Nota guardada"); openLead(l.id);
+  };
+  $("ntAdd").onclick = async () => {
+    const title = $("ntTitle").value.trim(); if (!title) return toast("Escribe la tarea.");
+    const due = $("ntDue").value ? new Date($("ntDue").value).toISOString() : null;
+    const { error } = await sb.from("crm_tasks").insert({ lead_id:l.id, title, due_at:due, assigned_to:$("ntWho").value, created_by:S.me.id });
+    if (error) return toast("No se guardó la tarea: "+error.message);
+    toast("Tarea agregada"); await refresh(false); openLead(l.id);
+  };
+  bindTaskChecks(sh, () => openLead(l.id));
+}
+
+/* ---------- Permisos (Ley 29733) ---------- */
+const PURPOSE = { comercial:"Comunicaciones comerciales", compartir_aliado:"Compartir datos con inmobiliaria", oposicion:"No contactar (oposición)" };
+const CHANNEL_C = { whatsapp:"WhatsApp", llamada:"Llamada", presencial:"Presencial", correo:"Correo", otro:"Otro" };
+function permsHTML(l, cons){
+  const mc = l.marketing_consent === true ? '<b class="ok">Autorizó</b>' : l.marketing_consent === false ? '<b class="no">No autorizó</b>' : '<b>Sin preguntar</b>';
+  const op = l.opted_out ? '<b class="no">Pidió no ser contactado</b>' : '<b class="ok">Sin oposición</b>';
+  const hist = cons.map(c => `<p class="hist">${fmtDate(c.recorded_at)} · ${esc(PURPOSE[c.purpose]||c.purpose)}${c.partner?" ("+esc(c.partner)+")":""}: <b>${c.granted?"Sí":"No"}</b> · ${esc(CHANNEL_C[c.channel]||c.channel)}${c.evidence?" · “"+esc(c.evidence)+"”":""} · ${esc((S.users.find(u=>u.id===c.recorded_by)||{}).full_name||"—")}</p>`).join("") || '<p class="hist">Sin registros todavía.</p>';
+  return `<div class="section"><h4>Permisos del cliente</h4>
+    <div class="perm">
+      <div class="fact"><small>Comunicaciones comerciales (nuevas ofertas)</small>${mc}${l.marketing_consent_at?`<small>${fmtDate(l.marketing_consent_at)}</small>`:""}</div>
+      <div class="fact"><small>Contacto</small>${op}${l.opted_out_at?`<small>${fmtDate(l.opted_out_at)}</small>`:""}</div>
+    </div>
+    <p class="hist">Atender su consulta no requiere este permiso. Para enviarle ofertas distintas de lo que consultó, debe figurar “Autorizó”. Antes de pasar su nombre y número a una inmobiliaria, registra su autorización con el nombre de la inmobiliaria.</p>
+    <div class="consent-form">
+      <div><label for="cnPurpose">Registrar</label><select id="cnPurpose"><option value="comercial">Comunicaciones comerciales</option><option value="compartir_aliado">Compartir datos con inmobiliaria</option><option value="oposicion">No contactar (oposición)</option></select></div>
+      <div><label for="cnGranted">Respuesta</label><select id="cnGranted"><option value="true">Sí</option><option value="false">No</option></select></div>
+      <div><label for="cnChannel">Por</label><select id="cnChannel">${Object.entries(CHANNEL_C).map(([k,v])=>`<option value="${k}">${v}</option>`).join("")}</select></div>
+      <div><label for="cnEvidence" id="cnEvLabel">Lo que dijo el cliente</label><input id="cnEvidence" type="text" placeholder="Ej.: “Sí, autorizo”"></div>
+      <div><button class="btn btn-gold" id="cnSave" type="button">Registrar</button></div>
+    </div>
+    <details style="margin-top:10px"><summary class="hist" style="cursor:pointer">Historial de permisos (${cons.length})</summary>${hist}</details>
+  </div>`;
+}
+function bindPerms(l){
+  const sync = () => { $("cnEvLabel").textContent = $("cnPurpose").value === "compartir_aliado" ? "Inmobiliaria y lo que dijo" : "Lo que dijo el cliente"; };
+  $("cnPurpose").onchange = sync;
+  $("cnSave").onclick = async () => {
+    const purpose = $("cnPurpose").value, granted = $("cnGranted").value === "true", evidence = $("cnEvidence").value.trim();
+    if (!evidence) return toast(purpose === "compartir_aliado" ? "Escribe la inmobiliaria y lo que respondió el cliente." : "Escribe lo que respondió el cliente, para que quede como prueba.");
+    const row = { lead_id:l.id, purpose, granted, channel:$("cnChannel").value, evidence, text_version:"politica-v2", recorded_by:S.me.id };
+    if (purpose === "compartir_aliado") row.partner = evidence.split(/[:,–-]/)[0].trim().slice(0,80);
+    const { error } = await sb.from("crm_consents").insert(row);
+    if (error) return toast("No se registró: "+error.message);
+    toast("Permiso registrado"); await refresh(false); openLead(l.id);
+  };
+}
+
+/* ---------- Atención humana ---------- */
+function windowInfo(l){
+  if (!l.last_inbound_at) return { open:false, text:"El cliente aún no ha escrito: WhatsApp no permite escribirle primero con texto libre." };
+  const until = new Date(new Date(l.last_inbound_at).getTime() + 24*3600*1000);
+  if (until > new Date()) return { open:true, text:"Puedes escribirle gratis hasta el " + fmtDate(until.toISOString()) + " (24 h desde su último mensaje)." };
+  return { open:false, text:"Pasaron más de 24 h desde su último mensaje: WhatsApp no permite texto libre. Llámalo o escríbele desde tu WhatsApp; cuando responda, podrás escribirle aquí." };
+}
+function attendHTML(l){
+  const w = windowInfo(l);
+  const state = l.bot_paused
+    ? `<span><span class="dot paused"></span><b>Atiendes tú.</b> El bot está en pausa con este cliente${l.bot_paused_name ? " (lo pausó " + esc(l.bot_paused_name) + ", " + fmtDate(l.bot_paused_at) + ")" : ""}.</span><button class="btn btn-ghost" id="botResume" type="button">Reanudar bot</button>`
+    : `<span><span class="dot"></span><b>El bot atiende a este cliente.</b></span><button class="btn btn-ghost" id="botPause" type="button">Pausar bot</button>`;
+  return `<div class="attend" style="margin-top:12px">
+    <div class="state">${state}</div>
+    ${l.opted_out ? '<div class="window closed">Este cliente pidió no ser contactado: respóndele solo si él te escribe y sobre lo que él consulte.</div>' : ""}
+    <div class="window ${w.open?"":"closed"}">${w.text}</div>
+    <div class="reply">
+      <textarea id="replyText" placeholder="Escribe tu respuesta al cliente…" ${w.open?"":"disabled"}></textarea>
+      <button class="btn btn-primary" id="replySend" type="button" ${w.open?"":"disabled"}>Enviar por WhatsApp</button>
+    </div>
+    <div class="window">Al enviar, el bot se pausa con este cliente para que no responda encima de ti. Usa “Reanudar bot” cuando quieras devolverle la conversación.</div>
+  </div>`;
+}
+function bindAttend(l){
+  const setPause = async (val) => {
+    const { error } = await sb.from("crm_leads").update({ bot_paused: val }).eq("id", l.id);
+    if (error) return toast("No se guardó: "+error.message);
+    toast(val ? "Bot en pausa: ahora atiendes tú" : "El bot vuelve a atender a este cliente");
+    await refresh(false); openLead(l.id);
+  };
+  if ($("botPause")) $("botPause").onclick = () => setPause(true);
+  if ($("botResume")) $("botResume").onclick = () => setPause(false);
+  $("replySend").onclick = async () => {
+    const text = $("replyText").value.trim();
+    if (!text) return toast("Escribe el mensaje.");
+    $("replySend").disabled = true; $("replySend").textContent = "Enviando…";
+    try {
+      const { data:{ session } } = await sb.auth.getSession();
+      const r = await fetch(BOT_URL + "/crm/enviar", { method:"POST",
+        headers:{ "Content-Type":"application/json", "Authorization":"Bearer " + (session ? session.access_token : "") },
+        body: JSON.stringify({ lead_id: l.id, text }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { toast(j.error || "No se pudo enviar. Intenta de nuevo."); return; }
+      toast("Mensaje enviado por WhatsApp");
+      await refresh(false); openLead(l.id);
+    } catch (e) {
+      toast("No se pudo conectar con el bot. Si estuvo inactivo, espera un minuto y vuelve a intentar.");
+    } finally {
+      if ($("replySend")) { $("replySend").disabled = false; $("replySend").textContent = "Enviar por WhatsApp"; }
+    }
+  };
+}
+
+/* ---------- Tareas ---------- */
+function taskHTML(t, withLead){
+  const lead = S.leads.find(l=>l.id===t.lead_id);
+  const overdue = !t.done_at && t.due_at && new Date(t.due_at) < new Date();
+  const who = (S.users.find(u=>u.id===t.assigned_to)||{}).full_name || "Sin responsable";
+  return `<div class="task ${overdue?"overdue":""} ${t.done_at?"done":""}">
+    <input type="checkbox" data-task="${t.id}" ${t.done_at?"checked":""} aria-label="Marcar como hecha">
+    <div><div class="t">${esc(t.title)}</div>
+      <div class="d"><span class="due">${t.due_at? (overdue?"Vencida · ":"Para ")+fmtDate(t.due_at) : "Sin fecha"}</span> · ${esc(who)}
+      ${withLead && lead ? ` · <button class="linky" data-open="${lead.id}">${esc(lead.full_name || fmtPhone(lead.phone))}</button>` : ""}</div>
+      ${t.detail ? `<div class="d">${esc(t.detail)}</div>` : ""}</div>
+  </div>`;
+}
+function bindTaskChecks(root, after){
+  root.querySelectorAll("input[data-task]").forEach(cb => cb.onchange = async () => {
+    const { error } = await sb.from("crm_tasks").update({ done_at: cb.checked ? new Date().toISOString() : null }).eq("id", cb.dataset.task);
+    if (error) { cb.checked = !cb.checked; return toast("No se actualizó: "+error.message); }
+    toast(cb.checked ? "Tarea completada" : "Tarea reabierta"); await refresh(false); if (after) after();
+  });
+  root.querySelectorAll("[data-open]").forEach(b => b.onclick = () => openLead(b.dataset.open));
+}
+function renderTasks(){
+  const who = $("tWho").value, showDone = $("tDone").checked;
+  const visibleLead = id => { const l = S.leads.find(x=>x.id===id); return l && !l.is_test; };
+  const list = S.tasks.filter(t => (showDone || !t.done_at) && (!who || t.assigned_to === S.me.id) && (visibleLead(t.lead_id) || $("fTest").checked));
+  const mineOpen = S.tasks.filter(t => !t.done_at && t.assigned_to === S.me.id).length;
+  $("taskCount").textContent = mineOpen ? "("+mineOpen+")" : "";
+  $("taskList").innerHTML = list.map(t=>taskHTML(t,true)).join("") || '<div class="empty" style="margin-top:12px">No tienes tareas pendientes.</div>';
+  bindTaskChecks($("taskList"));
+}
+["tWho","tDone"].forEach(id => $(id).addEventListener("input", renderTasks));
+
+/* ---------- Campañas ---------- */
+function renderCampaigns(){
+  $("campRows").innerHTML = S.campaigns.map(c => {
+    const n = S.leads.filter(l=>l.campaign_code===c.code && !l.is_test).length;
+    const cpl = n && Number(c.ad_spend) ? money(Number(c.ad_spend)/n, c.currency) : "—";
+    const spendCell = S.me.role === "admin"
+      ? `<div class="spend"><input type="number" min="0" step="0.01" id="sp-${esc(c.code)}" value="${Number(c.ad_spend)||0}" aria-label="Gasto de ${esc(c.code)}"><button class="btn btn-ghost" data-spend="${esc(c.code)}" type="button">Guardar</button></div>`
+      : money(c.ad_spend,c.currency);
+    return `<tr><td><b>${esc(c.code)}</b></td><td>${esc(c.channel)}</td><td>${esc(c.name)}</td><td>${spendCell}</td><td class="num">${n}</td><td class="num">${cpl}</td></tr>`;
+  }).join("");
+  $("campRows").querySelectorAll("[data-spend]").forEach(b => b.onclick = async () => {
+    const code = b.dataset.spend, val = Number($("sp-"+code).value || 0);
+    if (val < 0) return toast("El gasto no puede ser negativo.");
+    const { error } = await sb.from("crm_campaigns").update({ ad_spend: val }).eq("code", code);
+    if (error) return toast("No se guardó: "+error.message);
+    const r = await sb.from("crm_campaigns").select("*").order("created_at"); S.campaigns = r.data||[];
+    renderCampaigns(); renderResults(); toast("Gasto de " + code + " guardado");
+  });
+}
+$("campForm").onsubmit = async e => {
+  e.preventDefault();
+  const code = $("cCode").value.trim().toUpperCase();
+  if (!/^[A-Z]{2,4}(-[A-Z0-9]{1,6})?$/.test(code)) return toast("Usa el formato CANAL-ANUNCIO, por ejemplo FB-A1.");
+  const { error } = await sb.from("crm_campaigns").insert({ code, channel:$("cChannel").value, name:$("cName").value.trim(), ad_spend:Number($("cSpend").value||0) });
+  if (error) return toast(/duplicate/i.test(error.message) ? "Ese código ya existe." : "No se guardó: "+error.message);
+  const r = await sb.from("crm_campaigns").select("*").order("created_at"); S.campaigns = r.data||[];
+  $("campForm").reset(); fillCampaignFilter(); renderCampaigns(); toast("Campaña agregada");
+};
+
+/* ---------- Resultados ---------- */
+S.results = [];
+async function loadResults(){
+  const r = await sb.rpc("crm_results");
+  if (r.error) { toast("No se pudieron cargar los resultados: "+r.error.message); return; }
+  S.results = r.data || [];
+  const cur = $("rCampaign").value;
+  $("rCampaign").innerHTML = '<option value="">Todas las campañas</option>' + S.campaigns.map(c=>`<option value="${esc(c.code)}">${esc(c.code)} · ${esc(c.name)}</option>`).join("");
+  $("rCampaign").value = cur;
+  renderResults();
+}
+const pct = (a,b) => b ? Math.round(a*100/b) + "%" : "—";
+const posOf = code => (S.stages.find(s=>s.code===code)||{}).position || 99;
+const CHANNEL = {facebook:"Facebook",instagram:"Instagram",tiktok:"TikTok",qr:"QR / volante",web:"Web",referido:"Referido",organico:"Orgánico",otro:"Otro"};
+function renderResults(){
+  if (!$("rKpis")) return;
+  const days = Number($("rPeriod").value), camp = $("rCampaign").value, withTest = $("rTest").checked;
+  const since = days ? new Date(Date.now() - days*86400000) : null;
+  const rows = S.results.filter(l => (withTest || !l.is_test) && (!camp || l.campaign_code === camp) && (!since || new Date(l.created_at) >= since));
+  const reached = code => rows.filter(l => l.max_position >= posOf(code)).length;
+  const n = rows.length, qual = reached("calificado"), ask = reached("pidio_asesor"), visit = reached("visita_realizada"), won = rows.filter(l=>l.won).length;
+  const spend = S.campaigns.filter(c => !camp || c.code === camp).reduce((a,c)=>a+Number(c.ad_spend||0),0);
+  const costLead = n && spend ? money(spend/n) : "—";
+  $("rKpis").innerHTML = [
+    ["Leads nuevos", n, ""],
+    ["Calificados", qual, pct(qual,n)+" de los leads"],
+    ["Pidieron asesor o visita", ask, pct(ask,n)+" de los leads"],
+    ["Visitas realizadas", visit, pct(visit,n)+" de los leads"],
+    ["Cierres ganados", won, pct(won,n)+" de los leads"],
+    ["Costo por lead", costLead, spend ? "Gasto registrado: "+money(spend) : "Registra el gasto en Campañas"],
+  ].map(([t,v,sub]) => `<div class="kpi"><span>${t}</span><b>${v}</b><small>${sub||"&nbsp;"}</small></div>`).join("");
+
+  const steps = S.stages.filter(s => s.code !== "cerrado_perdido");
+  $("rFunnel").innerHTML = steps.map(s => {
+    const v = s.code === "cerrado_ganado" ? won : reached(s.code);
+    const w = n ? Math.max(v ? 1.5 : 0, v*100/n) : 0;
+    return `<div class="lbl">${esc(s.name)}</div><div class="track"><div class="bar ${s.owner==="humano"?"human":""}" style="width:${w}%"></div></div><div class="val">${v} <small>${pct(v,n)}</small></div>`;
+  }).join("") || '<div class="empty">Sin datos.</div>';
+
+  const span = days || Math.max(7, Math.ceil((Date.now() - Math.min(...rows.map(l=>+new Date(l.created_at)), Date.now())) / 86400000) + 1);
+  const buckets = [];
+  for (let i = span-1; i >= 0; i--) { const d = new Date(Date.now() - i*86400000); buckets.push({ key: d.toLocaleDateString("en-CA",{timeZone:"America/Lima"}), d, n:0 }); }
+  const idx = Object.fromEntries(buckets.map((b,i)=>[b.key,i]));
+  rows.forEach(l => { const k = new Date(l.created_at).toLocaleDateString("en-CA",{timeZone:"America/Lima"}); if (k in idx) buckets[idx[k]].n++; });
+  const max = Math.max(1, ...buckets.map(b=>b.n));
+  $("rDays").setAttribute("aria-label", "Leads nuevos por día: " + n + " en total");
+  $("rDays").innerHTML = buckets.map(b => `<div class="d" tabindex="0"><i style="height:${b.n*100/max}%"></i><span class="tip">${b.d.toLocaleDateString("es-PE",{day:"2-digit",month:"short"})} · ${b.n} lead${b.n===1?"":"s"}</span></div>`).join("");
+  const fmtD = d => d.toLocaleDateString("es-PE",{day:"2-digit",month:"short"});
+  $("rAxis").innerHTML = `<span>${fmtD(buckets[0].d)}</span><span>Máximo: ${max} por día</span><span>${fmtD(buckets[buckets.length-1].d)}</span>`;
+  $("rDaysNote").textContent = n ? `${n} lead${n===1?"":"s"} en ${span} días · promedio ${(n/span).toFixed(1)} por día. Pasa el cursor sobre una barra para ver el día.` : "Aún no hay leads en este periodo.";
+
+  const byCamp = {};
+  rows.forEach(l => { (byCamp[l.campaign_code] ||= []).push(l); });
+  const codes = Object.keys(byCamp).sort((a,b)=>byCamp[b].length-byCamp[a].length);
+  $("rCamp").innerHTML = codes.map(code => {
+    const L = byCamp[code], c = S.campaigns.find(x=>x.code===code) || {};
+    const q = L.filter(l=>l.max_position>=posOf("calificado")).length;
+    const a = L.filter(l=>l.max_position>=posOf("pidio_asesor")).length;
+    const v = L.filter(l=>l.max_position>=posOf("visita_realizada")).length;
+    const w = L.filter(l=>l.won).length, g = Number(c.ad_spend||0);
+    return `<tr><td><b>${esc(code)}</b><br><span style="color:var(--muted);font-size:12px">${esc(c.name||"")}</span></td><td>${esc(CHANNEL[c.channel]||c.channel||"—")}</td><td class="num">${L.length}</td><td class="num">${q}</td><td class="num">${a}</td><td class="num">${v}</td><td class="num">${w}</td><td class="num">${g?money(g,c.currency):"—"}</td><td class="num">${g&&L.length?money(g/L.length,c.currency):"—"}</td><td class="num">${g&&q?money(g/q,c.currency):"—"}</td></tr>`;
+  }).join("") || '<tr><td colspan="10" class="empty">Sin leads en este periodo.</td></tr>';
+
+  const lost = rows.filter(l=>l.lost);
+  const counts = {}; lost.forEach(l => { counts[l.lost_reason_code||"otro"] = (counts[l.lost_reason_code||"otro"]||0)+1; });
+  $("rLost").innerHTML = Object.keys(counts).length
+    ? Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([k,v]) => `<span class="tag" style="font-size:13px;padding:4px 10px">${esc((S.reasons.find(r=>r.code===k)||{}).name||k)}: <b>${v}</b></span>`).join("")
+    : '<span class="empty">Ningún lead perdido en este periodo.</span>';
+}
+["rPeriod","rCampaign","rTest"].forEach(id => $(id).addEventListener("input", renderResults));
+
+/* ---------- Pestañas ---------- */
+document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav.tabs button").forEach(x => x.setAttribute("aria-selected", x===b));
+  ["board","tasks","campaigns","results"].forEach(v => $("view-"+v).classList.toggle("hidden", v !== b.dataset.view));
+  if (b.dataset.view === "results") loadResults();
+});
+
+sb.auth.onAuthStateChange((ev) => { if (ev === "SIGNED_OUT") { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); } });
+start();
+</script>
+</body>
+</html>
