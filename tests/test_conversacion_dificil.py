@@ -541,3 +541,34 @@ class MismoPrecioEnTodosLadosTest(unittest.TestCase):
         for donde, texto in mensajes.items():
             self.assertIn(esperado, texto, donde)
             self.assertNotIn("465,071", texto, donde)
+
+
+class TextoOriginalDelClienteTest(unittest.TestCase):
+    """El bot decide con el texto normalizado, pero el historial, el lead y el aviso al asesor guardan lo que el
+    cliente escribió: el 07/11, "ok gracias" quedó como "Sí" y el asesor habría leído "Último mensaje: Sí"."""
+
+    def test_historial_lead_y_aviso(self):
+        import hashlib
+        import hmac
+        caso = next(c for c in banco.CASOS if c["id"] == "negociacion_si_al_asesor")
+        memoria = mock.Mock()
+        memoria.claim_work.return_value = ("claimed", "token")
+        memoria.load_session.return_value = caso["historia"]
+        cuerpo = json.dumps({"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {"messages": [
+            {"id": "wamid-original", "from": banco.TELEFONO, "type": "text", "text": {"body": "ok gracias"}}]}}]}]}).encode()
+        firma = "sha256=" + hmac.new(b"secreto", cuerpo, hashlib.sha256).hexdigest()
+        with mock.patch.dict(os.environ, {"CONVERSACION_IA": "on", "ADVISOR_PHONE": "51900000001", "ADVISOR_TEMPLATE": ""}), \
+                mock.patch.object(app, "APP_SECRET", "secreto"), mock.patch.object(app, "OPENAI_API_KEY", "clave"), \
+                mock.patch.object(app, "get_conversation_memory_store", return_value=memoria), \
+                mock.patch.object(app, "get_inventory_store", return_value=banco.InventarioFalso(banco.TODAS_LIB)), \
+                mock.patch.object(app, "post_openai_response", banco.OpenAIFalso(caso["ia"])) as openai, \
+                mock.patch.object(app, "post_graph_message") as graph:
+            self.assertEqual(app.app.test_client().post("/webhook", data=cuerpo, headers={
+                "Content-Type": "application/json", "X-Hub-Signature-256": firma}).status_code, 200)
+        guardado = memoria.commit_work.call_args[0][0]
+        self.assertEqual(app.normalize_client_text("ok gracias"), "Sí", "el bot decide con el texto normalizado")
+        self.assertEqual(guardado["p_session"]["stage"], "handoff")
+        self.assertEqual(guardado["p_inbound"]["content"], "ok gracias")
+        self.assertEqual(guardado["p_profile"]["conversation"]["last_user_message"], "ok gracias")
+        aviso = next(c[0][0]["text"]["body"] for c in graph.call_args_list if c[0][0]["to"] == "51900000001")
+        self.assertIn("Último mensaje: “ok gracias”", aviso)
