@@ -137,7 +137,7 @@ class FakeHTTP:
 
 
 class ResponderDesdeCrmTest(unittest.TestCase):
-    def enviar(self, fake, body=None, token="tok", origin="https://creenzia-crm.vercel.app"):
+    def enviar(self, fake, body=None, token="tok", origin="https://creenzia-crm.onrender.com"):
         memory = app.ConversationMemoryStore("https://x.supabase.co", "service-key")
         with mock.patch.object(app, "get_conversation_memory_store", return_value=memory), \
              mock.patch.object(app.requests, "get", side_effect=fake.get), \
@@ -152,7 +152,7 @@ class ResponderDesdeCrmTest(unittest.TestCase):
         fake = FakeHTTP()
         r = self.enviar(fake)
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "https://creenzia-crm.vercel.app")
+        self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "https://creenzia-crm.onrender.com")
         destinos = [d for d, _ in fake.posts]
         self.assertIn("graph", destinos)
         self.assertIn("crm_outbound_messages", destinos)
