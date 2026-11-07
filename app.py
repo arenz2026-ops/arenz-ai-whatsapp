@@ -1407,6 +1407,17 @@ def is_third_party(public):
     return (public or {}).get("provenance") == THIRD_PARTY
 
 
+def format_price(amount, currency):
+    """One price format for every message: 'S/ 289,460', 'US$ 190,288', 'S/ 465,070.87' (cents only if any).
+
+    The ficha, the listing, '¿cuánto cuesta?', the counteroffer reply and the advisor notice all use it, so a unit
+    never shows two different prices (323 active units have cents)."""
+    symbol = {"PEN": "S/", "USD": "US$"}.get(currency, currency or "")
+    value = float(amount)
+    number = f"{value:,.0f}" if round(value, 2).is_integer() else f"{value:,.2f}"
+    return f"{symbol} {number}".strip()
+
+
 def inventory_reply(matches):
     if not matches:
         return "No encontré opciones verificadas que coincidan exactamente con tus criterios en este momento. Puedo ampliar distrito, presupuesto o derivar tu solicitud a un asesor."
@@ -1421,19 +1432,16 @@ def inventory_reply(matches):
         description = public.get("public_description") or ""
         identity = re.match(r"^Proyecto (.*?); unidad (.*?)\.(?:\s|$)", description)
         title = f"{identity.group(1)} · Unidad {identity.group(2)}" if identity else public["property_type"].capitalize()
-        amount = f"{float(public['price_amount']):,.2f}".rstrip("0").rstrip(".")
-        amount = amount.translate(str.maketrans({",": ".", ".": ","}))
-        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
         lines.append(f"\n{index}. {title} · {public['district']}")
         lines.append(f"Ref. {public['public_reference']}")
-        details = [f"{symbol} {amount}"]
+        details = [format_price(public["price_amount"], public["currency"])]
         if public.get("bedrooms") is not None:
             details.append(f"{public['bedrooms']:g} dormitorios")
         area = public.get("area_total_m2") or public.get("area_m2")
         if area:
-            details.append(f"{float(area):g}".replace(".", ",") + " m²")
+            details.append(f"{float(area):g} m²")
         if public.get("bathrooms") is not None:
-            details.append(f"{float(public['bathrooms']):g}".replace(".", ",") + " baños")
+            details.append(f"{float(public['bathrooms']):g} baños")
         if public.get("parking_spaces"):
             details.append(f"{public['parking_spaces']} estacionamiento(s)")
         elif public.get("parking_spaces") == 0:
@@ -1718,7 +1726,6 @@ def ficha_unit_facts(item):
     public = item["public"]
     description = public.get("public_description") or ""
     project = unit_project_name(item) or public.get("property_type", "departamento").capitalize()
-    symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
     lines = [f"🏠 DEPARTAMENTO EN VENTA – {project.upper()}, {public['district'].upper()}"]
     facts = []
     area = public.get("area_total_m2") or public.get("area_m2")
@@ -1744,9 +1751,7 @@ def ficha_unit_facts(item):
     label = re.sub(r"^([A-Za-zÁÉÍÓÚáéíóú]{3,})[-/ ](\d{2})$", lambda m: f"{m.group(1).capitalize()} 20{m.group(2)}", label)
     facts.append("📅 Entrega inmediata" if delivery == "inmediata" else
                  f"📅 Entrega: {label}" if delivery == "futura" and label else "📅 Entrega: por confirmar")
-    amount = float(public["price_amount"])
-    price = f"{amount:,.0f}" if amount.is_integer() else f"{amount:,.2f}"
-    return lines, [f"💰 PRECIO DE VENTA: {symbol} {price}", ficha_parking_line(item)], facts
+    return lines, [f"💰 PRECIO DE VENTA: {format_price(public['price_amount'], public['currency'])}", ficha_parking_line(item)], facts
 
 
 def ficha_ai_sections(text):
@@ -2017,8 +2022,7 @@ def brief_listing(items, start=1):
     for index, item in enumerate(items, start):
         public = item["public"]
         project = unit_project_name(item) or public["property_type"].capitalize()
-        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
-        parts = [f"{symbol} {float(public['price_amount']):,.0f}"]
+        parts = [format_price(public["price_amount"], public["currency"])]
         if public.get("bedrooms") is not None:
             parts.append(f"{public['bedrooms']:g} dorm")
         area = public.get("area_total_m2") or public.get("area_m2")
@@ -2569,8 +2573,7 @@ def advisor_unit(reference, inventory_matches=None):
         short = " · ".join(part for part in (
             identity.group(1) if identity else (row.get("property_type") or "Departamento").capitalize(),
             f"unidad {identity.group(2)}" if identity else None) if part)
-        symbol = {"PEN": "S/", "USD": "US$"}.get(row.get("currency"), row.get("currency") or "")
-        price = f"{symbol} {float(row['price_amount']):,.0f}" if row.get("price_amount") is not None else None
+        price = format_price(row["price_amount"], row.get("currency")) if row.get("price_amount") is not None else None
         label = " · ".join(part for part in (short, f"piso {floor.group(1)}" if floor else None, row.get("district"), price) if part)
         address = card_address(store.project_card(reference)) if store else ""
         return {"reference": reference, "short": short, "label": f"{label} ({reference})", "address": address}
@@ -2700,8 +2703,7 @@ def price_proposal_reply(item):
     """The listed price comes from the inventory record; the proposal goes to an advisor, never answered by the bot."""
     if item:
         public = item["public"]
-        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
-        listed = f"El precio publicado de {unit_display_name(item)} es {symbol} {float(public['price_amount']):,.0f}. "
+        listed = f"El precio publicado de {unit_display_name(item)} es {format_price(public['price_amount'], public['currency'])}. "
     else:
         listed = ""
     return (f"Entiendo tu propuesta 🙂 {listed}Una oferta distinta la revisa un asesor de {COMMERCIAL_BRAND}. "
@@ -2769,8 +2771,7 @@ def unit_fact_reply(item, fact):
     if fact == "estacionamiento":
         return parking_question_reply(item)
     if fact == "precio":
-        symbol = {"PEN": "S/", "USD": "US$"}.get(public["currency"], public["currency"])
-        sentence = f"{name} tiene un precio de {symbol} {float(public['price_amount']):,.0f}."
+        sentence = f"{name} tiene un precio de {format_price(public['price_amount'], public['currency'])}."
     elif fact == "area":
         area = public.get("area_total_m2") or public.get("area_m2")
         sentence = f"{name} tiene {float(area):g} m²." if area else None
