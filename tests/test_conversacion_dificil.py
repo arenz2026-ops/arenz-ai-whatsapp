@@ -514,3 +514,30 @@ class FichaFormatosRealesTest(unittest.TestCase):
     def test_precio_con_centimos_no_se_redondea(self):
         _, precio, _ = self.facts("Proyecto Unico Canevaro; unidad 702. Piso 7. Entrega según fuente: Abril 2028.", precio=465070.87)
         self.assertEqual(precio[0], "💰 PRECIO DE VENTA: S/ 465,070.87")
+
+
+class MismoPrecioEnTodosLadosTest(unittest.TestCase):
+    """Una unidad con céntimos muestra el mismo precio en el listado, la ficha, '¿cuánto cuesta?', la contraoferta
+    y el aviso al asesor (antes la ficha decía S/ 465,070.87 y el listado S/ 465,071)."""
+
+    def test_formato(self):
+        self.assertEqual(app.format_price(289460, "PEN"), "S/ 289,460")
+        self.assertEqual(app.format_price("465070.87", "PEN"), "S/ 465,070.87")
+        self.assertEqual(app.format_price(465070.80, "PEN"), "S/ 465,070.80")
+        self.assertEqual(app.format_price(190288.0, "USD"), "US$ 190,288")
+        self.assertEqual(app.format_price(337995.999, "PEN"), "S/ 337,996")
+
+    def test_todos_los_mensajes_coinciden(self):
+        item = copy.deepcopy(banco.LIBERTADOR)
+        item["public"]["price_amount"] = 465070.87
+        esperado = "S/ 465,070.87"
+        with mock.patch.object(app, "project_card_text", return_value=""), \
+                mock.patch.object(app, "unit_notice_text", return_value=""), \
+                mock.patch.object(app, "get_inventory_store", return_value=None):
+            mensajes = {"listado": app.brief_listing([item]), "listado antiguo": app.inventory_reply([item]),
+                        "ficha": app.full_unit_reply(item), "cuánto cuesta": app.unit_fact_reply(item, "precio"),
+                        "contraoferta": app.price_proposal_reply(item),
+                        "aviso al asesor": app.advisor_unit("C2-268EAF11F560", [item])["label"]}
+        for donde, texto in mensajes.items():
+            self.assertIn(esperado, texto, donde)
+            self.assertNotIn("465,071", texto, donde)

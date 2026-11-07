@@ -132,8 +132,9 @@ class CommercialConversationTests(unittest.TestCase):
         reply = app.inventory_reply(matches)
         for unit in ("A - 306", "A - 406", "A - 506"):
             self.assertIn(unit, reply)
-        self.assertEqual(reply.count("S/ 250.000"), 3)
-        self.assertIn("52,34 m²", reply)
+        # Mismo formato que la ficha y el listado corto: un cliente nunca ve dos escrituras del mismo precio.
+        self.assertEqual(reply.count("S/ 250,000"), 3)
+        self.assertIn("52.34 m²", reply)
         self.assertIn("1er Tri 2029", reply)
         self.assertIn("estacionamiento por confirmar", reply)
         self.assertNotIn("250000.0", reply)
