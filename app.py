@@ -2341,8 +2341,13 @@ def _inventory_trace(criteria, matches, cutoff):
             "rules_version": "p1", "result_status": state, "eligible_count": len(matches or [])}
 
 
-def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, outbound, observation, criteria, stage, summary, previous, search_state, inventory_matches=None, inventory_cutoff=None):
-    """Prepare data only; the database RPC commits every durable consequence together."""
+def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, outbound, observation, criteria, stage, summary, previous, search_state, inventory_matches=None, inventory_cutoff=None, raw_inbound=None):
+    """Prepare data only; the database RPC commits every durable consequence together.
+
+    `inbound` is the normalized text the rules decided on; the history and the lead keep `raw_inbound`, what the
+    client actually typed ("ok gracias" was saved as "Sí", and the advisor read "Último mensaje: Sí").
+    """
+    typed = raw_inbound or inbound
     observation = sanitize_new_search_observation(observation, inbound)
     active_id = search_state.get("active_search_id")
     searches = search_state.get("searches", {})
@@ -2366,11 +2371,11 @@ def commit_consistent_turn(memory, claim_token, sender, message_id, inbound, out
         # saludado ni que pidió el nombre, y volvía a presentarse en cada mensaje.
         session_state["recent_turns"] = turns
     payload = {"p_message_id": message_id, "p_claim_token": claim_token,
-               "p_profile": _profile_payload(sender, criteria, inbound, outbound, stage),
+               "p_profile": _profile_payload(sender, criteria, typed, outbound, stage),
                "p_session": {"phone": sender, "stage": stage, "state": session_state, "summary": summary},
                "p_search": {"search_id": active_id, "phone": sender, "operation": criteria.get("operation"), "state": {**current, "criteria": criteria, "recent_turns": turns}},
                "p_previous_search_id": previous_id if previous_id != active_id else None,
-               "p_inbound": {"message_key": f"in:{message_id}", "phone": sender, "content": inbound, "extraction": observation},
+               "p_inbound": {"message_key": f"in:{message_id}", "phone": sender, "content": typed, "extraction": observation},
                "p_outbound": {"message_key": f"out:{message_id}", "phone": sender, "content": outbound},
                "p_inventory_log": _inventory_trace(criteria, inventory_matches, inventory_cutoff),
                "p_inventory_results": []}
@@ -2584,7 +2589,7 @@ def advisor_unit(reference, inventory_matches=None):
         return None
 
 
-def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None, turn_state=None, summary=None):
+def notify_advisor_of_handoff(sender, stage, previous, observation, text, criteria, inventory_matches=None, turn_state=None, summary=None, raw_text=None):
     """After the client has their reply, tell the advisor (nota CRM ARENZ). Best effort; never raises."""
     if stage != "handoff":
         return 0
@@ -2594,7 +2599,7 @@ def notify_advisor_of_handoff(sender, stage, previous, observation, text, criter
         broker = BROKER_SUMMARY in (summary or "") or broker_terms_told(previous)
         reference = (handoff or {}).get("property_reference") or ((criteria or {}).get("price_offer") or {}).get("reference")
         unit = advisor_unit(reference, inventory_matches)
-        return advisor_notify.notify_advisors(post_graph_message, sender, handoff, criteria, text, name, broker, unit)
+        return advisor_notify.notify_advisors(post_graph_message, sender, handoff, criteria, raw_text or text, name, broker, unit)
     except Exception:
         logger.exception("Advisor notice skipped")
         return 0
@@ -3637,13 +3642,13 @@ def receive_webhook():
             started_at = time.monotonic()
             if memory:
                 # All mandatory internal state commits before attempting Meta.
-                commit_consistent_turn(memory, claim_token, sender, message_id, text, reply, effective_observation, criteria, stage, summary, previous, turn_state, inventory_matches, inventory_cutoff)
+                commit_consistent_turn(memory, claim_token, sender, message_id, text, reply, effective_observation, criteria, stage, summary, previous, turn_state, inventory_matches, inventory_cutoff, raw_inbound=raw_text)
             else:
                 persist_conversation_turn(sender, message_id, text, reply, effective_observation, criteria, stage, summary, previous, timings, turn_state)
                 profile_session = {**user_sessions.get(sender, {})}
                 if criteria:
                     profile_session.update({"intent": criteria.get("operation"), "district": ", ".join(criteria.get("districts", [])) or None, "budget": f"{criteria.get('currency')} {criteria.get('budget_max')}" if criteria.get("currency") and criteria.get("budget_max") else None, "bedrooms": str(criteria["bedrooms"]) if criteria.get("bedrooms") is not None else None})
-                get_lead_store().upsert_lead(sender, profile_session, text, reply)
+                get_lead_store().upsert_lead(sender, profile_session, raw_text, reply)
             timings["internal_commit_ms"] = round((time.monotonic() - started_at) * 1000)
             started_at = time.monotonic()
             try:
@@ -3665,7 +3670,7 @@ def receive_webhook():
                 logger.warning("WhatsApp delivery failed after internal commit: category=%s", type(error).__name__)
             # The handoff is already committed; the notice to the advisor comes last so it
             # can never delay or break the client's reply.
-            notify_advisor_of_handoff(sender, stage, previous, effective_observation, text, criteria, inventory_matches, turn_state, summary)
+            notify_advisor_of_handoff(sender, stage, previous, effective_observation, text, criteria, inventory_matches, turn_state, summary, raw_text=raw_text)
             timings["graph_ms"] = round((time.monotonic() - started_at) * 1000)
             timings["total_ms"] = round((time.monotonic() - webhook_started_at) * 1000)
             logger.info("Webhook timing: dedupe_ms=%s session_read_ms=%s context_ms=%s openai_ms=%s session_write_ms=%s messages_write_ms=%s lead_write_ms=%s graph_ms=%s total_ms=%s", timings.get("dedupe_ms"), timings.get("session_read_ms"), timings.get("context_ms"), timings.get("openai_ms"), timings.get("session_write_ms"), timings.get("messages_write_ms"), timings.get("lead_write_ms"), timings.get("graph_ms"), timings.get("total_ms"))
