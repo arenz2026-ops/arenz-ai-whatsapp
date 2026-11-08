@@ -749,7 +749,7 @@ function cadenceHTML(l, d){
       <div><label for="kNextAt">Fecha y hora</label><input id="kNextAt" type="datetime-local" value="${toLocalInput(c.next_action_at)}"></div>
       <div><label for="kReason">Motivo o contexto</label><input id="kReason" type="text" value="${esc(c.next_action_reason||"")}" placeholder="Pidió que lo llamemos el lunes"></div>
     </div>
-    <div class="row" style="margin-bottom:6px"><button class="btn btn-gold" id="kSave">Guardar cadencia</button><span class="hist">La próxima acción con fecha también queda como tarea del responsable.</span></div>
+    <div class="row" style="margin-bottom:6px"><button class="btn btn-gold" id="kSave">Guardar cadencia</button><span class="hist">La próxima acción con fecha queda como tarea del responsable. Puedes cambiar la fecha cuando quieras: la tarea se mueve y el cambio queda en Notas.</span></div>
     <div class="cad-form" style="margin-top:16px">
       <div><label for="tChan">Registrar contacto</label><select id="tChan">${CHANNELS.map(([v,n])=>`<option value="${v}">${n}</option>`).join("")}</select></div>
       <div><label for="tRes">Resultado</label><select id="tRes">${RESULTS.map(r=>`<option>${r}</option>`).join("")}</select></div>
@@ -787,6 +787,11 @@ function bindCadence(l, d){
     }
     const { error } = await sb.from("crm_leads").update(upd).eq("id", l.id);
     if (error) return toast("No se pudo guardar: "+error.message);
+    // Si se cambió la fecha de una próxima acción ya programada, queda constancia en las notas para evaluarlo después.
+    if (c.next_action_at && at && new Date(c.next_action_at).getTime() !== new Date(at).getTime()) {
+      const body = `Próxima acción reprogramada: «${next || c.next_action || ""}» pasó de ${fmtDate(c.next_action_at)} a ${fmtDate(at)}` + (upd.next_action_reason ? ` · Motivo: ${upd.next_action_reason}` : "");
+      await sb.from("crm_notes").insert({ lead_id:l.id, author_id:S.me.id, body });
+    }
     toast("Cadencia guardada"); await refresh(false); openLead(l.id); refreshCadenceIfOpen();
   };
 }
