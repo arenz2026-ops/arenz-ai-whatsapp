@@ -213,10 +213,18 @@ table.grid td.num{white-space:nowrap}
 .light.avanzar{--lc:#2E9E5B}.light.seguimiento{--lc:#2F6FD6}.light.verificar{--lc:#E07A1F}.light.detener{--lc:#C83A3A}
 .light.sug{font-weight:500;color:var(--muted)}
 #view-cadence .list{max-width:none}
+#cadSection.flash{outline:3px solid var(--gold);outline-offset:6px;border-radius:6px;transition:outline-color .6s}
 table.grid tr.click{cursor:pointer} table.grid tr.click:hover td{background:var(--mist)}
 table.grid td.late{color:var(--danger);font-weight:600}
 .cad-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;align-items:end;margin:12px 0}
-.cad-form .wide{grid-column:span 2}
+.cad-form .wide{grid-column:span 2} .cad-form .full{grid-column:1/-1} .cad-form textarea{min-height:52px}
+.auto{color:var(--muted);font-style:italic}
+#view-clients .list{max-width:none}
+.filters5{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
+.filters5 fieldset{border:1px solid var(--line);border-radius:var(--r-s);background:#fff;padding:8px 10px 10px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.filters5 legend{font-family:var(--narrow);font-weight:700;color:var(--navy);padding:0 4px}
+.filters5 .row2{display:flex;gap:6px;align-items:center} .filters5 .row2 input,.filters5 .row2 select{min-width:0;flex:1}
+td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{display:inline-block;width:46px;color:var(--muted);font-weight:600}
 .wa{color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.35);padding:6px 10px;border-radius:var(--r-s);font-size:13px;white-space:nowrap}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:10px 16px;border-radius:var(--r-s);z-index:60;font-size:14px}
 
@@ -235,6 +243,7 @@ table.grid td.late{color:var(--danger);font-weight:600}
   .col{min-height:0}
   .list{padding:0 16px 24px}
   .controls,.facts,.units,.form-row{grid-template-columns:1fr 1fr}
+  .filters5{grid-template-columns:1fr}
   .cad-form{grid-template-columns:1fr 1fr} .cad-form .wide{grid-column:span 2}
   .facts.five{grid-template-columns:1fr 1fr}
   .sheet-body{padding:14px 16px 40px}
@@ -284,6 +293,7 @@ table.grid td.late{color:var(--danger);font-weight:600}
       <button role="tab" data-view="board" aria-selected="true">Embudo</button>
       <button role="tab" data-view="tasks" aria-selected="false">Tareas <span id="taskCount"></span></button>
       <button role="tab" data-view="cadence" aria-selected="false">Cadencia</button>
+      <button role="tab" data-view="clients" aria-selected="false">Clientes</button>
       <button role="tab" data-view="campaigns" aria-selected="false">Campañas</button>
       <button role="tab" data-view="results" aria-selected="false">Resultados</button>
     </nav>
@@ -321,8 +331,50 @@ table.grid td.late{color:var(--danger);font-weight:600}
       <label class="chk"><input type="checkbox" id="kDue"> Solo con acción vencida o de hoy</label>
       <label class="chk"><input type="checkbox" id="kTest"> Ver pruebas</label>
     </div>
-    <div class="list"><div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Última actividad</th><th class="num">Llamadas</th><th class="num">Convers. efectivas</th><th class="num">WA enviados</th><th class="num">WA respondidos</th><th>Último contacto</th><th>Semáforo</th><th>Situación actual</th><th>Próxima acción</th><th>Fecha y hora</th></tr></thead><tbody id="cadRows"></tbody></table></div>
+    <div class="list"><div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Lo que busca (5 filtros)</th><th>Última actividad</th><th class="num">Llamadas</th><th class="num">Convers. efectivas</th><th class="num">WA enviados</th><th class="num">WA respondidos</th><th>Último contacto</th><th>Semáforo</th><th>Situación actual</th><th>Próxima acción</th><th>Fecha y hora</th><th></th></tr></thead><tbody id="cadRows"></tbody></table></div>
     <p class="hist" style="margin-top:8px">El semáforo en gris es una sugerencia del CRM; elige el definitivo en la ficha del cliente.</p></div>
+  </div>
+
+  <div id="view-clients" class="hidden">
+    <div class="list">
+      <p class="hist" style="margin:14px 0 4px">Busca en toda tu base de clientes con los 5 filtros. Ejemplo: te llega un departamento en Chorrillos a S/ 280,000 → Dónde «Chorrillos» y Cuánto «hasta 300000» en soles, y ves a quién compartírselo.</p>
+      <div class="filters5">
+        <fieldset><legend>Qué</legend>
+          <select id="xOp"><option value="">Compra o alquiler</option><option value="compra">Compra</option><option value="alquiler">Alquiler</option></select>
+          <select id="xType"><option value="">Cualquier tipo</option></select>
+          <select id="xBeds"><option value="">Dormitorios</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4 o más</option></select>
+        </fieldset>
+        <fieldset><legend>Dónde</legend>
+          <input id="xDist" type="text" list="xDistList" placeholder="Distrito, ej.: Chorrillos"><datalist id="xDistList"></datalist>
+        </fieldset>
+        <fieldset><legend>Cuánto (presupuesto del cliente)</legend>
+          <div class="row2"><select id="xCur"><option value="PEN">S/</option><option value="USD">US$</option></select><input id="xMin" type="number" min="0" placeholder="Desde"><input id="xMax" type="number" min="0" placeholder="Hasta"></div>
+          <div class="row2"><label class="hist" for="xRate">Tipo de cambio</label><input id="xRate" type="number" min="1" step="0.01" value="3.75" style="max-width:90px"></div>
+        </fieldset>
+        <fieldset><legend>Cómo</legend>
+          <select id="xPay"><option value="">Cualquier forma de pago</option><option value="contado">Al contado</option><option value="credito">Crédito hipotecario</option><option value="mixto">Contado y crédito</option><option value="por_definir">Por definir</option></select>
+        </fieldset>
+        <fieldset><legend>Cuándo</legend>
+          <select id="xWhen"><option value="">Cualquier plazo</option><option value="inmediata">Entrega inmediata</option><option value="futura">Acepta entrega futura</option></select>
+          <input id="xWhenText" type="text" placeholder="Palabra del plazo, ej.: meses">
+        </fieldset>
+        <fieldset><legend>Más filtros</legend>
+          <input id="xQ" type="text" placeholder="Nombre o número">
+          <select id="xStage"><option value="">Todas las etapas</option></select>
+          <select id="xWho"><option value="">Todos los responsables</option></select>
+        </fieldset>
+      </div>
+      <div class="toolbar" style="padding:0">
+        <label class="chk"><input type="checkbox" id="xConsent"> Solo los que autorizaron recibir ofertas</label>
+        <label class="chk"><input type="checkbox" id="xOptOut"> Incluir «No contactar»</label>
+        <label class="chk"><input type="checkbox" id="xTest"> Ver pruebas</label>
+        <button class="btn btn-ghost" id="xClear" type="button">Limpiar filtros</button>
+        <button class="btn btn-gold" id="xCsv" type="button">Descargar lista (CSV)</button>
+        <span class="sync" id="xCount"></span>
+      </div>
+      <div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Qué</th><th>Dónde</th><th>Cuánto</th><th>Cómo</th><th>Cuándo</th><th>Etapa</th><th>Última actividad</th><th>Ofertas</th><th></th></tr></thead><tbody id="xRows"></tbody></table></div>
+      <p class="hist" style="margin-top:8px">Para enviarle una oferta nueva, el cliente debe figurar con «Autorizó» en Ofertas; si no, primero pregúntale si desea recibirla. A quien pidió no ser contactado no se le escribe.</p>
+    </div>
   </div>
 
   <div id="view-campaigns" class="hidden">
@@ -527,7 +579,7 @@ function cardHTML(l){
 ["q","fAssigned","fCampaign","fNoResp","fDecide","fTest"].forEach(id => $(id).addEventListener("input", renderBoard));
 
 /* ---------- Ficha ---------- */
-async function openLead(id){
+async function openLead(id, focus){
   const l = S.leads.find(x=>x.id===id); if(!l) return;
   $("scrim").classList.remove("hidden"); const sh = $("sheet"); sh.classList.remove("hidden");
   sh.innerHTML = `<div class="sheet-head"><div><h2 id="sheetTitle">${esc(l.full_name || fmtPhone(l.phone))}</h2><div class="sub">Cargando ficha…</div></div><button class="close" aria-label="Cerrar">×</button></div>`;
@@ -538,6 +590,7 @@ async function openLead(id){
   if (d.error) { toast(d.error.message); return; }
   renderLead(l, { ...(d.data || {}), consents: cons.data || [], cadence: cad.data || {}, touches: tch.data || [] }, notes.data || []);
   startLiveChat(id, (d.data || {}).messages);
+  if (focus === "cadence") { const sec = $("cadSection"); if (sec) { sec.scrollIntoView({block:"start"}); sec.classList.add("flash"); setTimeout(()=>sec.classList.remove("flash"), 1600); } }
 }
 function closeLead(){ clearInterval(S.live); S.live = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
 /* Los 5 filtros de calificación: QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO, tal como los respondió el cliente al bot. */
@@ -727,13 +780,32 @@ function suggestLight(r){
   if (["pidio_asesor","visita_agendada","visita_realizada","negociacion"].includes(r.stage_code)) return "avanzar";
   return "seguimiento";
 }
+/* Situación actual automática: etapa + lo que busca (5 filtros) + último contacto + último mensaje del cliente. */
+function autoSituation(r){
+  const stage = r.opted_out ? "Pidió no ser contactado" : ((S.stages.find(x=>x.code===r.stage_code)||{}).name || "");
+  const parts = [stage,
+    r.last_touch_result ? `Último contacto del equipo: ${r.last_touch_result}${r.last_touch_note ? " (" + r.last_touch_note + ")" : ""}` : "",
+    r.last_client_text ? `Último mensaje del cliente (${fmtDate(r.last_client_at,false)}): «${String(r.last_client_text).replace(/\s+/g," ").slice(0,90)}${String(r.last_client_text).length>90?"…":""}»` : ""];
+  return parts.filter(Boolean).join(". ");
+}
+function fiveCell(r){
+  const f = fiveFilters(r.criteria || {}, {});
+  const filled = f.filter(([,v])=>v).length;
+  return f.map(([k,v])=>`<div><small>${k}</small> ${v ? esc(v) : '<span class="auto">Pendiente</span>'}</div>`).join("") + `<div class="hist">${filled}/5 filtros</div>`;
+}
 function lightHTML(code, suggested){ return code ? `<span class="light ${code}">${lightName(code)}</span>` : `<span class="light ${suggested} sug" title="Sugerido">${lightName(suggested)}</span>`; }
 function cadenceHTML(l, d){
   const c = d.cadence || {}, touches = d.touches || [];
   const calls = touches.filter(t=>t.channel!=="whatsapp").length, eff = touches.filter(t=>t.effective).length;
-  const msgs = d.messages || [], waOut = msgs.filter(m=>m.dir==="outbound").length + touches.filter(t=>t.channel!=="llamada").length, waIn = msgs.filter(m=>m.dir==="inbound").length;
+  const row = (S.cadence||[]).find(r=>r.id===l.id), msgs = d.messages || [];
+  const waOut = row ? row.wa_sent : msgs.filter(m=>m.dir==="outbound").length + touches.filter(t=>t.channel!=="llamada").length;
+  const waIn = row ? row.wa_replied : msgs.filter(m=>m.dir==="inbound").length;
   const userName = id => (S.users.find(u=>u.id===id)||{}).full_name || "—";
-  return `<div class="section"><h4>Cadencia comercial</h4>
+  const lastIn = [...msgs].reverse().find(m=>m.dir==="inbound"), lastT = touches[0];
+  const auto = autoSituation({ stage_code:l.stage_code, opted_out:(row||l).opted_out, criteria:d.criteria,
+    last_client_text:lastIn && lastIn.text, last_client_at:lastIn && lastIn.at, last_touch_result:lastT && lastT.result, last_touch_note:lastT && lastT.note });
+  S.autoSituation = auto;
+  return `<div class="section" id="cadSection"><h4>Cadencia comercial</h4>
     <div class="facts five">
       <div class="fact"><small>Llamadas</small><b>${calls}</b></div>
       <div class="fact"><small>Convers. efectivas</small><b>${eff}</b></div>
@@ -743,8 +815,8 @@ function cadenceHTML(l, d){
     </div>
     <div class="cad-form">
       <div><label for="kSem">Semáforo</label><select id="kSem"><option value="">Sin definir</option>${LIGHTS.map(([v,n])=>`<option value="${v}" ${v===c.cadence_light?"selected":""}>${n}</option>`).join("")}</select></div>
-      <div class="wide"><label for="kSit">Situación actual</label><input id="kSit" type="text" value="${esc(c.cadence_situation||"")}" placeholder="Interesado en Lince, espera aprobación de crédito"></div>
-      <div><label for="kPref">Hora preferida</label><input id="kPref" type="text" value="${esc(c.preferred_time||"")}" placeholder="Después de las 6 p. m."></div>
+      <div class="full"><label for="kSit">Situación actual <span class="hist" id="kSitMode">${c.cadence_situation ? "· escrita a mano · <a href=\"#\" id=\"kSitAuto\">volver a automática</a>" : "· automática según la conversación; puedes editarla"}</span></label><textarea id="kSit" rows="2">${esc(c.cadence_situation || auto)}</textarea></div>
+      <div><label for="kPref">Horario preferido del cliente</label><input id="kPref" type="text" value="${esc(c.preferred_time||"")}" placeholder="Ej.: después de las 6 p. m., solo mañanas"></div>
       <div class="wide"><label for="kNext">Próxima acción</label><input id="kNext" type="text" value="${esc(c.next_action||"")}" placeholder="Llamar para confirmar visita"></div>
       <div><label for="kNextAt">Fecha y hora</label><input id="kNextAt" type="datetime-local" value="${toLocalInput(c.next_action_at)}"></div>
       <div><label for="kReason">Motivo o contexto</label><input id="kReason" type="text" value="${esc(c.next_action_reason||"")}" placeholder="Pidió que lo llamemos el lunes"></div>
@@ -763,15 +835,17 @@ function cadenceHTML(l, d){
 function bindCadence(l, d){
   const c = d.cadence || {};
   $("tRes").onchange = () => { $("tEff").checked = EFFECTIVE_RESULTS.includes($("tRes").value); };
+  const back = $("kSitAuto"); if (back) back.onclick = (e) => { e.preventDefault(); $("kSit").value = S.autoSituation || ""; $("kSitMode").textContent = "· volverá a ser automática al guardar"; };
   $("tAdd").onclick = async () => {
     const row = { lead_id:l.id, channel:$("tChan").value, result:$("tRes").value, effective:$("tEff").checked, note:$("tNote").value.trim()||null, recorded_by:S.me.id };
     const { error } = await sb.from("crm_touches").insert(row);
     if (error) return toast("No se pudo registrar: "+error.message);
-    toast("Contacto registrado"); openLead(l.id); refreshCadenceIfOpen();
+    toast("Contacto registrado"); await refreshCadenceIfOpen(); openLead(l.id, "cadence");
   };
   $("kSave").onclick = async () => {
     const next = $("kNext").value.trim() || null, at = $("kNextAt").value ? new Date($("kNextAt").value).toISOString() : null;
-    const upd = { cadence_light:$("kSem").value || null, cadence_situation:$("kSit").value.trim()||null, preferred_time:$("kPref").value.trim()||null,
+    const sit = $("kSit").value.trim();
+    const upd = { cadence_light:$("kSem").value || null, cadence_situation: (!sit || sit === (S.autoSituation||"").trim()) ? null : sit, preferred_time:$("kPref").value.trim()||null,
                   next_action:next, next_action_at:at, next_action_reason:$("kReason").value.trim()||null };
     // La próxima acción con fecha se refleja como tarea (se actualiza la misma tarea si ya existía y sigue abierta).
     if (next && at) {
@@ -788,14 +862,14 @@ function bindCadence(l, d){
     const { error } = await sb.from("crm_leads").update(upd).eq("id", l.id);
     if (error) return toast("No se pudo guardar: "+error.message);
     // Si se cambió la fecha de una próxima acción ya programada, queda constancia en las notas para evaluarlo después.
-    if (c.next_action_at && at && new Date(c.next_action_at).getTime() !== new Date(at).getTime()) {
+    if (c.next_action_at && at && Math.floor(new Date(c.next_action_at)/60000) !== Math.floor(new Date(at)/60000)) {
       const body = `Próxima acción reprogramada: «${next || c.next_action || ""}» pasó de ${fmtDate(c.next_action_at)} a ${fmtDate(at)}` + (upd.next_action_reason ? ` · Motivo: ${upd.next_action_reason}` : "");
       await sb.from("crm_notes").insert({ lead_id:l.id, author_id:S.me.id, body });
     }
-    toast("Cadencia guardada"); await refresh(false); openLead(l.id); refreshCadenceIfOpen();
+    toast("Cadencia guardada"); await refresh(false); await refreshCadenceIfOpen(); openLead(l.id, "cadence");
   };
 }
-function refreshCadenceIfOpen(){ if (!$("view-cadence").classList.contains("hidden")) loadCadence(); }
+async function refreshCadenceIfOpen(){ if (!$("view-cadence").classList.contains("hidden")) await loadCadence(); }
 async function loadCadence(){
   const r = await sb.rpc("crm_cadence");
   if (r.error) { toast("No se pudo cargar la cadencia: "+r.error.message); return; }
@@ -812,15 +886,86 @@ function renderCadence(){
               || new Date(b.last_activity||0) - new Date(a.last_activity||0));
   const now = new Date();
   $("cadRows").innerHTML = rows.map(r => `<tr class="click" data-lead="${r.id}">
-      <td><b>${esc(r.full_name || fmtPhone(r.phone))}</b></td><td>${fmtDate(r.last_activity)}</td>
+      <td><b>${esc(r.full_name || fmtPhone(r.phone))}</b></td><td class="five5">${fiveCell(r)}</td><td>${fmtDate(r.last_activity)}</td>
       <td class="num">${r.calls}</td><td class="num">${r.effective}</td><td class="num">${r.wa_sent}</td><td class="num">${r.wa_replied}</td>
       <td>${fmtDate(r.last_contact_at)}</td><td>${lightHTML(r.cadence_light, r.light)}</td>
-      <td>${esc(r.cadence_situation||"—")}</td><td>${esc(r.next_action||"—")}</td>
-      <td class="${r.next_action_at && new Date(r.next_action_at) < now ? "late" : ""}">${fmtDate(r.next_action_at)}</td></tr>`).join("")
-    || '<tr><td colspan="11" class="empty">No hay clientes con estos filtros.</td></tr>';
-  $("cadRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = () => openLead(tr.dataset.lead));
+      <td>${r.cadence_situation ? esc(r.cadence_situation) : `<span class="auto" title="Automático">${esc(autoSituation(r)||"—")}</span>`}</td><td>${esc(r.next_action||"—")}</td>
+      <td class="${r.next_action_at && new Date(r.next_action_at) < now ? "late" : ""}">${fmtDate(r.next_action_at)}</td>
+      <td><button class="btn btn-gold" type="button">Editar</button></td></tr>`).join("")
+    || '<tr><td colspan="13" class="empty">No hay clientes con estos filtros.</td></tr>';
+  $("cadRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = () => openLead(tr.dataset.lead, "cadence"));
 }
 ["kWho","kLight","kDue","kTest"].forEach(id => $(id).addEventListener("input", renderCadence));
+
+/* ---------- Base de clientes con búsqueda por los 5 filtros ---------- */
+async function loadClients(){
+  const r = await sb.rpc("crm_cadence");
+  if (r.error) { toast("No se pudo cargar la base de clientes: "+r.error.message); return; }
+  S.cadence = r.data || [];
+  const crit = x => x.criteria || {};
+  const uniq = arr => [...new Set(arr.filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
+  const keep = (id, html) => { const el=$(id), v=el.value; el.innerHTML = html; el.value = v; };
+  keep("xType", '<option value="">Cualquier tipo</option>' + uniq(S.cadence.map(x=>crit(x).property_type)).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join(""));
+  $("xDistList").innerHTML = uniq(S.cadence.flatMap(x=>crit(x).districts||[])).map(d=>`<option value="${esc(d)}">`).join("");
+  keep("xStage", '<option value="">Todas las etapas</option>' + S.stages.map(s=>`<option value="${s.code}">${esc(s.name)}</option>`).join(""));
+  keep("xWho", '<option value="">Todos los responsables</option>' + S.users.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join(""));
+  renderClients();
+}
+const fold = t => String(t||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+function clientRows(){
+  const v = id => $(id).value.trim(), rate = Number(v("xRate")) || 3.75, cur = v("xCur");
+  const toCur = (amount, c) => amount==null ? null : (c === cur ? Number(amount) : (cur === "PEN" ? Number(amount)*rate : Number(amount)/rate));
+  const min = v("xMin") === "" ? null : Number(v("xMin")), max = v("xMax") === "" ? null : Number(v("xMax"));
+  const q = fold(v("xQ")), dist = fold(v("xDist")), whenText = fold(v("xWhenText"));
+  return (S.cadence||[]).filter(r => {
+    const c = r.criteria || {};
+    if (!$("xTest").checked && r.is_test) return false;
+    if (!$("xOptOut").checked && r.opted_out) return false;
+    if ($("xConsent").checked && !r.marketing_consent) return false;
+    if (v("xOp") && c.operation !== v("xOp")) return false;
+    if (v("xType") && c.property_type !== v("xType")) return false;
+    if (v("xBeds") && !(v("xBeds") === "4" ? Number(c.bedrooms) >= 4 : Number(c.bedrooms) === Number(v("xBeds")))) return false;
+    if (dist && !(c.districts||[]).some(d => fold(d).includes(dist))) return false;
+    if (min != null || max != null) {
+      const b = toCur(c.budget_max, c.currency || "PEN");
+      if (b == null) return false;
+      if (min != null && b < min) return false;
+      if (max != null && b > max) return false;
+    }
+    if (v("xPay") && c.payment_method !== v("xPay")) return false;
+    if (v("xWhen") && c.delivery_preference !== v("xWhen")) return false;
+    if (whenText && !fold(c.purchase_timeline).includes(whenText)) return false;
+    if (v("xStage") && r.stage_code !== v("xStage")) return false;
+    if (v("xWho") && r.assigned_to !== v("xWho")) return false;
+    if (q && !fold([r.full_name, r.phone].join(" ")).includes(q)) return false;
+    return true;
+  }).sort((a,b) => new Date(b.last_activity||0) - new Date(a.last_activity||0));
+}
+function renderClients(){
+  const rows = clientRows(), stageName = c => (S.stages.find(s=>s.code===c)||{}).name || c || "—";
+  $("xCount").textContent = rows.length + (rows.length === 1 ? " cliente" : " clientes");
+  $("xRows").innerHTML = rows.map(r => {
+    const f = Object.fromEntries(fiveFilters(r.criteria || {}, {})), wa = waLink(r.phone);
+    const ofertas = r.opted_out ? '<span class="tag stop">No contactar</span>' : r.marketing_consent ? '<span class="tag gold">Autorizó</span>' : '<span class="tag">Sin preguntar</span>';
+    return `<tr class="click" data-lead="${r.id}"><td><b>${esc(r.full_name || fmtPhone(r.phone))}</b><br><span class="hist">${esc(fmtPhone(r.phone))}</span></td>
+      ${["Qué","Dónde","Cuánto","Cómo","Cuándo"].map(k=>`<td>${f[k] ? esc(f[k]) : '<span class="auto">Pendiente</span>'}</td>`).join("")}
+      <td>${esc(stageName(r.stage_code))}</td><td>${fmtDate(r.last_activity)}</td><td>${ofertas}</td>
+      <td style="white-space:nowrap">${wa && !r.opted_out ? `<a class="btn btn-ghost" href="${wa}" target="_blank" rel="noopener" data-stop="1">WhatsApp</a>` : ""}</td></tr>`;
+  }).join("") || '<tr><td colspan="10" class="empty">Ningún cliente cumple estos filtros.</td></tr>';
+  $("xRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = (e) => { if (e.target.closest("[data-stop]")) return; openLead(tr.dataset.lead); });
+}
+["xOp","xType","xBeds","xDist","xCur","xMin","xMax","xRate","xPay","xWhen","xWhenText","xQ","xStage","xWho","xConsent","xOptOut","xTest"].forEach(id => $(id).addEventListener("input", renderClients));
+$("xClear").onclick = () => { ["xOp","xType","xBeds","xDist","xMin","xMax","xPay","xWhen","xWhenText","xQ","xStage","xWho"].forEach(id => $(id).value = ""); ["xConsent","xOptOut","xTest"].forEach(id => $(id).checked = false); renderClients(); };
+$("xCsv").onclick = () => {
+  const rows = clientRows(), stageName = c => (S.stages.find(s=>s.code===c)||{}).name || c || "";
+  const head = ["Cliente","Teléfono","Qué","Dónde","Cuánto","Cómo","Cuándo","Etapa","Última actividad","Ofertas"];
+  const lines = rows.map(r => { const f = Object.fromEntries(fiveFilters(r.criteria || {}, {}));
+    return [r.full_name||"", r.phone, f["Qué"], f["Dónde"], f["Cuánto"], f["Cómo"], f["Cuándo"], stageName(r.stage_code), fmtDate(r.last_activity),
+            r.opted_out ? "No contactar" : r.marketing_consent ? "Autorizó" : "Sin preguntar"]; });
+  const csv = [head, ...lines].map(cols => cols.map(x => '"' + String(x ?? "").replace(/"/g,'""') + '"').join(",")).join("\r\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["\ufeff"+csv], {type:"text/csv;charset=utf-8"}));
+  a.download = "clientes-creenzia.csv"; a.click(); URL.revokeObjectURL(a.href);
+};
 
 function bindPerms(l){
   const sync = () => { $("cnEvLabel").textContent = $("cnPurpose").value === "compartir_aliado" ? "Inmobiliaria y lo que dijo" : "Lo que dijo el cliente"; };
@@ -1024,7 +1169,8 @@ function renderResults(){
 /* ---------- Pestañas ---------- */
 document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => {
   document.querySelectorAll("nav.tabs button").forEach(x => x.setAttribute("aria-selected", x===b));
-  ["board","tasks","cadence","campaigns","results"].forEach(v => $("view-"+v).classList.toggle("hidden", v !== b.dataset.view));
+  ["board","tasks","cadence","clients","campaigns","results"].forEach(v => $("view-"+v).classList.toggle("hidden", v !== b.dataset.view));
+  if (b.dataset.view === "clients") loadClients();
   if (b.dataset.view === "results") loadResults();
   if (b.dataset.view === "cadence") loadCadence();
 });
