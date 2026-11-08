@@ -510,8 +510,30 @@ async function openLead(id){
   const [d, notes, cons] = await Promise.all([ sb.rpc("crm_lead_detail",{ p_lead_id:id }), sb.from("crm_notes").select("*").eq("lead_id",id).order("created_at",{ascending:false}), sb.from("crm_consents").select("*").eq("lead_id",id).order("recorded_at",{ascending:false}) ]);
   if (d.error) { toast(d.error.message); return; }
   renderLead(l, { ...(d.data || {}), consents: cons.data || [] }, notes.data || []);
+  startLiveChat(id, (d.data || {}).messages);
 }
-function closeLead(){ $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
+function closeLead(){ clearInterval(S.live); S.live = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
+function chatHTML(msgs){
+  return (msgs||[]).map(m=>`<div class="bubble ${m.dir==="inbound"?"in":"out"} ${m.human?"human":""}"><span class="who">${m.dir==="inbound"?"Cliente":m.human?"Equipo CREENZIA":m.followup?"Bot · recordatorio":"Bot"}</span>${esc(m.text)}<time>${fmtDate(m.at)}</time></div>`).join("") || '<div class="empty">Sin mensajes.</div>';
+}
+/* Conversación en vivo: mientras la ficha está abierta, trae los mensajes nuevos cada 8 segundos. */
+function chatKey(msgs){ const m = (msgs||[]).at(-1); return (msgs||[]).length + "|" + (m ? m.at : ""); }
+function startLiveChat(id, msgs){
+  clearInterval(S.live); S.liveKey = chatKey(msgs);
+  S.live = setInterval(async () => {
+    if ($("sheet").classList.contains("hidden")) { clearInterval(S.live); S.live = null; return; }
+    if (document.hidden) return;
+    const r = await sb.rpc("crm_lead_detail",{ p_lead_id:id });
+    if (r.error || !r.data) return;
+    const key = chatKey(r.data.messages);
+    if (key === S.liveKey) return;
+    S.liveKey = key;
+    const chat = $("chat"); if (!chat) return;
+    const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+    chat.innerHTML = chatHTML(r.data.messages);
+    if (atBottom) chat.scrollTop = chat.scrollHeight;
+  }, 8000);
+}
 $("scrim").onclick = closeLead;
 document.addEventListener("keydown", e => { if (e.key==="Escape") closeLead(); });
 
@@ -578,7 +600,7 @@ function renderLead(l, d, notes){
     </div>
 
     <div class="section"><h4>Conversación</h4>
-      <div class="chat" id="chat">${(d.messages||[]).map(m=>`<div class="bubble ${m.dir==="inbound"?"in":"out"} ${m.human?"human":""}"><span class="who">${m.dir==="inbound"?"Cliente":m.human?"Equipo CREENZIA":m.followup?"Bot · recordatorio":"Bot"}</span>${esc(m.text)}<time>${fmtDate(m.at)}</time></div>`).join("") || '<div class="empty">Sin mensajes.</div>'}</div>
+      <div class="chat" id="chat">${chatHTML(d.messages)}</div>
       ${attendHTML(l)}
     </div>
 
