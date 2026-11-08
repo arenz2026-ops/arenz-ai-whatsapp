@@ -261,7 +261,7 @@ td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{displ
       <div class="funnel-mark" aria-hidden="true">
         <span style="width:100%"></span><span style="width:82%"></span><span style="width:64%"></span><span style="width:46%"></span><span style="width:28%"></span>
       </div>
-      <h1>Cada lead, de la conversación al cierre.</h1>
+      <h1>Cada prospecto, de la conversación al cierre.</h1>
       <p>El bot califica y registra. Tú y Cecilia toman la visita, la negociación y el cierre.</p>
     </div>
     <p style="font-size:12px;color:#8FA0BA">Acceso solo para el equipo CREENZIA.</p>
@@ -369,7 +369,7 @@ td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{displ
         <label class="chk"><input type="checkbox" id="xOptOut"> Incluir «No contactar»</label>
         <label class="chk"><input type="checkbox" id="xTest"> Ver pruebas</label>
         <button class="btn btn-ghost" id="xClear" type="button">Limpiar filtros</button>
-        <button class="btn btn-gold" id="xCsv" type="button">Descargar lista (CSV)</button>
+        <button class="btn btn-gold" id="xCsv" type="button">Descargar lista para Excel</button>
         <span class="sync" id="xCount"></span>
       </div>
       <div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Qué</th><th>Dónde</th><th>Cuánto</th><th>Cómo</th><th>Cuándo</th><th>Etapa</th><th>Última actividad</th><th>Ofertas</th><th></th></tr></thead><tbody id="xRows"></tbody></table></div>
@@ -388,7 +388,7 @@ td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{displ
         <div><label for="cSpend">Gasto (S/)</label><input id="cSpend" type="number" min="0" step="0.01" value="0"></div>
         <div><button class="btn btn-primary" type="submit">Agregar campaña</button></div>
       </form>
-      <div class="scroll"><table class="grid"><thead><tr><th>Código</th><th>Canal</th><th>Descripción</th><th>Gasto</th><th class="num">Leads</th><th class="num">Costo por lead</th></tr></thead><tbody id="campRows"></tbody></table></div>
+      <div class="scroll"><table class="grid"><thead><tr><th>Código</th><th>Canal</th><th>Descripción</th><th>Gasto</th><th class="num">Prospectos</th><th class="num">Costo por prospecto</th></tr></thead><tbody id="campRows"></tbody></table></div>
     </div>
   </div>
 
@@ -407,11 +407,11 @@ td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{displ
       <div class="kpis" id="rKpis"></div>
       <div class="panel">
         <h4>Embudo del periodo</h4>
-        <p class="note">Leads que ingresaron en el periodo y la etapa más avanzada que alcanzaron. En azul lo que avanza el bot; en dorado lo que avanzan ustedes.</p>
+        <p class="note">Prospectos que ingresaron en el periodo y la etapa más avanzada que alcanzaron. En azul lo que avanza el bot; en dorado lo que avanzan ustedes.</p>
         <div class="fun" id="rFunnel"></div>
       </div>
       <div class="panel">
-        <h4>Leads nuevos por día</h4>
+        <h4>Prospectos nuevos por día</h4>
         <p class="note" id="rDaysNote"></p>
         <div class="days" id="rDays" role="img"></div>
         <div class="axis" id="rAxis"></div>
@@ -419,11 +419,11 @@ td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{displ
       <div class="panel">
         <h4>Por campaña</h4>
         <p class="note">El costo usa el gasto que registras en la pestaña Campañas.</p>
-        <div class="scroll"><table class="grid"><thead><tr><th>Campaña</th><th>Canal</th><th class="num">Leads</th><th class="num">Calificados</th><th class="num">Pidieron asesor o visita</th><th class="num">Visitas</th><th class="num">Cierres</th><th class="num">Gasto</th><th class="num">Costo por lead</th><th class="num">Costo por calificado</th></tr></thead><tbody id="rCamp"></tbody></table></div>
+        <div class="scroll"><table class="grid"><thead><tr><th>Campaña</th><th>Canal</th><th class="num">Prospectos</th><th class="num">Calificados</th><th class="num">Pidieron asesor o visita</th><th class="num">Visitas</th><th class="num">Cierres</th><th class="num">Gasto</th><th class="num">Costo por prospecto</th><th class="num">Costo por calificado</th></tr></thead><tbody id="rCamp"></tbody></table></div>
       </div>
       <div class="panel">
         <h4>Motivos de pérdida</h4>
-        <p class="note">Leads del periodo cerrados como perdidos.</p>
+        <p class="note">Prospectos del periodo cerrados como perdidos.</p>
         <div class="reasons" id="rLost"></div>
       </div>
     </div>
@@ -554,7 +554,7 @@ function renderBoard(){
     return `<div class="col ${s.owner==="humano"?"human":""}">
       <h3><span>${esc(s.name)}</span><span>${items.length}</span></h3>
       <div class="who-moves">${s.owner==="bot" ? "La mueve el bot" : "La mueven tú o Cecilia"}</div>
-      ${items.map(cardHTML).join("") || '<div class="empty">Sin leads en esta etapa.</div>'}
+      ${items.map(cardHTML).join("") || '<div class="empty">Sin prospectos en esta etapa.</div>'}
     </div>`;
   }).join("");
   $("board").querySelectorAll(".card").forEach(c => c.onclick = () => openLead(c.dataset.id));
@@ -606,9 +606,19 @@ async function openLead(id, focus){
 }
 function closeLead(){ clearInterval(S.live); S.live = null; S.openId = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
 /* Los 5 filtros de calificación: QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO, tal como los respondió el cliente al bot. */
+/* Tipo de inmueble siempre en español (el bot a veces lo guarda en inglés). */
+function ptype(t){
+  if (!t || t==="null") return "";
+  const k = String(t).trim().toLowerCase();
+  return ({apartment:"Departamento", department:"Departamento", departamento:"Departamento", flat:"Departamento", dpto:"Departamento",
+           house:"Casa", casa:"Casa", land:"Terreno", lot:"Terreno", terreno:"Terreno", office:"Oficina", oficina:"Oficina",
+           store:"Local comercial", shop:"Local comercial", commercial:"Local comercial", local:"Local comercial",
+           duplex:"Dúplex", "dúplex":"Dúplex", penthouse:"Penthouse", studio:"Minidepartamento", loft:"Loft",
+           parking:"Estacionamiento", warehouse:"Almacén"})[k] || (k.charAt(0).toUpperCase() + k.slice(1));
+}
 function fiveFilters(c, p){
   const cap = t => t ? t.charAt(0).toUpperCase() + t.slice(1) : "";
-  const que = [cap(c.operation||p.intent||""), c.property_type||"", c.bedrooms!=null ? `${c.bedrooms} dorm.` : (p.bedrooms ? `${p.bedrooms} dorm.` : ""),
+  const que = [cap(c.operation||p.intent||""), ptype(c.property_type), c.bedrooms!=null ? `${c.bedrooms} dorm.` : (p.bedrooms ? `${p.bedrooms} dorm.` : ""),
                c.area_min_m2 ? `desde ${c.area_min_m2} m²` : "", c.parking_required===true ? "con estacionamiento" : ""].filter(Boolean).join(" · ");
   const donde = (c.districts||[]).join(", ") || p.district || "";
   let cuanto = c.budget_max!=null ? "Hasta " + money(c.budget_max, c.currency) : (p.budget || "");
@@ -737,7 +747,7 @@ function renderLead(l, d, notes){
     const val = b.dataset.fu || null;
     const { error } = await sb.from("crm_leads").update({ follow_up: val }).eq("id", l.id);
     if (error) return toast("No se guardó: "+error.message);
-    toast(val==="si" ? "El bot hará seguimiento a este lead" : val==="no" ? "El bot no hará seguimiento a este lead" : "Seguimiento pendiente de decidir");
+    toast(val==="si" ? "El bot hará seguimiento a este prospecto" : val==="no" ? "El bot no hará seguimiento a este prospecto" : "Seguimiento pendiente de decidir");
     await refresh(false); openLead(l.id);
   });
   $("noteAdd").onclick = async () => {
@@ -917,7 +927,7 @@ async function loadClients(){
   const crit = x => x.criteria || {};
   const uniq = arr => [...new Set(arr.filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
   const keep = (id, html) => { const el=$(id), v=el.value; el.innerHTML = html; el.value = v; };
-  keep("xType", '<option value="">Cualquier tipo</option>' + uniq(S.cadence.map(x=>crit(x).property_type)).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join(""));
+  keep("xType", '<option value="">Cualquier tipo</option>' + uniq(S.cadence.map(x=>ptype(crit(x).property_type))).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join(""));
   $("xDistList").innerHTML = uniq(S.cadence.flatMap(x=>crit(x).districts||[])).map(d=>`<option value="${esc(d)}">`).join("");
   keep("xStage", '<option value="">Todas las etapas</option>' + S.stages.map(s=>`<option value="${s.code}">${esc(s.name)}</option>`).join(""));
   keep("xWho", '<option value="">Todos los responsables</option>' + S.users.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join(""));
@@ -935,7 +945,7 @@ function clientRows(){
     if (!$("xOptOut").checked && r.opted_out) return false;
     if ($("xConsent").checked && !r.marketing_consent) return false;
     if (v("xOp") && c.operation !== v("xOp")) return false;
-    if (v("xType") && c.property_type !== v("xType")) return false;
+    if (v("xType") && ptype(c.property_type) !== v("xType")) return false;
     if (v("xBeds") && !(v("xBeds") === "4" ? Number(c.bedrooms) >= 4 : Number(c.bedrooms) === Number(v("xBeds")))) return false;
     if (dist && !(c.districts||[]).some(d => fold(d).includes(dist))) return false;
     if (min != null || max != null) {
@@ -1131,12 +1141,12 @@ function renderResults(){
   const spend = S.campaigns.filter(c => !camp || c.code === camp).reduce((a,c)=>a+Number(c.ad_spend||0),0);
   const costLead = n && spend ? money(spend/n) : "—";
   $("rKpis").innerHTML = [
-    ["Leads nuevos", n, ""],
-    ["Calificados", qual, pct(qual,n)+" de los leads"],
-    ["Pidieron asesor o visita", ask, pct(ask,n)+" de los leads"],
-    ["Visitas realizadas", visit, pct(visit,n)+" de los leads"],
-    ["Cierres ganados", won, pct(won,n)+" de los leads"],
-    ["Costo por lead", costLead, spend ? "Gasto registrado: "+money(spend) : "Registra el gasto en Campañas"],
+    ["Prospectos nuevos", n, ""],
+    ["Calificados", qual, pct(qual,n)+" de los prospectos"],
+    ["Pidieron asesor o visita", ask, pct(ask,n)+" de los prospectos"],
+    ["Visitas realizadas", visit, pct(visit,n)+" de los prospectos"],
+    ["Cierres ganados", won, pct(won,n)+" de los prospectos"],
+    ["Costo por prospecto", costLead, spend ? "Gasto registrado: "+money(spend) : "Registra el gasto en Campañas"],
   ].map(([t,v,sub]) => `<div class="kpi"><span>${t}</span><b>${v}</b><small>${sub||"&nbsp;"}</small></div>`).join("");
 
   const steps = S.stages.filter(s => s.code !== "cerrado_perdido");
@@ -1152,11 +1162,11 @@ function renderResults(){
   const idx = Object.fromEntries(buckets.map((b,i)=>[b.key,i]));
   rows.forEach(l => { const k = new Date(l.created_at).toLocaleDateString("en-CA",{timeZone:"America/Lima"}); if (k in idx) buckets[idx[k]].n++; });
   const max = Math.max(1, ...buckets.map(b=>b.n));
-  $("rDays").setAttribute("aria-label", "Leads nuevos por día: " + n + " en total");
-  $("rDays").innerHTML = buckets.map(b => `<div class="d" tabindex="0"><i style="height:${b.n*100/max}%"></i><span class="tip">${b.d.toLocaleDateString("es-PE",{day:"2-digit",month:"short"})} · ${b.n} lead${b.n===1?"":"s"}</span></div>`).join("");
+  $("rDays").setAttribute("aria-label", "Prospectos nuevos por día: " + n + " en total");
+  $("rDays").innerHTML = buckets.map(b => `<div class="d" tabindex="0"><i style="height:${b.n*100/max}%"></i><span class="tip">${b.d.toLocaleDateString("es-PE",{day:"2-digit",month:"short"})} · ${b.n} prospecto${b.n===1?"":"s"}</span></div>`).join("");
   const fmtD = d => d.toLocaleDateString("es-PE",{day:"2-digit",month:"short"});
   $("rAxis").innerHTML = `<span>${fmtD(buckets[0].d)}</span><span>Máximo: ${max} por día</span><span>${fmtD(buckets[buckets.length-1].d)}</span>`;
-  $("rDaysNote").textContent = n ? `${n} lead${n===1?"":"s"} en ${span} días · promedio ${(n/span).toFixed(1)} por día. Pasa el cursor sobre una barra para ver el día.` : "Aún no hay leads en este periodo.";
+  $("rDaysNote").textContent = n ? `${n} prospecto${n===1?"":"s"} en ${span} días · promedio ${(n/span).toFixed(1)} por día. Pasa el cursor sobre una barra para ver el día.` : "Aún no hay prospectos en este periodo.";
 
   const byCamp = {};
   rows.forEach(l => { (byCamp[l.campaign_code] ||= []).push(l); });
@@ -1168,13 +1178,13 @@ function renderResults(){
     const v = L.filter(l=>l.max_position>=posOf("visita_realizada")).length;
     const w = L.filter(l=>l.won).length, g = Number(c.ad_spend||0);
     return `<tr><td><b>${esc(code)}</b><br><span style="color:var(--muted);font-size:12px">${esc(c.name||"")}</span></td><td>${esc(CHANNEL[c.channel]||c.channel||"—")}</td><td class="num">${L.length}</td><td class="num">${q}</td><td class="num">${a}</td><td class="num">${v}</td><td class="num">${w}</td><td class="num">${g?money(g,c.currency):"—"}</td><td class="num">${g&&L.length?money(g/L.length,c.currency):"—"}</td><td class="num">${g&&q?money(g/q,c.currency):"—"}</td></tr>`;
-  }).join("") || '<tr><td colspan="10" class="empty">Sin leads en este periodo.</td></tr>';
+  }).join("") || '<tr><td colspan="10" class="empty">Sin prospectos en este periodo.</td></tr>';
 
   const lost = rows.filter(l=>l.lost);
   const counts = {}; lost.forEach(l => { counts[l.lost_reason_code||"otro"] = (counts[l.lost_reason_code||"otro"]||0)+1; });
   $("rLost").innerHTML = Object.keys(counts).length
     ? Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([k,v]) => `<span class="tag" style="font-size:13px;padding:4px 10px">${esc((S.reasons.find(r=>r.code===k)||{}).name||k)}: <b>${v}</b></span>`).join("")
-    : '<span class="empty">Ningún lead perdido en este periodo.</span>';
+    : '<span class="empty">Ningún prospecto perdido en este periodo.</span>';
 }
 ["rPeriod","rCampaign","rTest"].forEach(id => $(id).addEventListener("input", renderResults));
 
