@@ -767,7 +767,7 @@ function cadenceHTML(l, d){
     <div class="cad-form">
       <div><label for="kSem">Semáforo</label><select id="kSem"><option value="">Sin definir</option>${LIGHTS.map(([v,n])=>`<option value="${v}" ${v===c.cadence_light?"selected":""}>${n}</option>`).join("")}</select></div>
       <div class="full"><label for="kSit">Situación actual <span class="hist" id="kSitMode">${c.cadence_situation ? "· escrita a mano · <a href=\"#\" id=\"kSitAuto\">volver a automática</a>" : "· automática según la conversación; puedes editarla"}</span></label><textarea id="kSit" rows="2">${esc(c.cadence_situation || auto)}</textarea></div>
-      <div><label for="kPref">Hora preferida</label><input id="kPref" type="text" value="${esc(c.preferred_time||"")}" placeholder="Después de las 6 p. m."></div>
+      <div><label for="kPref">Horario preferido del cliente</label><input id="kPref" type="text" value="${esc(c.preferred_time||"")}" placeholder="Ej.: después de las 6 p. m., solo mañanas"></div>
       <div class="wide"><label for="kNext">Próxima acción</label><input id="kNext" type="text" value="${esc(c.next_action||"")}" placeholder="Llamar para confirmar visita"></div>
       <div><label for="kNextAt">Fecha y hora</label><input id="kNextAt" type="datetime-local" value="${toLocalInput(c.next_action_at)}"></div>
       <div><label for="kReason">Motivo o contexto</label><input id="kReason" type="text" value="${esc(c.next_action_reason||"")}" placeholder="Pidió que lo llamemos el lunes"></div>
