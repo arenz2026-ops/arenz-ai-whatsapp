@@ -138,6 +138,8 @@ aside.sheet{position:fixed;top:0;right:0;bottom:0;width:min(760px,100%);backgrou
 .fact{background:var(--mist);border-radius:var(--r-s);padding:8px 10px}
 .fact small{display:block;color:var(--muted);font-size:11px}
 .fact b{font-weight:600}
+.facts.five{grid-template-columns:repeat(5,minmax(0,1fr))}
+.fact b.pend{color:var(--muted);font-weight:500}
 .summary{background:var(--gold-soft);border-radius:var(--r-s);padding:10px 12px;font-size:14px;margin-top:8px}
 .chat{background:#E9EEF4;border-radius:var(--r-m);padding:12px;max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:6px}
 .bubble{max-width:82%;padding:7px 10px;border-radius:10px;font-size:14px;white-space:pre-wrap;word-wrap:break-word}
@@ -224,6 +226,7 @@ table.grid td.num{white-space:nowrap}
   .col{min-height:0}
   .list{padding:0 16px 24px}
   .controls,.facts,.units,.form-row{grid-template-columns:1fr 1fr}
+  .facts.five{grid-template-columns:1fr 1fr}
   .sheet-body{padding:14px 16px 40px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -513,6 +516,21 @@ async function openLead(id){
   startLiveChat(id, (d.data || {}).messages);
 }
 function closeLead(){ clearInterval(S.live); S.live = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
+/* Los 5 filtros de calificación: QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO, tal como los respondió el cliente al bot. */
+function fiveFilters(c, p){
+  const cap = t => t ? t.charAt(0).toUpperCase() + t.slice(1) : "";
+  const que = [cap(c.operation||p.intent||""), c.property_type||"", c.bedrooms!=null ? `${c.bedrooms} dorm.` : (p.bedrooms ? `${p.bedrooms} dorm.` : ""),
+               c.area_min_m2 ? `desde ${c.area_min_m2} m²` : "", c.parking_required===true ? "con estacionamiento" : ""].filter(Boolean).join(" · ");
+  const donde = (c.districts||[]).join(", ") || p.district || "";
+  let cuanto = c.budget_max!=null ? "Hasta " + money(c.budget_max, c.currency) : (p.budget || "");
+  if (c.price_offer && c.price_offer.amount) cuanto += (cuanto ? " · " : "") + "Ofrece " + money(c.price_offer.amount, c.price_offer.currency);
+  const pago = {contado:"Al contado", credito:"Crédito hipotecario", mixto:"Contado y crédito", por_definir:"Por definir", prefiere_no_indicar:"Prefiere no decirlo"}[c.payment_method] || "";
+  const credito = {por_evaluar:"crédito por evaluar", aprobado:"crédito aprobado", preaprobado:"crédito preaprobado", en_tramite:"crédito en trámite"}[c.credit_status] || (c.credit_status ? String(c.credit_status).replace(/_/g," ") : "");
+  const como = [pago, credito].filter(Boolean).join(" · ");
+  const entrega = {inmediata:"entrega inmediata", futura:"acepta entrega futura"}[c.delivery_preference] || "";
+  const cuando = [cap(c.purchase_timeline||""), entrega].filter(Boolean).join(" · ");
+  return [["Qué", que], ["Dónde", donde], ["Cuánto", cuanto], ["Cómo", como], ["Cuándo", cuando]];
+}
 function chatHTML(msgs){
   return (msgs||[]).map(m=>`<div class="bubble ${m.dir==="inbound"?"in":"out"} ${m.human?"human":""}"><span class="who">${m.dir==="inbound"?"Cliente":m.human?"Equipo CREENZIA":m.followup?"Bot · recordatorio":"Bot"}</span>${esc(m.text)}<time>${fmtDate(m.at)}</time></div>`).join("") || '<div class="empty">Sin mensajes.</div>';
 }
@@ -572,12 +590,7 @@ function renderLead(l, d, notes){
     </div>
 
     <div class="section"><h4>Lo que busca</h4>
-      <div class="facts">
-        <div class="fact"><small>Qué</small><b>${esc(p.intent||"—")}</b></div>
-        <div class="fact"><small>Dónde</small><b>${esc(p.district||"—")}</b></div>
-        <div class="fact"><small>Cuánto</small><b>${esc(p.budget||"—")}</b></div>
-        <div class="fact"><small>Dormitorios</small><b>${esc(p.bedrooms||"—")}</b></div>
-      </div>
+      <div class="facts five">${fiveFilters(d.criteria || {}, p).map(([k,v])=>`<div class="fact"><small>${k}</small><b class="${v?"":"pend"}">${esc(v||"Pendiente")}</b></div>`).join("")}</div>
       ${ses.summary ? `<div class="summary"><b>Resumen del bot:</b> ${esc(ses.summary)}</div>` : ""}
     </div>
 
