@@ -219,6 +219,7 @@ table.grid td.late{color:var(--danger);font-weight:600}
 .cad-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;align-items:end;margin:12px 0}
 .cad-form .wide{grid-column:span 2} .cad-form .full{grid-column:1/-1} .cad-form textarea{min-height:52px}
 .auto{color:var(--muted);font-style:italic}
+td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{display:inline-block;width:46px;color:var(--muted);font-weight:600}
 .wa{color:#fff;text-decoration:none;border:1px solid rgba(255,255,255,.35);padding:6px 10px;border-radius:var(--r-s);font-size:13px;white-space:nowrap}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:10px 16px;border-radius:var(--r-s);z-index:60;font-size:14px}
 
@@ -323,7 +324,7 @@ table.grid td.late{color:var(--danger);font-weight:600}
       <label class="chk"><input type="checkbox" id="kDue"> Solo con acción vencida o de hoy</label>
       <label class="chk"><input type="checkbox" id="kTest"> Ver pruebas</label>
     </div>
-    <div class="list"><div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Última actividad</th><th class="num">Llamadas</th><th class="num">Convers. efectivas</th><th class="num">WA enviados</th><th class="num">WA respondidos</th><th>Último contacto</th><th>Semáforo</th><th>Situación actual</th><th>Próxima acción</th><th>Fecha y hora</th><th></th></tr></thead><tbody id="cadRows"></tbody></table></div>
+    <div class="list"><div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Lo que busca (5 filtros)</th><th>Última actividad</th><th class="num">Llamadas</th><th class="num">Convers. efectivas</th><th class="num">WA enviados</th><th class="num">WA respondidos</th><th>Último contacto</th><th>Semáforo</th><th>Situación actual</th><th>Próxima acción</th><th>Fecha y hora</th><th></th></tr></thead><tbody id="cadRows"></tbody></table></div>
     <p class="hist" style="margin-top:8px">El semáforo en gris es una sugerencia del CRM; elige el definitivo en la ficha del cliente.</p></div>
   </div>
 
@@ -733,11 +734,15 @@ function suggestLight(r){
 /* Situación actual automática: etapa + lo que busca (5 filtros) + último contacto + último mensaje del cliente. */
 function autoSituation(r){
   const stage = r.opted_out ? "Pidió no ser contactado" : ((S.stages.find(x=>x.code===r.stage_code)||{}).name || "");
-  const busca = fiveFilters(r.criteria || {}, {}).map(([,v])=>v).filter(Boolean).join(", ");
-  const parts = [stage, busca ? "Busca: " + busca : "",
+  const parts = [stage,
     r.last_touch_result ? `Último contacto del equipo: ${r.last_touch_result}${r.last_touch_note ? " (" + r.last_touch_note + ")" : ""}` : "",
     r.last_client_text ? `Último mensaje del cliente (${fmtDate(r.last_client_at,false)}): «${String(r.last_client_text).replace(/\s+/g," ").slice(0,90)}${String(r.last_client_text).length>90?"…":""}»` : ""];
   return parts.filter(Boolean).join(". ");
+}
+function fiveCell(r){
+  const f = fiveFilters(r.criteria || {}, {});
+  const filled = f.filter(([,v])=>v).length;
+  return f.map(([k,v])=>`<div><small>${k}</small> ${v ? esc(v) : '<span class="auto">Pendiente</span>'}</div>`).join("") + `<div class="hist">${filled}/5 filtros</div>`;
 }
 function lightHTML(code, suggested){ return code ? `<span class="light ${code}">${lightName(code)}</span>` : `<span class="light ${suggested} sug" title="Sugerido">${lightName(suggested)}</span>`; }
 function cadenceHTML(l, d){
@@ -832,13 +837,13 @@ function renderCadence(){
               || new Date(b.last_activity||0) - new Date(a.last_activity||0));
   const now = new Date();
   $("cadRows").innerHTML = rows.map(r => `<tr class="click" data-lead="${r.id}">
-      <td><b>${esc(r.full_name || fmtPhone(r.phone))}</b></td><td>${fmtDate(r.last_activity)}</td>
+      <td><b>${esc(r.full_name || fmtPhone(r.phone))}</b></td><td class="five5">${fiveCell(r)}</td><td>${fmtDate(r.last_activity)}</td>
       <td class="num">${r.calls}</td><td class="num">${r.effective}</td><td class="num">${r.wa_sent}</td><td class="num">${r.wa_replied}</td>
       <td>${fmtDate(r.last_contact_at)}</td><td>${lightHTML(r.cadence_light, r.light)}</td>
       <td>${r.cadence_situation ? esc(r.cadence_situation) : `<span class="auto" title="Automático">${esc(autoSituation(r)||"—")}</span>`}</td><td>${esc(r.next_action||"—")}</td>
       <td class="${r.next_action_at && new Date(r.next_action_at) < now ? "late" : ""}">${fmtDate(r.next_action_at)}</td>
       <td><button class="btn btn-gold" type="button">Editar</button></td></tr>`).join("")
-    || '<tr><td colspan="12" class="empty">No hay clientes con estos filtros.</td></tr>';
+    || '<tr><td colspan="13" class="empty">No hay clientes con estos filtros.</td></tr>';
   $("cadRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = () => openLead(tr.dataset.lead, "cadence"));
 }
 ["kWho","kLight","kDue","kTest"].forEach(id => $(id).addEventListener("input", renderCadence));
