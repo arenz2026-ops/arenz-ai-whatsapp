@@ -213,7 +213,7 @@ table.grid td.num{white-space:nowrap}
 .light.avanzar{--lc:#2E9E5B}.light.seguimiento{--lc:#2F6FD6}.light.verificar{--lc:#E07A1F}.light.detener{--lc:#C83A3A}
 .light.sug{font-weight:500;color:var(--muted)}
 #view-cadence .list{max-width:none}
-#cadSection.flash{outline:3px solid var(--gold);outline-offset:6px;border-radius:6px;transition:outline-color .6s}
+#sheet .section.flash,#cadSection.flash{outline:3px solid var(--gold);outline-offset:6px;border-radius:6px;transition:outline-color .6s}
 table.grid tr.click{cursor:pointer} table.grid tr.click:hover td{background:var(--mist)}
 table.grid td.late{color:var(--danger);font-weight:600}
 .cad-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;align-items:end;margin:12px 0}
@@ -590,6 +590,7 @@ async function openLead(id, focus){
   if (d.error) { toast(d.error.message); return; }
   renderLead(l, { ...(d.data || {}), consents: cons.data || [], cadence: cad.data || {}, touches: tch.data || [] }, notes.data || []);
   startLiveChat(id, (d.data || {}).messages);
+  if (focus === "chat") { const ch = $("chat"); if (ch) { const sec = ch.closest(".section"); sec.scrollIntoView({block:"start"}); sec.classList.add("flash"); setTimeout(()=>sec.classList.remove("flash"), 1600); const t = $("replyText"); if (t && !t.disabled) t.focus({preventScroll:true}); } }
   if (focus === "cadence") { const sec = $("cadSection"); if (sec) { sec.scrollIntoView({block:"start"}); sec.classList.add("flash"); setTimeout(()=>sec.classList.remove("flash"), 1600); } }
 }
 function closeLead(){ clearInterval(S.live); S.live = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
@@ -945,14 +946,14 @@ function renderClients(){
   const rows = clientRows(), stageName = c => (S.stages.find(s=>s.code===c)||{}).name || c || "—";
   $("xCount").textContent = rows.length + (rows.length === 1 ? " cliente" : " clientes");
   $("xRows").innerHTML = rows.map(r => {
-    const f = Object.fromEntries(fiveFilters(r.criteria || {}, {})), wa = waLink(r.phone);
+    const f = Object.fromEntries(fiveFilters(r.criteria || {}, {}));
     const ofertas = r.opted_out ? '<span class="tag stop">No contactar</span>' : r.marketing_consent ? '<span class="tag gold">Autorizó</span>' : '<span class="tag">Sin preguntar</span>';
     return `<tr class="click" data-lead="${r.id}"><td><b>${esc(r.full_name || fmtPhone(r.phone))}</b><br><span class="hist">${esc(fmtPhone(r.phone))}</span></td>
       ${["Qué","Dónde","Cuánto","Cómo","Cuándo"].map(k=>`<td>${f[k] ? esc(f[k]) : '<span class="auto">Pendiente</span>'}</td>`).join("")}
       <td>${esc(stageName(r.stage_code))}</td><td>${fmtDate(r.last_activity)}</td><td>${ofertas}</td>
-      <td style="white-space:nowrap">${wa && !r.opted_out ? `<a class="btn btn-ghost" href="${wa}" target="_blank" rel="noopener" data-stop="1">WhatsApp</a>` : ""}</td></tr>`;
+      <td style="white-space:nowrap">${!r.opted_out ? `<button class="btn btn-ghost" type="button" data-chat="${r.id}">Chat del bot</button>` : ""}</td></tr>`;
   }).join("") || '<tr><td colspan="10" class="empty">Ningún cliente cumple estos filtros.</td></tr>';
-  $("xRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = (e) => { if (e.target.closest("[data-stop]")) return; openLead(tr.dataset.lead); });
+  $("xRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = (e) => { const chat = e.target.closest("[data-chat]"); openLead(tr.dataset.lead, chat ? "chat" : undefined); });
 }
 ["xOp","xType","xBeds","xDist","xCur","xMin","xMax","xRate","xPay","xWhen","xWhenText","xQ","xStage","xWho","xConsent","xOptOut","xTest"].forEach(id => $(id).addEventListener("input", renderClients));
 $("xClear").onclick = () => { ["xOp","xType","xBeds","xDist","xMin","xMax","xPay","xWhen","xWhenText","xQ","xStage","xWho"].forEach(id => $(id).value = ""); ["xConsent","xOptOut","xTest"].forEach(id => $(id).checked = false); renderClients(); };
