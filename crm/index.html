@@ -548,6 +548,7 @@ function renderBoard(){
   }).join("");
   $("funnel").querySelectorAll(".f-step").forEach(b => b.onclick = () => { S.stageFilter = S.stageFilter===b.dataset.stage ? null : b.dataset.stage; renderBoard(); });
   const stages = S.stageFilter ? S.stages.filter(s=>s.code===S.stageFilter) : S.stages;
+  const boardLeft = $("board").scrollLeft, pageY = window.scrollY;
   $("board").innerHTML = stages.map(s => {
     const items = leads.filter(l=>l.stage_code===s.code);
     return `<div class="col ${s.owner==="humano"?"human":""}">
@@ -557,6 +558,7 @@ function renderBoard(){
     </div>`;
   }).join("");
   $("board").querySelectorAll(".card").forEach(c => c.onclick = () => openLead(c.dataset.id));
+  $("board").scrollLeft = boardLeft; window.scrollTo(0, pageY);
 }
 function cardHTML(l){
   const tags = [];
@@ -581,19 +583,28 @@ function cardHTML(l){
 /* ---------- Ficha ---------- */
 async function openLead(id, focus){
   const l = S.leads.find(x=>x.id===id); if(!l) return;
-  $("scrim").classList.remove("hidden"); const sh = $("sheet"); sh.classList.remove("hidden");
-  sh.innerHTML = `<div class="sheet-head"><div><h2 id="sheetTitle">${esc(l.full_name || fmtPhone(l.phone))}</h2><div class="sub">Cargando ficha…</div></div><button class="close" aria-label="Cerrar">×</button></div>`;
-  sh.querySelector(".close").onclick = closeLead;
+  const sh = $("sheet");
+  // Si la ficha de este cliente ya está abierta (por ejemplo, tras guardar algo), se recarga en el mismo lugar.
+  const reopen = !sh.classList.contains("hidden") && S.openId === id;
+  const keepY = reopen ? ((sh.querySelector(".sheet-body") || {}).scrollTop || 0) : 0;
+  const keepChat = reopen && $("chat") ? $("chat").scrollTop : null;
+  S.openId = id;
+  $("scrim").classList.remove("hidden"); sh.classList.remove("hidden");
+  if (!reopen) {
+    sh.innerHTML = `<div class="sheet-head"><div><h2 id="sheetTitle">${esc(l.full_name || fmtPhone(l.phone))}</h2><div class="sub">Cargando ficha…</div></div><button class="close" aria-label="Cerrar">×</button></div>`;
+    sh.querySelector(".close").onclick = closeLead;
+  }
   const [d, notes, cons, cad, tch] = await Promise.all([ sb.rpc("crm_lead_detail",{ p_lead_id:id }), sb.from("crm_notes").select("*").eq("lead_id",id).order("created_at",{ascending:false}), sb.from("crm_consents").select("*").eq("lead_id",id).order("recorded_at",{ascending:false}),
     sb.from("crm_leads").select("cadence_light,cadence_situation,next_action,next_action_at,next_action_reason,preferred_time,next_action_task_id,last_contact_channel,last_contact_result,last_contact_at").eq("id",id).single(),
     sb.from("crm_touches").select("*").eq("lead_id",id).order("created_at",{ascending:false}) ]);
   if (d.error) { toast(d.error.message); return; }
   renderLead(l, { ...(d.data || {}), consents: cons.data || [], cadence: cad.data || {}, touches: tch.data || [] }, notes.data || []);
   startLiveChat(id, (d.data || {}).messages);
+  if (reopen && !focus) { const body = sh.querySelector(".sheet-body"); if (body) body.scrollTop = keepY; if (keepChat != null && $("chat")) $("chat").scrollTop = keepChat; }
   if (focus === "chat") { const ch = $("chat"); if (ch) { const sec = ch.closest(".section"); sec.scrollIntoView({block:"start"}); sec.classList.add("flash"); setTimeout(()=>sec.classList.remove("flash"), 1600); const t = $("replyText"); if (t && !t.disabled) t.focus({preventScroll:true}); } }
   if (focus === "cadence") { const sec = $("cadSection"); if (sec) { sec.scrollIntoView({block:"start"}); sec.classList.add("flash"); setTimeout(()=>sec.classList.remove("flash"), 1600); } }
 }
-function closeLead(){ clearInterval(S.live); S.live = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
+function closeLead(){ clearInterval(S.live); S.live = null; S.openId = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
 /* Los 5 filtros de calificación: QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO, tal como los respondió el cliente al bot. */
 function fiveFilters(c, p){
   const cap = t => t ? t.charAt(0).toUpperCase() + t.slice(1) : "";
@@ -841,7 +852,7 @@ function bindCadence(l, d){
     const row = { lead_id:l.id, channel:$("tChan").value, result:$("tRes").value, effective:$("tEff").checked, note:$("tNote").value.trim()||null, recorded_by:S.me.id };
     const { error } = await sb.from("crm_touches").insert(row);
     if (error) return toast("No se pudo registrar: "+error.message);
-    toast("Contacto registrado"); await refreshCadenceIfOpen(); openLead(l.id, "cadence");
+    toast("Contacto registrado"); await refreshCadenceIfOpen(); openLead(l.id);
   };
   $("kSave").onclick = async () => {
     const next = $("kNext").value.trim() || null, at = $("kNextAt").value ? new Date($("kNextAt").value).toISOString() : null;
@@ -867,7 +878,7 @@ function bindCadence(l, d){
       const body = `Próxima acción reprogramada: «${next || c.next_action || ""}» pasó de ${fmtDate(c.next_action_at)} a ${fmtDate(at)}` + (upd.next_action_reason ? ` · Motivo: ${upd.next_action_reason}` : "");
       await sb.from("crm_notes").insert({ lead_id:l.id, author_id:S.me.id, body });
     }
-    toast("Cadencia guardada"); await refresh(false); await refreshCadenceIfOpen(); openLead(l.id, "cadence");
+    toast("Cadencia guardada"); await refresh(false); await refreshCadenceIfOpen(); openLead(l.id);
   };
 }
 async function refreshCadenceIfOpen(){ if (!$("view-cadence").classList.contains("hidden")) await loadCadence(); }
