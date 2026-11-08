@@ -213,6 +213,7 @@ table.grid td.num{white-space:nowrap}
 .light.avanzar{--lc:#2E9E5B}.light.seguimiento{--lc:#2F6FD6}.light.verificar{--lc:#E07A1F}.light.detener{--lc:#C83A3A}
 .light.sug{font-weight:500;color:var(--muted)}
 #view-cadence .list{max-width:none}
+#cadSection.flash{outline:3px solid var(--gold);outline-offset:6px;border-radius:6px;transition:outline-color .6s}
 table.grid tr.click{cursor:pointer} table.grid tr.click:hover td{background:var(--mist)}
 table.grid td.late{color:var(--danger);font-weight:600}
 .cad-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;align-items:end;margin:12px 0}
@@ -321,7 +322,7 @@ table.grid td.late{color:var(--danger);font-weight:600}
       <label class="chk"><input type="checkbox" id="kDue"> Solo con acción vencida o de hoy</label>
       <label class="chk"><input type="checkbox" id="kTest"> Ver pruebas</label>
     </div>
-    <div class="list"><div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Última actividad</th><th class="num">Llamadas</th><th class="num">Convers. efectivas</th><th class="num">WA enviados</th><th class="num">WA respondidos</th><th>Último contacto</th><th>Semáforo</th><th>Situación actual</th><th>Próxima acción</th><th>Fecha y hora</th></tr></thead><tbody id="cadRows"></tbody></table></div>
+    <div class="list"><div class="scroll"><table class="grid"><thead><tr><th>Cliente</th><th>Última actividad</th><th class="num">Llamadas</th><th class="num">Convers. efectivas</th><th class="num">WA enviados</th><th class="num">WA respondidos</th><th>Último contacto</th><th>Semáforo</th><th>Situación actual</th><th>Próxima acción</th><th>Fecha y hora</th><th></th></tr></thead><tbody id="cadRows"></tbody></table></div>
     <p class="hist" style="margin-top:8px">El semáforo en gris es una sugerencia del CRM; elige el definitivo en la ficha del cliente.</p></div>
   </div>
 
@@ -527,7 +528,7 @@ function cardHTML(l){
 ["q","fAssigned","fCampaign","fNoResp","fDecide","fTest"].forEach(id => $(id).addEventListener("input", renderBoard));
 
 /* ---------- Ficha ---------- */
-async function openLead(id){
+async function openLead(id, focus){
   const l = S.leads.find(x=>x.id===id); if(!l) return;
   $("scrim").classList.remove("hidden"); const sh = $("sheet"); sh.classList.remove("hidden");
   sh.innerHTML = `<div class="sheet-head"><div><h2 id="sheetTitle">${esc(l.full_name || fmtPhone(l.phone))}</h2><div class="sub">Cargando ficha…</div></div><button class="close" aria-label="Cerrar">×</button></div>`;
@@ -538,6 +539,7 @@ async function openLead(id){
   if (d.error) { toast(d.error.message); return; }
   renderLead(l, { ...(d.data || {}), consents: cons.data || [], cadence: cad.data || {}, touches: tch.data || [] }, notes.data || []);
   startLiveChat(id, (d.data || {}).messages);
+  if (focus === "cadence") { const sec = $("cadSection"); if (sec) { sec.scrollIntoView({block:"start"}); sec.classList.add("flash"); setTimeout(()=>sec.classList.remove("flash"), 1600); } }
 }
 function closeLead(){ clearInterval(S.live); S.live = null; $("scrim").classList.add("hidden"); $("sheet").classList.add("hidden"); }
 /* Los 5 filtros de calificación: QUÉ, DÓNDE, CUÁNTO, CÓMO y CUÁNDO, tal como los respondió el cliente al bot. */
@@ -731,9 +733,11 @@ function lightHTML(code, suggested){ return code ? `<span class="light ${code}">
 function cadenceHTML(l, d){
   const c = d.cadence || {}, touches = d.touches || [];
   const calls = touches.filter(t=>t.channel!=="whatsapp").length, eff = touches.filter(t=>t.effective).length;
-  const msgs = d.messages || [], waOut = msgs.filter(m=>m.dir==="outbound").length + touches.filter(t=>t.channel!=="llamada").length, waIn = msgs.filter(m=>m.dir==="inbound").length;
+  const row = (S.cadence||[]).find(r=>r.id===l.id), msgs = d.messages || [];
+  const waOut = row ? row.wa_sent : msgs.filter(m=>m.dir==="outbound").length + touches.filter(t=>t.channel!=="llamada").length;
+  const waIn = row ? row.wa_replied : msgs.filter(m=>m.dir==="inbound").length;
   const userName = id => (S.users.find(u=>u.id===id)||{}).full_name || "—";
-  return `<div class="section"><h4>Cadencia comercial</h4>
+  return `<div class="section" id="cadSection"><h4>Cadencia comercial</h4>
     <div class="facts five">
       <div class="fact"><small>Llamadas</small><b>${calls}</b></div>
       <div class="fact"><small>Convers. efectivas</small><b>${eff}</b></div>
@@ -767,7 +771,7 @@ function bindCadence(l, d){
     const row = { lead_id:l.id, channel:$("tChan").value, result:$("tRes").value, effective:$("tEff").checked, note:$("tNote").value.trim()||null, recorded_by:S.me.id };
     const { error } = await sb.from("crm_touches").insert(row);
     if (error) return toast("No se pudo registrar: "+error.message);
-    toast("Contacto registrado"); openLead(l.id); refreshCadenceIfOpen();
+    toast("Contacto registrado"); await refreshCadenceIfOpen(); openLead(l.id, "cadence");
   };
   $("kSave").onclick = async () => {
     const next = $("kNext").value.trim() || null, at = $("kNextAt").value ? new Date($("kNextAt").value).toISOString() : null;
@@ -788,14 +792,14 @@ function bindCadence(l, d){
     const { error } = await sb.from("crm_leads").update(upd).eq("id", l.id);
     if (error) return toast("No se pudo guardar: "+error.message);
     // Si se cambió la fecha de una próxima acción ya programada, queda constancia en las notas para evaluarlo después.
-    if (c.next_action_at && at && new Date(c.next_action_at).getTime() !== new Date(at).getTime()) {
+    if (c.next_action_at && at && Math.floor(new Date(c.next_action_at)/60000) !== Math.floor(new Date(at)/60000)) {
       const body = `Próxima acción reprogramada: «${next || c.next_action || ""}» pasó de ${fmtDate(c.next_action_at)} a ${fmtDate(at)}` + (upd.next_action_reason ? ` · Motivo: ${upd.next_action_reason}` : "");
       await sb.from("crm_notes").insert({ lead_id:l.id, author_id:S.me.id, body });
     }
-    toast("Cadencia guardada"); await refresh(false); openLead(l.id); refreshCadenceIfOpen();
+    toast("Cadencia guardada"); await refresh(false); await refreshCadenceIfOpen(); openLead(l.id, "cadence");
   };
 }
-function refreshCadenceIfOpen(){ if (!$("view-cadence").classList.contains("hidden")) loadCadence(); }
+async function refreshCadenceIfOpen(){ if (!$("view-cadence").classList.contains("hidden")) await loadCadence(); }
 async function loadCadence(){
   const r = await sb.rpc("crm_cadence");
   if (r.error) { toast("No se pudo cargar la cadencia: "+r.error.message); return; }
@@ -816,9 +820,10 @@ function renderCadence(){
       <td class="num">${r.calls}</td><td class="num">${r.effective}</td><td class="num">${r.wa_sent}</td><td class="num">${r.wa_replied}</td>
       <td>${fmtDate(r.last_contact_at)}</td><td>${lightHTML(r.cadence_light, r.light)}</td>
       <td>${esc(r.cadence_situation||"—")}</td><td>${esc(r.next_action||"—")}</td>
-      <td class="${r.next_action_at && new Date(r.next_action_at) < now ? "late" : ""}">${fmtDate(r.next_action_at)}</td></tr>`).join("")
-    || '<tr><td colspan="11" class="empty">No hay clientes con estos filtros.</td></tr>';
-  $("cadRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = () => openLead(tr.dataset.lead));
+      <td class="${r.next_action_at && new Date(r.next_action_at) < now ? "late" : ""}">${fmtDate(r.next_action_at)}</td>
+      <td><button class="btn btn-gold" type="button">Editar</button></td></tr>`).join("")
+    || '<tr><td colspan="12" class="empty">No hay clientes con estos filtros.</td></tr>';
+  $("cadRows").querySelectorAll("tr[data-lead]").forEach(tr => tr.onclick = () => openLead(tr.dataset.lead, "cadence"));
 }
 ["kWho","kLight","kDue","kTest"].forEach(id => $(id).addEventListener("input", renderCadence));
 
