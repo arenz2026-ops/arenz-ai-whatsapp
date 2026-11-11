@@ -276,8 +276,13 @@ class ConversationMemoryStore:
         return row.get("outcome"), row.get("claim_token")
 
     def finish_work(self, message_id, claim_token):
-        rows = self.rpc("finish_processed_message", {"p_message_id": message_id, "p_claim_token": claim_token})
-        return bool(rows and rows[0].get("finish_processed_message"))
+        # The RPC returns a bare boolean ("true"), not rows: reading rows[0] raised TypeError and every advisor
+        # check-in and every message with the bot paused ended in HTTP 500 (since 04/11).
+        result = self.rpc("finish_processed_message", {"p_message_id": message_id, "p_claim_token": claim_token})
+        if isinstance(result, list):
+            first = result[0] if result else None
+            result = first.get("finish_processed_message") if isinstance(first, dict) else first
+        return bool(result)
 
     def commit_work(self, payload):
         """Invoke the single database transaction; never fall back to REST writes."""
