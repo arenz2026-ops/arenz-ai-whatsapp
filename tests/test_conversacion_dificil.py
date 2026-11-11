@@ -572,3 +572,48 @@ class TextoOriginalDelClienteTest(unittest.TestCase):
         self.assertEqual(guardado["p_profile"]["conversation"]["last_user_message"], "ok gracias")
         aviso = next(c[0][0]["text"]["body"] for c in graph.call_args_list if c[0][0]["to"] == "51900000001")
         self.assertIn("Último mensaje: “ok gracias”", aviso)
+
+
+class ListoDelAsesorTest(unittest.TestCase):
+    """El "✅ Listo" a un asesor guarda si Meta lo aceptó o el código con que lo rechazó (11/11: dos saludos sin
+    respuesta y la causa solo en los logs de Render)."""
+
+    def enviar_hola(self, graph):
+        import hashlib
+        import hmac
+        memoria = mock.Mock()
+        memoria.claim_work.return_value = ("claimed", "token")
+        cuerpo = json.dumps({"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {"messages": [
+            {"id": "wamid-hola", "from": "51947475550", "type": "text", "text": {"body": "Hola"}}]}}]}]}).encode()
+        firma = "sha256=" + hmac.new(b"secreto", cuerpo, hashlib.sha256).hexdigest()
+        with mock.patch.dict(os.environ, {"ADVISOR_PHONE": "51947475550,51996353549"}), \
+                mock.patch.object(app, "APP_SECRET", "secreto"), \
+                mock.patch.object(app, "get_conversation_memory_store", return_value=memoria), \
+                mock.patch.object(app, "post_graph_message", graph):
+            self.assertEqual(app.app.test_client().post("/webhook", data=cuerpo, headers={
+                "Content-Type": "application/json", "X-Hub-Signature-256": firma}).status_code, 200)
+        return memoria
+
+    def test_enviado(self):
+        graph = mock.Mock()
+        memoria = self.enviar_hola(graph)
+        self.assertIn("✅ Listo", graph.call_args[0][0]["text"]["body"])
+        memoria.finish_work.assert_called_once_with("wamid-hola", "token")
+        memoria.record_delivery.assert_called_once_with("wamid-hola", "sent", None)
+
+    def test_rechazado_guarda_el_codigo_de_meta(self):
+        import requests
+        respuesta = mock.Mock(status_code=400)
+        respuesta.json.return_value = {"error": {"code": 131047, "message": "Re-engagement message"}}
+        graph = mock.Mock(side_effect=requests.HTTPError("rechazado", response=respuesta))
+        memoria = self.enviar_hola(graph)
+        memoria.finish_work.assert_called_once_with("wamid-hola", "token")
+        memoria.record_delivery.assert_called_once_with("wamid-hola", "failed", "meta_http_400_131047")
+
+    def test_codigos(self):
+        import requests
+        sin_respuesta = requests.ConnectionError("sin red")
+        self.assertEqual(app.meta_failure_code(sin_respuesta), "meta_transport")
+        rara = mock.Mock(status_code=500)
+        rara.json.side_effect = ValueError
+        self.assertEqual(app.meta_failure_code(requests.HTTPError(response=rara)), "meta_http_500")
