@@ -2402,6 +2402,20 @@ def customer_visible_reply(message):
     return message.strip()
 
 
+def meta_failure_code(error):
+    """'meta_http_400_131047': HTTP status plus Meta's own error code, which names the cause; 'meta_transport' if
+    Meta never answered."""
+    response = getattr(error, "response", None)
+    if response is None:
+        return "meta_transport"
+    code = f"meta_http_{response.status_code}"
+    try:
+        meta = response.json().get("error", {}).get("code")
+    except (ValueError, AttributeError):
+        meta = None
+    return f"{code}_{meta}" if meta else code
+
+
 def send_whatsapp_message(to, message):
     message = customer_visible_reply(message)
     response = post_graph_message({"messaging_product":"whatsapp","recipient_type":"individual","to":to,"type":"text","text":{"body":message}})
@@ -3603,12 +3617,20 @@ def receive_webhook():
             start_openai_usage()
             record_ad_referral(memory, sender, message)
             if is_advisor_checkin(sender, text):
+                # The "✅ Listo" outcome is saved like any reply (processed_messages.delivery_state): on 11/11 two
+                # check-ins got no reply and only Render's logs knew why.
+                delivery, failure = "sent", None
                 try:
                     send_whatsapp_message(sender, ADVISOR_CHECKIN_REPLY)
                 except requests.RequestException as error:
-                    logger.warning("Advisor check-in reply failed: category=%s", type(error).__name__)
+                    delivery, failure = "failed", meta_failure_code(error)
+                    logger.warning("Advisor check-in reply failed: category=%s code=%s", type(error).__name__, failure)
                 if memory:
                     memory.finish_work(message_id, claim_token)
+                    try:
+                        memory.record_delivery(message_id, delivery, failure)
+                    except requests.RequestException:
+                        logger.warning("Advisor check-in delivery state not saved")
                 logger.info("Advisor check-in: 24h window open")
                 processed += 1
                 continue
@@ -3665,8 +3687,7 @@ def receive_webhook():
             except requests.RequestException as error:
                 # Internal commit remains processed. Never retry Meta automatically.
                 if memory:
-                    code = f"meta_http_{getattr(error.response, 'status_code', None)}" if getattr(error, "response", None) is not None else "meta_transport"
-                    memory.record_delivery(message_id, "failed", code)
+                    memory.record_delivery(message_id, "failed", meta_failure_code(error))
                 logger.warning("WhatsApp delivery failed after internal commit: category=%s", type(error).__name__)
             # The handoff is already committed; the notice to the advisor comes last so it
             # can never delay or break the client's reply.
