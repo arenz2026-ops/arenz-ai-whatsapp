@@ -617,3 +617,23 @@ class ListoDelAsesorTest(unittest.TestCase):
         rara = mock.Mock(status_code=500)
         rara.json.side_effect = ValueError
         self.assertEqual(app.meta_failure_code(requests.HTTPError(response=rara)), "meta_http_500")
+
+
+class FinishWorkTest(unittest.TestCase):
+    """finish_processed_message devuelve un booleano suelto: leerlo como filas daba TypeError y HTTP 500 en cada
+    saludo de asesor y en cada mensaje con el bot en pausa (log de Render del 11/11, 15:29)."""
+
+    def store(self, devuelve):
+        respuesta = mock.Mock(status_code=200)
+        respuesta.raise_for_status.return_value = None
+        respuesta.json.return_value = devuelve
+        tienda = app.ConversationMemoryStore.__new__(app.ConversationMemoryStore)
+        tienda.url, tienda.headers = "https://db.test", {}
+        return tienda, respuesta
+
+    def test_formas_de_respuesta(self):
+        for devuelve, esperado in ((True, True), (False, False), ([{"finish_processed_message": True}], True),
+                                   ([{"finish_processed_message": False}], False), ([], False), (None, False)):
+            tienda, respuesta = self.store(devuelve)
+            with mock.patch.object(app.requests, "post", return_value=respuesta):
+                self.assertEqual(tienda.finish_work("wamid-x", "token"), esperado, repr(devuelve))
