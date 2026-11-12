@@ -195,3 +195,14 @@ from conversation_messages m,
      jsonb_to_recordset(m.extraction->'_uso_openai') as t(tipo text, entrada int, salida int, total int)
 where m.direction = 'inbound' and m.created_at > now() - interval '7 days';
 ```
+
+## Fotos HEIC de Trello
+
+WhatsApp solo acepta JPG y PNG, y la carga inicial de fotos (01/11) descartó los HEIC de Trello, como las fotos
+del departamento piloto tomadas con iPhone. `trello_photos.py` los convierte a JPG, los sube al bucket `inmuebles`
+y los registra en `inventory_project_media` (categoría `piloto` en proyectos en construcción y `foto` en el resto),
+en el orden render → piloto/foto → general → plano. Se puede ejecutar varias veces sin duplicar.
+
+Para ejecutarlo: GitHub → **Actions** → **Fotos de Trello** → **Run workflow**. La tarjeta es opcional: vacía,
+procesa todas las tarjetas de proyectos. Necesita `TRELLO_KEY` y `TRELLO_TOKEN` en Render (Environment) y el
+secreto `CRON_TOKEN` en GitHub.

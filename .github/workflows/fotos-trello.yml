@@ -1,0 +1,33 @@
+# Carga las fotos HEIC de Trello (p. ej. del departamento piloto) como JPG para que el bot las envíe por WhatsApp.
+# Se ejecuta a mano: GitHub -> Actions -> "Fotos de Trello" -> Run workflow (tarjeta opcional).
+# Requiere el secreto de repositorio CRON_TOKEN y, en Render, TRELLO_KEY y TRELLO_TOKEN.
+name: Fotos de Trello
+on:
+  workflow_dispatch:
+    inputs:
+      tarjeta:
+        description: "Short link de la tarjeta de Trello (por ejemplo uBAWj2Mc). Vacío = todas las tarjetas de proyectos."
+        required: false
+        default: ""
+jobs:
+  fotos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Cargar fotos HEIC de Trello
+        env:
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+          TARJETA: ${{ github.event.inputs.tarjeta }}
+        run: |
+          url="https://arenz-ai-whatsapp-prod.onrender.com/tareas/fotos-trello"
+          if [ -n "$TARJETA" ]; then url="$url?tarjeta=$TARJETA"; fi
+          # El plan gratis de Render se duerme: el primer intento lo despierta.
+          for intento in 1 2 3; do
+            code=$(curl -sS -o respuesta.json -w "%{http_code}" -m 1500 -X POST \
+              -H "X-Cron-Token: $CRON_TOKEN" "$url") || code=000
+            python3 -m json.tool respuesta.json 2>/dev/null || cat respuesta.json 2>/dev/null; echo " (HTTP $code)"
+            [ "$code" = "200" ] && exit 0
+            case "$code" in 400|403|503) exit 1;; esac
+            sleep 30
+          done
+          exit 1

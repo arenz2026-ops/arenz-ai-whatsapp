@@ -418,6 +418,34 @@ def run_followups_task():
     return jsonify({"status": "ok", "results": counts}), 200
 
 
+@app.route("/tareas/fotos-trello", methods=["POST"])
+def run_trello_photos_task():
+    """Carga los HEIC de Trello como JPG (ver trello_photos.py). Lo dispara .github/workflows/fotos-trello.yml.
+
+    Protegido con CRON_TOKEN (cabecera X-Cron-Token). Necesita TRELLO_KEY y TRELLO_TOKEN en Render.
+    ?tarjeta=<short link de Trello> procesa una sola tarjeta; sin él, todas las de proyectos.
+    """
+    token = os.getenv("CRON_TOKEN", "")
+    if not token:
+        return jsonify({"status": "not_configured"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Cron-Token", ""), token):
+        return jsonify({"status": "forbidden"}), 403
+    import trello_photos
+    client = trello_photos.from_env()
+    if not client:
+        return jsonify({"status": "falta_configuracion", "necesita": ["TRELLO_KEY", "TRELLO_TOKEN"]}), 503
+    card = (request.args.get("tarjeta") or "").strip()
+    if card and not re.fullmatch(r"[A-Za-z0-9]{6,12}", card):
+        return jsonify({"status": "tarjeta_invalida"}), 400
+    try:
+        result = trello_photos.run(client, [card] if card else None)
+    except requests.RequestException as error:
+        logger.warning("Trello photos task failed: category=%s", type(error).__name__)
+        return jsonify({"status": "error", "categoria": type(error).__name__}), 502
+    logger.info("Trello photos: cards=%s heic=%s loaded=%s", result["tarjetas"], result["heic"], result["cargadas"])
+    return jsonify({"status": "ok", **result}), 200
+
+
 @app.route("/health", methods=["GET"])
 def health():
     try:
