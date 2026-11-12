@@ -1,0 +1,34 @@
+# Fotos de Trello → Supabase (JPG). Cada lunes y a mano. Ver trello_photos.py.
+# Requiere el secreto de repositorio CRON_TOKEN (el mismo de Seguimientos) y, en Render, TRELLO_KEY y TRELLO_TOKEN.
+name: Fotos Trello
+on:
+  schedule:
+    - cron: "37 13 * * 1"
+  workflow_dispatch:
+jobs:
+  fotos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Cargar fotos nuevas de Trello
+        env:
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          URL=https://arenz-ai-whatsapp-prod.onrender.com/tareas/fotos-trello
+          # El plan gratis de Render se duerme: el primer intento lo despierta.
+          for intento in 1 2 3; do
+            code=$(curl -sS -o r.json -w "%{http_code}" -m 90 -X POST -H "X-Cron-Token: $CRON_TOKEN" $URL) || code=000
+            cat r.json 2>/dev/null; echo " (HTTP $code)"
+            [ "$code" = "202" ] && break
+            [ "$intento" = "3" ] && exit 1
+            sleep 30
+          done
+          # Corre en segundo plano en Render; se consulta hasta que termine (y así no se duerme a mitad).
+          for i in $(seq 1 50); do
+            sleep 30
+            curl -sS -m 60 -H "X-Cron-Token: $CRON_TOKEN" $URL -o r.json || continue
+            cat r.json; echo
+            grep -q '"status":"done"' r.json && exit 0
+            grep -q '"status":"error"' r.json && exit 1
+          done
+          exit 1
