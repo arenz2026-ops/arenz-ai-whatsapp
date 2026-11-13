@@ -2562,6 +2562,10 @@ def photo_turn(store, phone, previous, text, reply, stage, selection=None):
             return plan
         if not pending:
             closing = final_photos_text(store, reference, stage).replace("Esas son todas las fotos", "Ya te envié todas las fotos")
+            last = last_assistant_message(previous)
+            if "Ya te envié todas las fotos" in last or "Esas son todas las fotos" in last or NO_MORE_PHOTOS_REPLY[:40] in last:
+                # Asked again with nothing left (13/11, Mar de Grau has one photo): offer someone who can send more.
+                closing = NO_MORE_PHOTOS_REPLY.format(brand=COMMERCIAL_BRAND)
             return {"stored": closing + photo_reference_marker(reference), "text": closing, "photos": []}
         batch, rest = pending[:MAX_REQUESTED_PHOTOS], len(pending) - MAX_REQUESTED_PHOTOS
         follow_up = remaining_photos_line(rest) if rest > 0 else final_photos_text(store, reference, stage)
@@ -2784,6 +2788,10 @@ def price_proposal_reply(item):
             f"¿Quieres que te contacte un asesor para {PRICE_PROPOSAL_OFFER} por esta unidad?")
 
 
+NO_MORE_PHOTOS_REPLY = ("Por ahora no tengo más fotos de este proyecto en el chat 📷 Un asesor de {brand} puede enviarte más "
+                        "imágenes, los planos y el brochure. ¿Quieres que te contacte un asesor?")
+
+
 def corrected_reply_class(reply_class, text):
     """Corrige dos confusiones que la IA real tuvo en la prueba del 02/11 (scripts/probar_ia_real.py).
 
@@ -2796,6 +2804,9 @@ def corrected_reply_class(reply_class, text):
     if not reply_class:
         return reply_class
     kind, request, fact, option = reply_class["tipo"], reply_class["pedido"], reply_class["dato"], reply_class["opcion"]
+    # "Antes quiero ver más imágenes" ante la oferta de visita llegó como rechaza (13/11) y el bot cerró la conversación.
+    if kind in ("rechaza", "otra") and request == "ninguno" and PHOTO_WORDS.search(text or "") and not plain_refusal(text):
+        return {**reply_class, "tipo": "pide_otra_cosa", "pedido": "fotos"}
     if kind != "cierra" and plain_refusal(text):
         return {**reply_class, "tipo": "rechaza", "pedido": "ninguno", "dato": "ninguno", "opcion": None}
     # "no, mejor la 2" llegaba a veces como otras_opciones con opcion 2: el número que escribió manda.
