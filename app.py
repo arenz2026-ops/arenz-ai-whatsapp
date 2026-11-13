@@ -2966,7 +2966,9 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
 
     # Pedir más opciones, fotos o elegir una opción no es cambiar la búsqueda, aunque la IA añada algo como la
     # preferencia 'opcion_2' o marque una búsqueda nueva ("no, pero muéstrame otra" llegó a reiniciar la búsqueda).
-    if changes_search and kind in ("queja_repeticion", "rechaza", "pide_otra_cosa") and request not in ("opcion", "otras_opciones", "fotos"):
+    # Also for "acepta": on 13/11 "Busco depas en Chorrillos" after "...¿o que te contacte un asesor?" came classified as
+    # acepta, was rewritten to "Sí" and registered an advisor request instead of searching Chorrillos.
+    if changes_search and kind in ("queja_repeticion", "rechaza", "pide_otra_cosa", "acepta") and request not in ("opcion", "otras_opciones", "fotos"):
         return None, text
 
     if kind == "queja_repeticion":

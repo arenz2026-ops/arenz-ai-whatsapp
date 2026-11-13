@@ -556,6 +556,11 @@ CASOS = [
          ia=ia("general_question", "Hola 😊 ¿en qué distrito buscas el departamento?"),
          espera=[NO_REPITE_MENSAJE, contiene("búsqueda nueva")]),
 
+    dict(id="real_1311_busco_en_chorrillos_no_es_si_al_asesor", grupo="nueva_busqueda", real=True, cliente="Busco depas en Chorrillos",
+         historia=historial("qualified", CRITERIOS_MIRAFLORES, "Haz una nueva evaluación, te brindaré otros datos", NO_MATCH_MIRAFLORES),
+         ia=ia("change_criteria", "", [{"field": "districts", "action": "UPDATE", "values": ["Chorrillos"]}], True, districts=["Chorrillos"]),
+         espera=[NO_DERIVA, criterio("districts", ["Chorrillos"]), no_contiene("Registraré tu solicitud")]),
+
     # ---- negociación de precio (02/11: la contraoferta se tomó como presupuesto nuevo)
     dict(id="negociacion_real_a_ese_precio", grupo="negociacion", real=True, historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB,
          cliente="Tengo 200 mil soles en mano, puedes venderme a ese precio",
@@ -656,6 +661,7 @@ CLASES = {
     "seguridad_ia_inventa_precio": ("queja_repeticion",),
     "real_1211_quiero_otro_nuevo": ("pide_otra_cosa", "cambiar_criterios"),
     "real_1211_nueva_evaluacion": ("pide_otra_cosa", "cambiar_criterios"),
+    "real_1311_busco_en_chorrillos_no_es_si_al_asesor": ("acepta",),  # lo que devolvió la IA real
     "negociacion_real_a_ese_precio": ("otra",),  # lo que devolvió la IA real: la regla de respaldo lo detecta
     "negociacion_me_lo_dejas": ("pide_otra_cosa", "negociar_precio"),
     "negociacion_si_al_asesor": ("acepta",),
