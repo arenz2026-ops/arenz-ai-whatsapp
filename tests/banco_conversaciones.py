@@ -561,6 +561,17 @@ CASOS = [
          ia=ia("change_criteria", "", [{"field": "districts", "action": "UPDATE", "values": ["Chorrillos"]}], True, districts=["Chorrillos"]),
          espera=[NO_DERIVA, criterio("districts", ["Chorrillos"]), no_contiene("Registraré tu solicitud")]),
 
+    # ---- más fotos cuando ya no quedan (13/11, Mar de Grau tiene una sola foto)
+    dict(id="real_1311_antes_quiero_ver_mas_imagenes", grupo="fotos", real=True, cliente="Antes quiero ver más imágenes",
+         historia=historial("property_detail", CRITERIOS_CHORRILLOS, "Más Imágenes del proyecto?",
+                            "Ya te envié todas las fotos que tengo de este proyecto. ¿Quieres que coordinemos una visita al "
+                            "departamento?\nRef. C2-D5ACE8F77103"),
+         enviadas=TODAS_UNI, ia=ia("property_search", "Entendido."),
+         espera=[NO_CIERRA, NO_DERIVA, contiene("Por ahora no tengo más fotos"), contiene("te contacte un asesor")]),
+    dict(id="mas_imagenes_sin_fotos_pendientes", grupo="fotos", cliente="Más Imágenes del proyecto?",
+         historia=H_VISITA_FOTOS_PENDIENTES, enviadas=TODAS_UNI, ia=ia("property_search", ""),
+         espera=[contiene("Ya te envié todas las fotos"), NO_CIERRA]),
+
     # ---- negociación de precio (02/11: la contraoferta se tomó como presupuesto nuevo)
     dict(id="negociacion_real_a_ese_precio", grupo="negociacion", real=True, historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB,
          cliente="Tengo 200 mil soles en mano, puedes venderme a ese precio",
@@ -662,6 +673,8 @@ CLASES = {
     "real_1211_quiero_otro_nuevo": ("pide_otra_cosa", "cambiar_criterios"),
     "real_1211_nueva_evaluacion": ("pide_otra_cosa", "cambiar_criterios"),
     "real_1311_busco_en_chorrillos_no_es_si_al_asesor": ("acepta",),  # lo que devolvió la IA real
+    "real_1311_antes_quiero_ver_mas_imagenes": ("rechaza",),  # lo que devolvió la IA real
+    "mas_imagenes_sin_fotos_pendientes": ("pide_otra_cosa", "fotos"),
     "negociacion_real_a_ese_precio": ("otra",),  # lo que devolvió la IA real: la regla de respaldo lo detecta
     "negociacion_me_lo_dejas": ("pide_otra_cosa", "negociar_precio"),
     "negociacion_si_al_asesor": ("acepta",),
