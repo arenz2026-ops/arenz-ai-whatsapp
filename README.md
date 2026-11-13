@@ -27,6 +27,7 @@ Configúralas en Render o localmente, nunca en Git.
 | `PORT` | Render lo configura automáticamente. |
 | `ADVISOR_PHONE` | Opcional. Números de asesor que reciben el aviso de cada derivación, separados por coma (`51979300318,51996353549`; se acepta `979300318`). |
 | `ADVISOR_TEMPLATE` | Opcional. Nombre de la plantilla aprobada para el aviso; sin ella se envía texto libre. |
+| `TRELLO_KEY` / `TRELLO_TOKEN` | Clave de API y token **de solo lectura** de la Power-Up "CREENZIA fotos" (cuenta que ve el tablero Intermediación Inmobiliaria). Los usa `/tareas/fotos-trello` para descargar los adjuntos. |
 | `ADVISOR_TEMPLATE_LANGUAGE` | Opcional; por defecto `es`. Código de idioma con que se aprobó la plantilla. |
 
 ## Local
@@ -163,7 +164,13 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
    carga no reintroduzca errores de origen.
    - `inventory_unit_info.client_notice = 'carga'` hace que el bot cierre la ficha con un aviso general (sin detalle) de que
      el inmueble tiene una carga y que lo consulte con un asesor. No se borra en la recarga; quitarlo cuando se levante.
-4. Se revisa el resultado en el buscador web y con una conversación de prueba.
+4. **Fotos de Trello**: `POST /tareas/fotos-trello` (cabecera `X-Cron-Token`) descarga los adjuntos de imagen de cada
+   tarjeta vinculada al inventario (máx. 15, fuera de VENDIDO/DESCARTADO), convierte HEIC/PNG a JPG de máx. 1600 px, los
+   sube al bucket `inmuebles` (`proyectos/<slug>/<slug>_trello_NN.jpg`), los registra en `inventory_project_media` y llama a
+   `sync_property_media_from_projects()`. Corre en segundo plano; `GET` del mismo enlace muestra el resultado. Es
+   idempotente, no toca tarjetas que ya tienen fotos curadas y se omiten adjuntos con nombre de documento (DNI, partida, contrato…). Se ejecuta cada lunes desde
+   GitHub Actions (`.github/workflows/fotos-trello.yml`) y a mano con **Actions → Fotos Trello → Run workflow**.
+5. Se revisa el resultado en el buscador web y con una conversación de prueba.
 
 ## Seguimiento automático
 

@@ -34,3 +34,8 @@ services:
         sync: false
       - key: ADVISOR_TEMPLATE_LANGUAGE
         value: es
+      # Fotos de Trello (trello_photos.py): clave y token de solo lectura de la Power-Up "CREENZIA fotos".
+      - key: TRELLO_KEY
+        sync: false
+      - key: TRELLO_TOKEN
+        sync: false

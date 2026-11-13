@@ -418,6 +418,31 @@ def run_followups_task():
     return jsonify({"status": "ok", "results": counts}), 200
 
 
+@app.route("/tareas/fotos-trello", methods=["GET", "POST"])
+def run_trello_photos_task():
+    """Carga a Supabase (en JPG) las fotos de Trello que falten; ver trello_photos.py.
+
+    POST la inicia en segundo plano (202); GET muestra su estado. Protegido con CRON_TOKEN (X-Cron-Token).
+    """
+    token = os.getenv("CRON_TOKEN", "")
+    if not token:
+        return jsonify({"status": "not_configured"}), 503
+    if not hmac.compare_digest(request.headers.get("X-Cron-Token", ""), token):
+        return jsonify({"status": "forbidden"}), 403
+    import trello_photos
+    if request.method == "GET":
+        return jsonify(trello_photos.state()), 200
+    credentials = trello_photos.trello_credentials()
+    supabase_url, supabase_key = os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_KEY", "")
+    if not credentials:
+        return jsonify({"status": "no_trello_keys"}), 503
+    if not (supabase_url and supabase_key):
+        return jsonify({"status": "no_supabase"}), 503
+    started = trello_photos.start_background(trello_photos.TrelloClient(*credentials),
+                                             trello_photos.MediaStore(supabase_url, supabase_key))
+    return jsonify({"status": "started" if started else "already_running"}), 202
+
+
 @app.route("/health", methods=["GET"])
 def health():
     try:
