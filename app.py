@@ -1010,8 +1010,25 @@ RESUME_AGAIN_QUESTION = "¿La retomamos o prefieres comenzar una nueva?"
 NEW_SEARCH_ANSWER = re.compile(r"^(no\b|nueva|nuevo|otra|otro|comenzar|empezar|desde cero|de cero|una nueva)", re.IGNORECASE)
 
 
+# Frases naturales para empezar de cero (12/11: "Quiero otro nuevo" y "Haz una nueva evaluación, te brindaré otros
+# datos" no reiniciaban la búsqueda y el bot repitió tres veces el mismo "no encontré unidades" de Miraflores).
+NEW_SEARCH_PHRASE = re.compile(
+    r"\bnuev[ao]s?\s+(?:b[uú]squeda|evaluaci[oó]n)\b|\botra\s+(?:b[uú]squeda|evaluaci[oó]n)\b"
+    r"|\b(?:empezar|comenzar|iniciar|arrancar|partir|volver\s+a\s+empezar)\s+(?:de\s+)?(?:nuevo|cero)\b|\bdesde\s+cero\b"
+    r"|\b(?:quiero|busco|necesito|dame|haz|hagamos)\s+(?:uno|otro|una|otra)\s+nuev[ao]\b|\breiniciar\b"
+    r"|\bcambiar\s+(?:toda\s+)?(?:la\s+|mi\s+)?b[uú]squeda\b|\bbuscar\s+otra\s+cosa\b|\bborr[ae]\s+(?:todo|los\s+datos)\b",
+    re.IGNORECASE)
+
+
+def wants_new_search(text):
+    return bool(NEW_SEARCH_PHRASE.search(text or ""))
+
+
 def resume_answer_as_command(previous, text):
-    """'No', 'otra', 'nueva'... right after the resume question means a new search."""
+    """'No', 'otra', 'nueva'... right after the resume question means a new search; so does a natural request to
+    start over ('quiero otro nuevo', 'haz una nueva evaluación') at any point."""
+    if not is_new_search_request(text) and wants_new_search(text):
+        return "nueva búsqueda"
     asked = ""
     turns = recent_conversation_turns(previous, limit=4) if isinstance(previous, dict) else []
     for turn in turns:
@@ -2161,18 +2178,24 @@ def criteria_summary(criteria):
     return ", ".join(parts)
 
 
+NO_MATCH_AGAIN_REPLY = ("Con esos criterios sigo sin unidades disponibles 😕 Escribe «nueva búsqueda» para empezar otra, o "
+                        "dime qué cambiar: distrito, presupuesto o dormitorios.")
+
+
 def no_match_followup(previous, criteria):
-    """After a first 'no matches', stop repeating it: summarise and offer the advisor."""
-    if not last_assistant_message(previous).startswith(NO_MATCH_PREFIX) and not (
-            last_assistant_message(previous).startswith("Revisé") or last_assistant_message(previous).startswith("Por ahora")):
+    """After a first 'no matches', stop repeating it: summarise, offer the advisor and a new search."""
+    last = last_assistant_message(previous)
+    if last.startswith(NO_MATCH_AGAIN_REPLY[:30]) or (last.startswith("Por ahora no tengo unidades") and criteria == conversation_state(previous)):
+        return NO_MATCH_AGAIN_REPLY
+    if not (last.startswith((NO_MATCH_PREFIX, "Revisé", "Por ahora")) or "no encontré unidades verificadas" in last):
         return None
     summary = criteria_summary(criteria)
     changed = criteria != conversation_state(previous)
     lead = (f"Revisé con tus nuevos criterios ({summary}) y por ahora no tengo unidades verificadas que coincidan."
             if changed and summary else
             f"Por ahora no tengo unidades verificadas para {summary or 'tu búsqueda'}.")
-    return (lead + " Un asesor de C2 Inmobiliaria puede buscarte opciones fuera de mi lista. "
-            "¿Quieres que te contacte un asesor, o prefieres cambiar el distrito o el presupuesto?")
+    return (lead + f" Un asesor de {COMMERCIAL_BRAND} puede buscarte opciones fuera de mi lista. "
+            "¿Quieres que te contacte un asesor, cambiar el distrito o el presupuesto, o empezar una búsqueda nueva?")
 
 
 def qualified_inventory_reply(previous, matches, criteria, user_text):

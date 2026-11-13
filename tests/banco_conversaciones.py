@@ -374,6 +374,10 @@ def ficha(ref):
 # ---------------------------------------------------------------- casos
 
 PROPUESTA_LIBERTADOR = app.price_proposal_reply(LIBERTADOR) + "\nRef. C2-268EAF11F560"
+CRITERIOS_MIRAFLORES = {"operation": "compra", "property_type": "departamento", "districts": ["Miraflores"], "budget_max": 150000,
+                        "currency": "USD", "bedrooms": 2}
+NO_MATCH_MIRAFLORES = ("Con tus criterios (departamento, en Miraflores, hasta US$ 150,000, 2 dormitorios) no encontré unidades "
+                       "verificadas en este momento. ¿Prefieres ampliar los distritos, revisar el presupuesto o que te contacte un asesor?")
 H_BROCHURE = historial("property_detail", CRITERIOS_PL, "Sí", MAS_FOTOS_LIBERTADOR, "Sí", BROCHURE_LIBERTADOR)
 H_MAS_FOTOS = historial("property_detail", CRITERIOS_PL, FICHA_LIBERTADOR, "Sí", MAS_FOTOS_9_LIBERTADOR, "Sí", MAS_FOTOS_LIBERTADOR)
 H_FICHA = historial("property_detail", CRITERIOS_PL, LISTADO_PL, "1", FICHA_LIBERTADOR)
@@ -538,6 +542,20 @@ CASOS = [
          ia=ia(respuesta="Disculpa, este depa cuesta S/ 250,000 y tiene 60 m², está disponible."),
          espera=[no_contiene("250,000"), no_contiene("disponible"), NO_REPITE_LIBERTADOR],
          hoy_falla="vuelve a describir el departamento"),
+    # ---- empezar de nuevo (12/11: la búsqueda vieja de Miraflores no se dejaba cambiar)
+    dict(id="real_1211_quiero_otro_nuevo", grupo="nueva_busqueda", real=True, cliente="Quiero otro nuevo",
+         historia=historial("qualified", CRITERIOS_MIRAFLORES, "Necesito información de departamento", NO_MATCH_MIRAFLORES),
+         ia=ia("property_search", "Claro, empezamos de cero 😊 ¿Qué tipo de propiedad buscas y en qué zona te gustaría encontrarla?", cambio=True),
+         espera=[contiene("Nueva búsqueda iniciada"), E("criterios vacíos", lambda r, c: not r.criterios.get("districts")), NO_REPITE_MENSAJE]),
+    dict(id="real_1211_nueva_evaluacion", grupo="nueva_busqueda", real=True, cliente="Haz una nueva evaluación, te brindaré otros datos",
+         historia=historial("qualified", CRITERIOS_MIRAFLORES, "Quiero otro nuevo", NO_MATCH_MIRAFLORES),
+         ia=ia("property_search", "Claro, dime qué buscas ahora 😊 ¿Qué tipo de propiedad y en qué zona te interesan?", cambio=True, operation="compra"),
+         espera=[contiene("Nueva búsqueda iniciada"), E("criterios vacíos", lambda r, c: not r.criterios.get("districts")), NO_REPITE_MENSAJE]),
+    dict(id="sin_unidades_no_repite", grupo="nueva_busqueda", cliente="Necesito información de departamento",
+         historia=historial("qualified", CRITERIOS_MIRAFLORES, "Hola", NO_MATCH_MIRAFLORES),
+         ia=ia("general_question", "Hola 😊 ¿en qué distrito buscas el departamento?"),
+         espera=[NO_REPITE_MENSAJE, contiene("búsqueda nueva")]),
+
     # ---- negociación de precio (02/11: la contraoferta se tomó como presupuesto nuevo)
     dict(id="negociacion_real_a_ese_precio", grupo="negociacion", real=True, historia=H_DESCRIPCION_1850, enviadas=TODAS_LIB,
          cliente="Tengo 200 mil soles en mano, puedes venderme a ese precio",
@@ -636,6 +654,8 @@ CLASES = {
     "dato_cuanto_cuesta": ("pide_otra_cosa", "dato_unidad", None, "precio"),
     "dato_donde_queda": ("pide_otra_cosa", "dato_unidad", None, "ubicacion"),
     "seguridad_ia_inventa_precio": ("queja_repeticion",),
+    "real_1211_quiero_otro_nuevo": ("pide_otra_cosa", "cambiar_criterios"),
+    "real_1211_nueva_evaluacion": ("pide_otra_cosa", "cambiar_criterios"),
     "negociacion_real_a_ese_precio": ("otra",),  # lo que devolvió la IA real: la regla de respaldo lo detecta
     "negociacion_me_lo_dejas": ("pide_otra_cosa", "negociar_precio"),
     "negociacion_si_al_asesor": ("acepta",),
