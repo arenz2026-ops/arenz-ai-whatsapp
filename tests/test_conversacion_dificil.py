@@ -637,3 +637,17 @@ class FinishWorkTest(unittest.TestCase):
             tienda, respuesta = self.store(devuelve)
             with mock.patch.object(app.requests, "post", return_value=respuesta):
                 self.assertEqual(tienda.finish_work("wamid-x", "token"), esperado, repr(devuelve))
+
+
+class NuevaBusquedaNaturalTest(unittest.TestCase):
+    def test_frases_que_reinician(self):
+        for frase in ("Quiero otro nuevo", "Haz una nueva evaluación, te brindaré otros datos", "quiero empezar de cero",
+                      "empecemos desde cero", "hagamos una nueva búsqueda", "quiero cambiar mi búsqueda", "otra búsqueda porfa",
+                      "comenzar de nuevo", "reiniciar"):
+            self.assertTrue(app.wants_new_search(frase), frase)
+            self.assertEqual(app.resume_answer_as_command(None, frase), "nueva búsqueda", frase)
+
+    def test_frases_que_no(self):
+        for frase in ("no, pero muéstrame otra", "quiero ver otro departamento", "tengo una nueva consulta: ¿tiene cochera?",
+                      "busco otro depa en Surco", "otra vez lo mismo?", "mejor en Surco", "¿hay otras opciones?"):
+            self.assertFalse(app.wants_new_search(frase), frase)
