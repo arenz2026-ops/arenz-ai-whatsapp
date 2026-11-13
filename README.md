@@ -170,6 +170,10 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
    `sync_property_media_from_projects()`. Corre en segundo plano; `GET` del mismo enlace muestra el resultado. Es
    idempotente, no toca tarjetas que ya tienen fotos curadas y se omiten adjuntos con nombre de documento (DNI, partida, contrato…). Se ejecuta cada lunes desde
    GitHub Actions (`.github/workflows/fotos-trello.yml`) y a mano con **Actions → Fotos Trello → Run workflow**.
+   - **Fotos por tipología**: `inventory_project_media.bedrooms` (opcional) limita una foto a las unidades con ese número
+     de dormitorios; vacío = todas las unidades del proyecto. Las fotos que no están en Trello (p. ej. carpetas de Drive
+     privadas) se publican en `static/fotos/<proyecto>/` y se registran con `media_url` del servicio
+     (`https://arenz-ai-whatsapp-prod.onrender.com/static/fotos/...`). Primer caso: Mar de Grau (`2d-NN.jpg`, `3d-NN.jpg`).
 5. Se revisa el resultado en el buscador web y con una conversación de prueba.
 
 ## Seguimiento automático
