@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 
-from text_normalizer import closest_district, is_known_district, normalize_client_text
+from text_normalizer import LIMA_DISTRICTS, closest_district, is_known_district, normalize_client_text
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -908,7 +908,7 @@ def fold_text(value):
 
 
 DISTRICT_ALIASES = {
-    "santiago de surco": "Surco", "surco": "Surco", "jesus maria": "Jesús María", "cercado": "Cercado Lima",
+    "santiago de surco": "Surco", "surco": "Surco", "victoria": "La Victoria", "jesus maria": "Jesús María", "cercado": "Cercado Lima",
     "cercado de lima": "Cercado Lima", "lima cercado": "Cercado Lima", "lima": "Cercado Lima", "magdalena del mar": "Magdalena",
     "brena": "Breña", "san martin de porres": "San Martín de Porres", "smp": "San Martín de Porres",
     "san juan de lurigancho": "San Juan de Lurigancho", "sjl": "San Juan de Lurigancho",
@@ -917,11 +917,42 @@ DISTRICT_ALIASES = {
 }
 
 
-def canonical_district(value):
-    text = re.sub(r"^(en|el|la|distrito de|distrito)\s+", "", (value or "").strip(), flags=re.IGNORECASE)
-    """Known Lima district for a name, or None: an unknown word ("Once", "Lima centro?") never becomes a district."""
+DISTRICT_LEADING_WORDS = re.compile(r"^(?:en|el|la|distrito\s+de|distrito|urbanizaci[oó]n|urb\.?)\s+", re.IGNORECASE)
+
+
+def _district_lookup(text):
     found = DISTRICT_ALIASES.get(fold_text(text)) or closest_district(text)
     return found if found and is_known_district(found) else None
+
+
+def district_in_phrase(text):
+    """A known district named inside a longer phrase ("Santa Catalina La Victoria", "urbanización X, distrito de
+    Lince"), longest name first; None if there is none. Whole words only, accents ignored."""
+    folded = f" {re.sub(r'[^a-z0-9]+', ' ', fold_text(text or ''))} "
+    names = {fold_text(name): name for name in LIMA_DISTRICTS}
+    names.update({alias: name for alias, name in DISTRICT_ALIASES.items() if len(alias) >= 5 and alias != "lima"})
+    for alias in sorted(names, key=len, reverse=True):
+        if f" {alias} " in folded and is_known_district(names[alias]):
+            return names[alias]
+    return None
+
+
+def canonical_district(value):
+    """Known Lima district for a name, or None: an unknown word ("Once", "Lima centro?") never becomes a district.
+
+    The full name is tried before dropping a leading article: dropping "la" first turned "La Victoria" into
+    "Victoria" and the bot answered "no te entendí" three times (17/11); La Molina, La Perla and La Punta too.
+    """
+    text = (value or "").strip()
+    while text:
+        found = _district_lookup(text)
+        if found:
+            return found
+        shorter = DISTRICT_LEADING_WORDS.sub("", text, count=1)
+        if shorter == text:
+            break
+        text = shorter
+    return district_in_phrase(value)
 
 
 def district_variants(district):
