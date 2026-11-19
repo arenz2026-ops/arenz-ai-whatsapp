@@ -1431,7 +1431,7 @@ class InventoryStore:
         response = requests.get(
             f"{self.url}/rest/v1/inventory_property_media",
             headers=self.headers,
-            params={"select": "property_id,media_type,media_url,approved_for_client,display_order", "property_id": "in.(" + ",".join(property_ids) + ")", "approved_for_client": "eq.true", "order": "display_order.asc"},
+            params={"select": "property_id,media_type,media_url,approved_for_client,display_order,category", "property_id": "in.(" + ",".join(property_ids) + ")", "approved_for_client": "eq.true", "order": "display_order.asc"},
             timeout=10,
         )
         response.raise_for_status()
@@ -1448,12 +1448,21 @@ class InventoryStore:
         return rows[0] if rows else None
 
     def photos_for_reference(self, reference, limit=5):
-        """Approved photo URLs of one unit, in display order."""
+        """Approved photo URLs of one unit, in display order.
+
+        A unit of immediate delivery already exists: the client gets real photos of it, never renders (19/11, Park
+        Prado). Renders are only for projects still under construction, where nothing real can be photographed yet.
+        """
         row = self.unit_row(reference)
         if not row:
             return []
         media = self._approved_media([row["property_id"]]).get(row["property_id"], [])
-        return [m["media_url"] for m in media if m.get("media_type") == "photo"][:limit]
+        hidden = NOT_REAL_PHOTO_CATEGORIES if property_delivery(row) == "inmediata" else set()
+        return [m["media_url"] for m in media if m.get("media_type") == "photo" and m.get("category") not in hidden][:limit]
+
+    def immediate_delivery(self, reference):
+        row = self.unit_row(reference)
+        return bool(row) and property_delivery(row) == "inmediata"
 
     def closing_question(self, reference):
         """The same closing the ficha would use: visit for immediate delivery, brochure otherwise."""
@@ -2528,6 +2537,9 @@ def send_whatsapp_message(to, message):
 MAX_REQUESTED_PHOTOS = 5
 MAX_PROJECT_PHOTOS = 15
 PHOTOS_UNAVAILABLE_PREFIX = "Por ahora no tengo las fotos cargadas en el chat."
+# Categorías de inventory_project_media que no son fotos reales: nunca van a una unidad de entrega inmediata.
+NOT_REAL_PHOTO_CATEGORIES = {"render"}
+REAL_PHOTO_WORDS = re.compile(r"\breal(?:es)?\b|\bactual(?:es)?\b|de verdad|verdader|\brenders?\b", re.IGNORECASE)
 MORE_PHOTOS_QUESTION = "¿Quieres que te envíe más fotos?"
 YES_MORE_PHOTOS = re.compile(r"^(?:s[ií]|sip|ok|okay|claro|dale|ya|bueno|perfecto|por favor|env[ií]a(?:me|las)?|m[aá]nda(?:me|las)?|m[aá]s)\b", re.IGNORECASE)
 
@@ -2565,6 +2577,23 @@ def pending_photos(store, phone, reference):
     return urls, [url for url in urls if url not in already]
 
 
+def asks_real_photos(text):
+    """'Esas fotos no son reales, envíame fotos reales' (18/11): pide fotos reales, no rechaza las fotos."""
+    return bool(PHOTO_WORDS.search(text or "") and REAL_PHOTO_WORDS.search(text or ""))
+
+
+def real_photos_reply(store, reference, stage):
+    """Honest answer to a request for real photos: the bot cannot vouch for an image beyond its category."""
+    if stage == "handoff":
+        return (f"Entiendo 🙂 Ya registré tu solicitud: el asesor de {COMMERCIAL_BRAND} que te contactará te enviará fotos "
+                "actuales del departamento.")
+    if store.immediate_delivery(reference):
+        return (f"Entiendo 🙂 Un asesor de {COMMERCIAL_BRAND} puede enviarte fotos actuales del departamento y, como es de "
+                f"entrega inmediata, también puedes visitarlo para verlo en persona. {ADVISOR_OFFER}")
+    return ("Como el proyecto aún está en construcción, las imágenes que te envié son referenciales del proyecto. "
+            f"Un asesor de {COMMERCIAL_BRAND} puede enviarte fotos del avance de obra o del departamento piloto. {ADVISOR_OFFER}")
+
+
 def final_photos_text(store, reference, stage):
     if stage == "handoff":
         return "Esas son todas las fotos que tengo de este proyecto. El asesor que te contactará puede resolver cualquier detalle."
@@ -2599,6 +2628,9 @@ def photo_turn(store, phone, previous, text, reply, stage, selection=None):
                     photos=[{"reference": reference, "url": pending[0], "caption": offer}])
         return plan
     shown = latest_presented_references(previous)
+    if len(shown) == 1 and asks_real_photos(text):
+        closing = real_photos_reply(store, shown[0], stage)
+        return {"stored": closing + photo_reference_marker(shown[0]), "text": closing, "photos": []}
     if len(shown) == 1 and declines_more_photos(previous, text):
         # "No" to more photos ends the photo flow with the ficha's own closing question.
         closing = ("Perfecto. El asesor que te contactará puede resolver cualquier detalle." if stage == "handoff"
@@ -3124,6 +3156,13 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
         if request == "otras_opciones":
             return None, "Muéstrame más opciones"
         if request == "fotos":
+            if unit and inventory_store and asks_real_photos(text):
+                try:
+                    reply = real_photos_reply(inventory_store, unit, stage)
+                except requests.RequestException:
+                    reply = None
+                if reply:
+                    return done(reply, stage, "Cliente pide fotos reales; se ofrece un asesor (y visita si es de entrega inmediata).", unit)
             return None, "Envíame más fotos"
         if request == "asesor":
             return None, ("Sí" if offer in ("brochure", "visita", "asesor") else "Quiero hablar con un asesor")

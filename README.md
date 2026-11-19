@@ -174,6 +174,10 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
      de dormitorios; vacío = todas las unidades del proyecto. Las fotos que no están en Trello (p. ej. carpetas de Drive
      privadas) se publican en `static/fotos/<proyecto>/` y se registran con `media_url` del servicio
      (`https://arenz-ai-whatsapp-prod.onrender.com/static/fotos/...`). Primer caso: Mar de Grau (`2d-NN.jpg`, `3d-NN.jpg`).
+   - **Fotos reales vs renders**: `inventory_project_media.category` (`foto`, `piloto`, `plano`, `general`, `render`) se
+     copia a cada unidad. A una unidad de **entrega inmediata** el bot nunca le envía `render`: solo imágenes reales. Los
+     renders se envían solo en proyectos en construcción. Una imagen que no es real debe quedar con `category = 'render'`
+     (las de Trello entran como `foto`).
 5. Se revisa el resultado en el buscador web y con una conversación de prueba.
 
 ## Seguimiento automático

@@ -110,6 +110,9 @@ class InventarioFalso:
     def photos_for_reference(self, reference, limit=5):
         return FOTOS.get(reference, [])[:limit]
 
+    def immediate_delivery(self, reference):
+        return POR_REFERENCIA[reference]["delivery"] == "inmediata"
+
     def closing_question(self, reference):
         if POR_REFERENCIA[reference]["delivery"] == "inmediata":
             return "¿Quieres que coordinemos una visita al departamento?"
@@ -572,6 +575,20 @@ CASOS = [
          historia=H_VISITA_FOTOS_PENDIENTES, enviadas=TODAS_UNI, ia=ia("property_search", ""),
          espera=[contiene("Ya te envié todas las fotos"), NO_CIERRA]),
 
+    # ---- "Esas fotos no son reales, envíame fotos reales" (18/11, Park Prado de entrega inmediata): pide fotos reales,
+    # no rechaza. Antes respondía "no tengo más fotos"; ahora ofrece un asesor y la visita, sin afirmar nada de las fotos.
+    dict(id="real_1811_esas_fotos_no_son_reales", grupo="fotos", real=True, cliente="Esas fotos no son reales, envíame fotos reales",
+         historia=historial("property_detail", CRITERIOS_CHORRILLOS, "Sí",
+                            "Esas son todas las fotos que tengo de este proyecto. ¿Quieres que coordinemos una visita al "
+                            "departamento?\nRef. C2-D5ACE8F77103"),
+         enviadas=TODAS_UNI, ia=ia("property_search", "Entendido."),
+         espera=[NO_CIERRA, NO_DERIVA, contiene("fotos actuales"), contiene("visitarlo"), contiene("te contacte un asesor"),
+                 no_contiene("no tengo más fotos")]),
+    dict(id="fotos_reales_proyecto_en_construccion", grupo="fotos", cliente="¿Son fotos reales?",
+         historia=historial("property_detail", CRITERIOS_PL, "Sí", BROCHURE_LIBERTADOR),
+         enviadas=fotos_enviadas("C2-268EAF11F560", 15), ia=ia("general_question", ""),
+         espera=[NO_CIERRA, NO_DERIVA, contiene("en construcción"), contiene("referenciales"), contiene("te contacte un asesor")]),
+
     # ---- distritos con artículo (17/11: "La Victoria" -> "no te entendí" tres veces)
     dict(id="real_1711_santa_catalina_la_victoria", grupo="distrito", real=True, cliente="Santa Catalina La Victoria",
          historia=H_DISTRITOS,
@@ -698,6 +715,8 @@ CLASES = {
     "real_1311_busco_en_chorrillos_no_es_si_al_asesor": ("acepta",),  # lo que devolvió la IA real
     "real_1311_antes_quiero_ver_mas_imagenes": ("rechaza",),  # lo que devolvió la IA real
     "mas_imagenes_sin_fotos_pendientes": ("pide_otra_cosa", "fotos"),
+    "real_1811_esas_fotos_no_son_reales": ("rechaza",),  # lo que devolvió la IA real
+    "fotos_reales_proyecto_en_construccion": ("otra",),
     "negociacion_real_a_ese_precio": ("otra",),  # lo que devolvió la IA real: la regla de respaldo lo detecta
     "negociacion_me_lo_dejas": ("pide_otra_cosa", "negociar_precio"),
     "negociacion_si_al_asesor": ("acepta",),
