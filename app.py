@@ -298,6 +298,15 @@ class ConversationMemoryStore:
         except requests.RequestException:
             logger.error("Unable to record internal failure: stage=%s", stage)
 
+    def photo_batch_create(self, phone, body, message_ids):
+        """Registra la pregunta que va tras una tanda de fotos; True si todas ya se entregaron (enviarla ya)."""
+        return bool(self.rpc("photo_batch_create", {"p_phone": phone, "p_body": body, "p_message_ids": message_ids}))
+
+    def photo_batch_delivered(self, phone, message_id):
+        """Aviso de entrega de una foto; devuelve [{'phone', 'body'}] cuando ya llegó toda la tanda (una sola vez)."""
+        rows = self.rpc("photo_batch_delivered", {"p_phone": phone, "p_message_id": message_id})
+        return rows if isinstance(rows, list) else []
+
     def record_delivery(self, message_id, state, code=None):
         response = requests.patch(f"{self.url}/rest/v1/processed_messages", headers={**self.headers, "Prefer": "return=minimal"}, params={"message_id": f"eq.{message_id}", "status": "eq.processed"}, json={"delivery_state": state, "delivery_attempted_at": datetime.now(timezone.utc).isoformat(), "delivery_failure_code": code}, timeout=10)
         response.raise_for_status()
@@ -2606,8 +2615,16 @@ def photo_turn(store, phone, previous, text, reply, stage, selection=None):
     return plan
 
 
-def send_property_photos(to, photos, store=None, skip_already_sent=True):
-    """Best effort: images go after the text reply and never break the turn."""
+def graph_message_id(response):
+    """wamid del mensaje aceptado por la Graph API, o None."""
+    try:
+        return response.json()["messages"][0]["id"]
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
+
+
+def send_property_photos(to, photos, store=None, skip_already_sent=True, message_ids=None):
+    """Best effort: images go after the text reply and never break the turn. message_ids collects each photo's wamid."""
     if not photos:
         return 0
     try:
@@ -2622,13 +2639,67 @@ def send_property_photos(to, photos, store=None, skip_already_sent=True):
             image = {"link": photo["url"]}
             if photo.get("caption"):
                 image["caption"] = photo["caption"]
-            post_graph_message({"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "image", "image": image})
+            response = post_graph_message({"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "image", "image": image})
             sent += 1
+            if message_ids is not None and graph_message_id(response):
+                message_ids.append(graph_message_id(response))
             if store:
                 store.record_media_delivery(to, photo.get("reference") or "", photo["url"])
         except requests.RequestException:
             logger.warning("Property photo not delivered")
     return sent
+
+
+def send_photos_with_follow_up(memory, to, plan, store):
+    """Fotos y, debajo, la pregunta que las sigue.
+
+    WhatsApp no garantiza el orden de entrega: el 13/11 la pregunta pegada a la última foto apareció sobre la primera.
+    En una tanda de varias fotos, la pregunta se envía como texto cuando WhatsApp confirma que llegaron todas (avisos
+    de entrega en /webhook, photo_batch_delivered). Una sola foto conserva su pie de foto.
+    """
+    photos = plan["photos"]
+    follow_up = photos[-1].get("caption")
+    deferred = follow_up if (memory and len(photos) > 1 and follow_up) else None
+    if deferred:
+        photos = photos[:-1] + [{key: value for key, value in photos[-1].items() if key != "caption"}]
+    message_ids = []
+    sent = send_property_photos(to, photos, store, skip_already_sent=False, message_ids=message_ids)
+    if deferred:
+        try:
+            if not message_ids or memory.photo_batch_create(to, deferred, message_ids):
+                send_whatsapp_message(to, deferred)
+        except requests.RequestException:
+            logger.warning("Photo batch follow-up not registered; sent right away")
+            send_whatsapp_message(to, deferred)
+    elif sent < len(photos) and follow_up and not plan["text"]:
+        # The follow-up rides on the last photo; if that photo did not go out, send it as text.
+        send_whatsapp_message(to, follow_up)
+    return sent
+
+
+def iter_delivery_statuses(data):
+    """(teléfono, wamid) de cada aviso 'delivered' o 'failed' de WhatsApp."""
+    if not isinstance(data, dict) or data.get("object") != "whatsapp_business_account":
+        return []
+    return [(status.get("recipient_id"), status.get("id")) for entry in data.get("entry", [])
+            for change in entry.get("changes", []) for status in change.get("value", {}).get("statuses", [])
+            if status.get("status") in ("delivered", "failed") and status.get("recipient_id") and status.get("id")]
+
+
+def handle_delivery_statuses(statuses):
+    """Cuando llega la última foto de una tanda, envía la pregunta que va debajo. Nunca rompe el webhook."""
+    memory = get_conversation_memory_store()
+    if not memory:
+        return 0
+    released = 0
+    for phone, message_id in statuses:
+        try:
+            for row in memory.photo_batch_delivered(phone, message_id):
+                send_whatsapp_message(row["phone"], row["body"])
+                released += 1
+        except (requests.RequestException, RuntimeError):
+            logger.warning("Photo batch follow-up failed after delivery status")
+    return released
 
 
 def post_graph_message(payload):
@@ -3693,6 +3764,11 @@ def receive_webhook():
         memory = get_conversation_memory_store()
         handled = sum(1 for message in consent_replies if handle_consent_reply(memory, message))
         return jsonify({"status": "received", "processed": handled}), 200
+    statuses = iter_delivery_statuses(data)
+    if statuses:
+        released = handle_delivery_statuses(statuses)
+        if not iter_incoming_messages(data):
+            return jsonify({"status": "statuses", "follow_ups": released}), 200
     messages = iter_incoming_messages(data)
     if not messages: return jsonify({"status":"ignored"}), 200
     try:
@@ -3774,10 +3850,7 @@ def receive_webhook():
                 if plan["text"]:
                     send_whatsapp_message(sender, plan["text"])
                 if plan["photos"]:
-                    sent = send_property_photos(sender, plan["photos"], inventory_store, skip_already_sent=False)
-                    # The follow-up rides on the last photo; if that photo did not go out, send it as text.
-                    if sent < len(plan["photos"]) and plan["photos"][-1].get("caption") and not plan["text"]:
-                        send_whatsapp_message(sender, plan["photos"][-1]["caption"])
+                    send_photos_with_follow_up(memory, sender, plan, inventory_store)
                 if memory: memory.record_delivery(message_id, "sent")
                 if memory and PRIVACY_NOTICE_ENABLED and is_first_contact(previous):
                     send_privacy_notice(memory, sender)
