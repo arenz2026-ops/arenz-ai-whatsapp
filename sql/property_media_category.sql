@@ -1,5 +1,5 @@
 -- 19/11: cada foto de una unidad conserva la categoría de su proyecto (foto, render, piloto, plano, general).
--- El bot no envía renders a unidades de entrega inmediata (InventoryStore.photos_for_reference).
+-- Por ahora el bot envía todas las categorías (renders incluidos); la columna deja lista la separación.
 -- Aplicada en Supabase como migración property_media_category.
 alter table inventory_property_media add column if not exists category text;
 

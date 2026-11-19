@@ -1431,7 +1431,7 @@ class InventoryStore:
         response = requests.get(
             f"{self.url}/rest/v1/inventory_property_media",
             headers=self.headers,
-            params={"select": "property_id,media_type,media_url,approved_for_client,display_order,category", "property_id": "in.(" + ",".join(property_ids) + ")", "approved_for_client": "eq.true", "order": "display_order.asc"},
+            params={"select": "property_id,media_type,media_url,approved_for_client,display_order", "property_id": "in.(" + ",".join(property_ids) + ")", "approved_for_client": "eq.true", "order": "display_order.asc"},
             timeout=10,
         )
         response.raise_for_status()
@@ -1450,15 +1450,13 @@ class InventoryStore:
     def photos_for_reference(self, reference, limit=5):
         """Approved photo URLs of one unit, in display order.
 
-        A unit of immediate delivery already exists: the client gets real photos of it, never renders (19/11, Park
-        Prado). Renders are only for projects still under construction, where nothing real can be photographed yet.
+        Renders go out too, also for immediate delivery: most delivered units have no real photos yet (19/11).
         """
         row = self.unit_row(reference)
         if not row:
             return []
         media = self._approved_media([row["property_id"]]).get(row["property_id"], [])
-        hidden = NOT_REAL_PHOTO_CATEGORIES if property_delivery(row) == "inmediata" else set()
-        return [m["media_url"] for m in media if m.get("media_type") == "photo" and m.get("category") not in hidden][:limit]
+        return [m["media_url"] for m in media if m.get("media_type") == "photo"][:limit]
 
     def immediate_delivery(self, reference):
         row = self.unit_row(reference)
@@ -2537,8 +2535,6 @@ def send_whatsapp_message(to, message):
 MAX_REQUESTED_PHOTOS = 5
 MAX_PROJECT_PHOTOS = 15
 PHOTOS_UNAVAILABLE_PREFIX = "Por ahora no tengo las fotos cargadas en el chat."
-# Categorías de inventory_project_media que no son fotos reales: nunca van a una unidad de entrega inmediata.
-NOT_REAL_PHOTO_CATEGORIES = {"render"}
 REAL_PHOTO_WORDS = re.compile(r"\breal(?:es)?\b|\bactual(?:es)?\b|de verdad|verdader|\brenders?\b", re.IGNORECASE)
 MORE_PHOTOS_QUESTION = "¿Quieres que te envíe más fotos?"
 YES_MORE_PHOTOS = re.compile(r"^(?:s[ií]|sip|ok|okay|claro|dale|ya|bueno|perfecto|por favor|env[ií]a(?:me|las)?|m[aá]nda(?:me|las)?|m[aá]s)\b", re.IGNORECASE)
