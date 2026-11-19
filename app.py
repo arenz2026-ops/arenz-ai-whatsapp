@@ -106,6 +106,11 @@ OBSERVATION_SCHEMA_IA["properties"]["respuesta_cliente"] = {
                    "dato": {"type": "string", "enum": UNIT_FACTS_ASKED}},
     "required": ["tipo", "pedido", "opcion", "dato"]}
 OBSERVATION_SCHEMA_IA["required"].append("respuesta_cliente")
+# Una frase breve y cálida que el bot pone antes de sus preguntas fijas (distrito, presupuesto, dormitorios, pago,
+# plazo): con preguntas siempre iguales la conversación se sentía plana (13/11). La pregunta y los datos siguen
+# saliendo del código; la frase se descarta si trae cifras, promesas de unidades o preguntas.
+OBSERVATION_SCHEMA_IA["properties"]["frase_puente"] = {"type": "string"}
+OBSERVATION_SCHEMA_IA["required"].append("frase_puente")
 CUSTOMER_REPLY_POLICY = (
     " respuesta_cliente: cómo responde el Mensaje a ultima_pregunta_bot. tipo: acepta (sí, dale, ya pe, simón); "
     "rechaza (no, nel, ninguna); pide_otra_cosa (pide algo distinto aunque empiece con no: otra opción, 'mejor la 2', "
@@ -118,7 +123,11 @@ CUSTOMER_REPLY_POLICY = (
     "ninguno. Si pregunta un dato de la unidad ('¿tiene cochera?', '¿cuánto cuesta?') es pide_otra_cosa con pedido dato_unidad. "
     "Si ofrece otro monto o pide rebaja por la unidad mostrada ('tengo 200 mil, ¿me lo vendes a ese precio?', '¿me lo "
     "dejas en 380?') es pide_otra_cosa con pedido negociar_precio y no cambia el presupuesto. "
-    "assistant_reply nunca lleva precios, montos, metrajes, unidad, piso ni disponibilidad, ni repite al bot."
+    "assistant_reply nunca lleva precios, montos, metrajes, unidad, piso ni disponibilidad, ni repite al bot. "
+    "frase_puente: una frase breve y cálida (máx. 90 caracteres, con un emoji si queda natural) que reaccione a lo "
+    "que dijo el cliente, sin hacer preguntas; sin cifras, montos, metrajes, unidades, disponibilidad ni promesas "
+    "como 'tengo' u 'hay opciones'. Ejemplos: 'Chorrillos es una gran zona, cerca al mar 🌊', 'Perfecto, pagar al "
+    "contado te da más poder de negociación 👍'. Vacía si no aporta nada."
 )
 
 
@@ -3416,7 +3425,47 @@ def plan_turn(sender, previous, text, observation, fallback, inventory_store):
         clarified = repeated_question_reply(previous, result["plan"].get("text"), result.get("criteria"))
         if clarified:
             result = _with_reply(result, clarified)
+        else:
+            warmer = with_bridge_phrase(result["plan"].get("text"), observation, previous)
+            if warmer:
+                result = _with_reply(result, warmer)
     return with_unit_reference(previous, result)
+
+
+BRIDGE_FORBIDDEN = re.compile(
+    r"\d|\?|¿|\b(?:tengo|tenemos|hay|encontr\w*|disponib\w*|opci[oó]n(?:es)?|unidad(?:es)?|precio\w*|asesor\w*|visita\w*"
+    r"|cita|agend\w*|reserv\w*|te\s+(?:env[ií]o|muestro|mando)|ofrezco|garantiz\w*|seguro\s+que)\b", re.IGNORECASE)
+BRIDGE_TIMELINE_LEAD = "Perfecto, gracias. "
+
+
+def bridge_phrase(observation, previous):
+    """La frase cálida de la IA, solo si es breve, no pregunta nada y no trae cifras ni promesas; si no, None."""
+    phrase = observation.get("frase_puente") if isinstance(observation, dict) else None
+    if not isinstance(phrase, str):
+        return None
+    phrase = " ".join(phrase.split()).strip()
+    if not 3 <= len(phrase) <= 110 or BRIDGE_FORBIDDEN.search(phrase) or AI_TEXT_FORBIDDEN.search(phrase):
+        return None
+    last = customer_visible_reply(last_bot_message(previous)).casefold()
+    if last and phrase.casefold() in last:
+        return None
+    return phrase if phrase[-1] in ".!…" or not phrase[-1].isalnum() else phrase + "."
+
+
+def with_bridge_phrase(reply, observation, previous):
+    """Antepone la frase cálida a una pregunta fija del flujo (distrito, presupuesto, moneda, dormitorios, pago, plazo)."""
+    if not reply or not conversacion_ia_activa():
+        return None
+    phrase = bridge_phrase(observation, previous)
+    if not phrase:
+        return None
+    if reply.startswith(BRIDGE_TIMELINE_LEAD) and TIMELINE_QUESTION in reply:
+        return f"{phrase} {reply[len(BRIDGE_TIMELINE_LEAD):]}"
+    plain = reply[len(NEW_SEARCH_PREFIX):] if reply.startswith(NEW_SEARCH_PREFIX) else reply
+    if plain in QUALIFYING_REPLIES or (PAYMENT_QUESTION in reply and reply.startswith("Tengo opciones")) \
+            or (TIMELINE_QUESTION[1:] in reply and reply.startswith("Tengo opciones")):
+        return f"{phrase} {reply}"
+    return None
 
 
 def with_unit_reference(previous, result):
