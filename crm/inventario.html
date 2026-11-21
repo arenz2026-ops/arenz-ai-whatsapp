@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Inventario C2 · Rildo Roque</title>
+<link rel="icon" href="inventario.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+
+/* Marca personal Rildo Roque (Notion, paleta v1.0): azul marino institucional, dorado para énfasis, blanco de fondo; tipografía Arial Narrow. */
+:root{
+  --bg:#ffffff; --panel:#ffffff; --ink:#0B1F3A; --muted:#55627a; --line:#dfe3ea;
+  --navy:#0B1F3A; --on-navy:#ffffff; --gold:#C9A227; --gold-soft:#f7efd6; --gold-ink:#7a5f0c;
+  --accent:#0B1F3A; --accent-soft:#e7ebf2; --ok:#1f6f47; --ok-soft:#e3f2ea; --warn:#8a5a00; --warn-soft:#fbf0d8;
+  --info:#34445f; --info-soft:#eef1f6; --band:#0B1F3A;
+  --f-display:"Arial Narrow", "Archivo Narrow", "Roboto Condensed", Arial, sans-serif;
+  --f-body:"Arial Narrow", "Archivo Narrow", "Roboto Condensed", Arial, sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#071426; --panel:#0B1F3A; --ink:#f2f4f8; --muted:#a9b4c8; --line:#1f3557;
+  --navy:#132c50; --on-navy:#ffffff; --gold:#d8b440; --gold-soft:#2e2814; --gold-ink:#e6c766;
+  --accent:#d8b440; --accent-soft:#1a3358; --ok:#74d3a3; --ok-soft:#12302a; --warn:#f0c160; --warn-soft:#33280f;
+  --info:#c3cde0; --info-soft:#15294a; --band:#040d1a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#071426; --panel:#0B1F3A; --ink:#f2f4f8; --muted:#a9b4c8; --line:#1f3557;
+  --navy:#132c50; --on-navy:#ffffff; --gold:#d8b440; --gold-soft:#2e2814; --gold-ink:#e6c766;
+  --accent:#d8b440; --accent-soft:#1a3358; --ok:#74d3a3; --ok-soft:#12302a; --warn:#f0c160; --warn-soft:#33280f;
+  --info:#c3cde0; --info-soft:#15294a; --band:#040d1a; color-scheme:dark}
+.brand{background:var(--band);color:#fff;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:12px;border-bottom:3px solid var(--gold)}
+.brand-in{max-width:1500px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 16px}
+.brand-name{font-family:var(--f-display);font-weight:700;font-size:20px;letter-spacing:.12em}
+.brand-tag{font-family:var(--f-display);font-size:13px;letter-spacing:.18em;color:var(--gold)}
+.brand-msg{font-size:13px;color:#d6dbe6;font-style:italic}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.45}
+.wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px;max-width:1500px;margin:0 auto}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:16px}
+h1{font-family:var(--f-display);font-size:28px;margin:0;color:var(--ink);font-weight:700;text-wrap:balance;text-decoration:underline;text-decoration-color:var(--gold);text-decoration-thickness:3px;text-underline-offset:6px}
+.sub{color:var(--muted);margin:2px 0 0}
+.status{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
+.layout{display:grid;grid-template-columns:270px minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)}}
+.rail{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;display:grid;gap:12px;position:sticky;top:max(12px,env(safe-area-inset-top,0px))}
+@media (max-width:900px){.rail{position:static}}
+.rail h2{font-family:var(--f-display);font-size:16px;margin:0;font-weight:700;text-decoration:underline;text-decoration-color:var(--gold);text-underline-offset:4px}
+label.f{display:grid;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+select,input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:7px 9px;width:100%;text-transform:none;letter-spacing:0}
+select:focus-visible,input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.row2{display:grid;grid-template-columns:1fr 92px;gap:6px}
+.seg{display:flex;flex-wrap:wrap;gap:4px}
+.seg button{flex:1 1 auto;font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--navy);border-color:var(--gold);color:var(--on-navy);box-shadow:inset 0 -2px 0 var(--gold)}
+.actions{display:flex;gap:8px}
+.btn{font:inherit;font-weight:700;letter-spacing:.03em;border-radius:6px;padding:9px 12px;cursor:pointer;border:1px solid var(--gold);background:var(--navy);color:var(--on-navy);flex:1}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+.btn:disabled{opacity:.55;cursor:default}
+main{min-width:0;display:grid;gap:12px}
+.summary{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--gold);border-radius:6px;padding:8px 12px;display:grid;min-width:130px}
+.chip b{font-family:var(--f-display);font-size:22px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+.chip span{font-size:12px;color:var(--muted)}
+.note{background:var(--info-soft);color:var(--info);border-radius:8px;padding:10px 12px}
+.note.err{background:var(--warn-soft);color:var(--warn)}
+.tablebox{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:1180px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--on-navy);font-weight:700;white-space:nowrap;position:sticky;top:0;background:var(--navy);border-bottom:2px solid var(--gold)}
+th button{all:unset;cursor:pointer}
+th button:focus-visible{outline:2px solid var(--accent)}
+td.num{font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.proj{font-weight:600}
+.unit{color:var(--muted);font-size:12.5px}
+.feat{font-size:13px}
+.obs{font-size:12.5px;color:var(--muted);max-width:280px}
+.pill{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;white-space:nowrap;font-weight:500}
+.p-ok{background:var(--ok-soft);color:var(--ok)}
+.p-warn{background:var(--warn-soft);color:var(--warn)}
+.p-info{background:var(--info-soft);color:var(--info)}
+.p-acc{background:var(--gold-soft);color:var(--gold-ink)}
+.p-bad{background:rgba(214,69,69,.14);color:#d64545}
+tr.flag td:not(.obs){opacity:.7}
+tr.flag .obs{color:#d64545}
+.alt{display:block;font-size:11.5px;color:var(--muted)}
+a{color:var(--accent)}
+.cards{display:none}
+@media (max-width:700px){
+  .tablebox{display:none}
+  .cards{display:grid;gap:10px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:6px}
+  .card .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+  .card .pills{display:flex;flex-wrap:wrap;gap:4px}
+}
+.fbtn{margin-top:6px;font:inherit;font-size:12px;font-weight:700;letter-spacing:.02em;padding:4px 10px;border-radius:999px;border:1px solid var(--gold);background:var(--navy);color:var(--on-navy);cursor:pointer;white-space:nowrap}
+.fbtn:hover{box-shadow:inset 0 -2px 0 var(--gold)}
+dialog.ficha{border:0;padding:0;border-radius:12px;width:min(640px,calc(100vw - 32px));max-height:calc(100dvh - 32px);background:var(--panel);color:var(--ink);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+dialog.ficha::backdrop{background:rgba(7,20,38,.55)}
+.ficha-in{display:flex;flex-direction:column;max-height:calc(100dvh - 32px)}
+.ficha-head{background:var(--band);color:#fff;padding:12px 16px;border-bottom:3px solid var(--gold);display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.ficha-head b{font-family:var(--f-display);font-size:17px;letter-spacing:.04em}
+.ficha-head span{font-family:var(--f-mono);font-size:12px;color:#d6dbe6}
+.ficha-body{padding:14px 16px;overflow-y:auto;flex:1;min-height:0}
+.ficha-text{white-space:pre-wrap;font-size:14.5px;line-height:1.5;margin:0}
+.ficha-warn{background:rgba(214,69,69,.12);color:#d64545;border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:13px}
+.ficha-status{font-size:12.5px;color:var(--muted);margin-top:10px}
+.ficha-foot{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.ficha-foot .btn{flex:1 1 auto}
+/* Desktop: filters and results scroll independently; the table keeps its header fixed. */
+@media (min-width:901px){
+  html,body{height:100%;overflow:hidden}
+  body{display:flex;flex-direction:column;height:100dvh}
+  .brand{flex:none}
+  .wrap{flex:1;min-height:0;width:100%;display:flex;flex-direction:column;padding-bottom:12px}
+  .wrap > header{flex:none}
+  .layout{flex:1;min-height:0;align-items:stretch}
+  .rail{position:static;max-height:100%;overflow-y:auto;overscroll-behavior:contain;align-self:start}
+  main{display:flex;flex-direction:column;min-height:0;height:100%}
+  main > .summary, main > .note{flex:none}
+  .tablebox{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+
+/* Programa de escritorio */
+.wrap{max-width:1600px}
+.hdr-right{display:grid;justify-items:end;gap:4px}
+.who{font-size:12.5px;color:var(--muted)}
+.link{all:unset;cursor:pointer;color:var(--accent);text-decoration:underline;font-size:12.5px}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;justify-content:space-between}
+.tools{display:flex;gap:8px;flex:none}
+.tools .btn{flex:none;padding:8px 12px;font-size:13.5px}
+body.wide .rail, body.wide .wrap > header{display:none}
+body.wide .layout{grid-template-columns:minmax(0,1fr)}
+body.wide .wrap{max-width:none}
+#login{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:var(--band);padding:16px}
+#login[hidden]{display:none}
+.login-card{background:var(--panel);color:var(--ink);border-radius:12px;border-top:4px solid var(--gold);padding:24px;width:min(380px,100%);display:grid;gap:8px}
+.login-mark{font-family:var(--f-display);font-weight:700;letter-spacing:.14em;color:var(--gold-ink)}
+.login-card h2{font-family:var(--f-display);font-size:24px;margin:0}
+.login-card .hint{margin:0 0 6px;color:var(--muted);font-size:13.5px}
+.login-card label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.login-card .btn{margin-top:8px}
+.msg{margin:4px 0 0;color:#d64545;font-size:13px}
+
+body{margin:0}
+</style>
+</head>
+<body>
+
+<section id="login" hidden>
+  <form class="login-card" id="authForm" novalidate>
+    <div class="login-mark">RILDO ROQUE</div>
+    <h2>Inventario C2</h2>
+    <p class="hint">Ingresa con tu correo y clave del CRM CREENZIA.</p>
+    <label for="email">Correo</label>
+    <input id="email" type="email" autocomplete="email" required>
+    <label for="pass">Clave</label>
+    <input id="pass" type="password" autocomplete="current-password" required>
+    <button class="btn" id="authBtn" type="submit">Ingresar</button>
+    <p class="msg" id="authMsg" role="status" hidden></p>
+  </form>
+</section>
+
+<div class="brand"><div class="brand-in">
+  <span class="brand-name">RILDO ROQUE</span>
+  <span class="brand-tag">INVERSIONES • PROYECTOS • NEGOCIOS</span>
+  <span class="brand-msg">Transformando oportunidades en resultados reales</span>
+</div></div>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Inventario C2</h1>
+      <p class="sub">Departamentos disponibles que también ofrece el bot ARENZ. Fuente: Lista de Precios C2, Power BI Tale y Trello (actualización semanal).</p>
+    </div>
+    <div class="hdr-right"><div class="status" id="status">Cargando…</div><div class="who"><span id="who"></span> <button class="link" id="logout" type="button">Salir</button></div></div>
+  </header>
+
+  <div class="layout">
+    <form class="rail" id="filters" autocomplete="off">
+      <h2>Filtros</h2>
+      <label class="f">Distrito
+        <select id="f-distrito"><option value="">Todos</option></select>
+      </label>
+      <label class="f">Inmobiliaria
+        <select id="f-inmob"><option value="">Todas</option></select>
+      </label>
+      <label class="f">Proyecto
+        <input id="f-proyecto" type="search" placeholder="Proyecto o dirección">
+      </label>
+      <label class="f">Presupuesto máximo
+        <span class="row2">
+          <input id="f-precio" type="number" min="0" step="1000" placeholder="Ej. 100000" inputmode="numeric">
+          <select id="f-moneda"><option value="USD">US$</option><option value="PEN">S/</option></select>
+        </span>
+      </label>
+      <label class="f">Dormitorios mínimos
+        <select id="f-dorm"><option value="">Cualquiera</option><option>1</option><option>2</option><option>3</option><option>4</option></select>
+      </label>
+      <label class="f">Área mínima (m²)
+        <input id="f-area" type="number" min="0" step="1" placeholder="Ej. 60" inputmode="numeric">
+      </label>
+      <div class="f" style="display:grid;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Entrega
+        <div class="seg" id="f-entrega" role="group" aria-label="Entrega">
+          <button type="button" data-v="" aria-pressed="true">Todas</button>
+          <button type="button" data-v="Inmediata" aria-pressed="false">Inmediata</button>
+          <button type="button" data-v="futura" aria-pressed="false">Futura</button>
+          <button type="button" data-v="Por confirmar" aria-pressed="false">Por confirmar</button>
+        </div>
+      </div>
+      <label class="f">Año de entrega
+        <select id="f-anio"><option value="">Cualquiera</option></select>
+      </label>
+      <div class="f" style="display:grid;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Condición
+        <div class="seg" id="f-cond" role="group" aria-label="Condición">
+          <button type="button" data-v="" aria-pressed="true">Todas</button>
+          <button type="button" data-v="nuevo" aria-pressed="false">Nuevo</button>
+          <button type="button" data-v="segundo_uso" aria-pressed="false">2do uso</button>
+        </div>
+      </div>
+      <label class="f">Estacionamiento
+        <select id="f-estac"><option value="">Cualquiera</option><option value="si">Incluido</option><option value="No">No incluido</option><option value="Por confirmar">Por confirmar</option></select>
+      </label>
+      <label class="f">Ordenar por
+        <select id="f-orden">
+          <option value="precio_usd asc">Precio: menor a mayor</option>
+          <option value="precio_usd desc">Precio: mayor a menor</option>
+          <option value="area_total desc nulls last">Área: mayor a menor</option>
+          <option value="entrega_ord asc">Entrega: más pronto</option>
+          <option value="distrito asc, proyecto asc">Distrito y proyecto</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button class="btn" id="btn-buscar" type="submit">Buscar</button>
+        <button class="btn ghost" id="btn-limpiar" type="button">Limpiar</button>
+      </div>
+      <button class="btn ghost" id="btn-csv" type="button" hidden>Descargar resultados (Excel/CSV)</button>
+    </form>
+
+    <main>
+      <div class="toolbar">
+        <div class="summary" id="summary"></div>
+        <div class="tools">
+          <button class="btn ghost" id="btn-refresh" type="button" title="Volver a leer el inventario">↻ Actualizar</button>
+          <button class="btn" id="btn-wide" type="button" aria-pressed="false" title="Oculta los filtros para ver la tabla más grande (Esc para volver)">⤢ Ampliar tabla</button>
+        </div>
+      </div>
+      <div class="note" id="note">Cargando el inventario…</div>
+      <div class="tablebox">
+        <table>
+          <thead><tr>
+            <th>Inmobiliaria</th><th>Proyecto · Unidad</th><th>Distrito</th><th>Dirección</th><th>Precio</th>
+            <th>Características</th><th>Estac.</th><th>Condición</th><th>Entrega</th><th>Antigüedad</th><th>Observaciones</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="cards" id="cards"></div>
+    </main>
+  </div>
+</div>
+
+<dialog class="ficha" id="ficha" aria-labelledby="ficha-title">
+  <div class="ficha-in">
+    <div class="ficha-head"><b id="ficha-title">Ficha comercial</b><span id="ficha-ref"></span></div>
+    <div class="ficha-body">
+      <div class="ficha-warn" id="ficha-warn" hidden></div>
+      <p class="ficha-text" id="ficha-text"></p>
+      <div class="ficha-status" id="ficha-status"></div>
+    </div>
+    <div class="ficha-foot">
+      <button class="btn" id="ficha-copy" type="button">Copiar para WhatsApp</button>
+      <button class="btn ghost" id="ficha-dl" type="button">Descargar .txt</button>
+      <button class="btn ghost" id="ficha-close" type="button">Cerrar</button>
+    </div>
+  </div>
+</dialog>
+
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+const SUPABASE_URL = "https://gxywmiqmsesirkuwrsbs.supabase.co";
+const SUPABASE_KEY = "sb_publishable_EFyj-nnkH8ShrSnBNv7bog_QdBGOnoW";
+const BOT_URL = "https://arenz-ai-whatsapp-prod.onrender.com";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
+
+const $ = id => document.getElementById(id);
+const fmt = new Intl.NumberFormat("es-PE", {maximumFractionDigits: 0});
+const money = (cur, v) => (cur === "USD" ? "US$ " : "S/ ") + fmt.format(Number(v));
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let ALL = [], lastRows = [];
+
+function setNote(text, isErr){ const n = $("note"); n.textContent = text; n.className = "note" + (isErr ? " err" : ""); n.hidden = !text; }
+
+/* ---------- Acceso: la misma cuenta del CRM CREENZIA ---------- */
+async function token(){ const { data:{ session } } = await sb.auth.getSession(); return session ? session.access_token : null; }
+async function bot(path, body){
+  const t = await token();
+  if(!t) throw {code: "login"};
+  const r = await fetch(BOT_URL + path, {method: "POST", headers: {"Authorization": "Bearer " + t, "Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+  const j = await r.json().catch(() => ({}));
+  if(r.status === 403) throw {code: "login", message: j.error};
+  if(!r.ok) throw {code: "error", message: j.error || "El servidor no respondió. Intenta de nuevo en un momento."};
+  return j;
+}
+function showLogin(msg){
+  $("login").hidden = false;
+  const m = $("authMsg"); m.textContent = msg || ""; m.hidden = !msg;
+}
+$("authForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const email = $("email").value.trim().toLowerCase(), pass = $("pass").value;
+  if(!email || !pass) return showLogin("Escribe tu correo y tu clave del CRM.");
+  $("authBtn").disabled = true;
+  try{
+    const { error } = await sb.auth.signInWithPassword({ email, password: pass });
+    if(error) return showLogin("Correo o clave incorrectos.");
+    $("login").hidden = true; $("pass").value = "";
+    load();
+  } finally { $("authBtn").disabled = false; }
+});
+$("logout").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
+
+/* ---------- Datos ---------- */
+async function load(){
+  const btn = $("btn-refresh"); btn.disabled = true;
+  setNote("Cargando el inventario…", false);
+  try{
+    const { data:{ session } } = await sb.auth.getSession();
+    if(!session){ setNote("", false); return showLogin(""); }
+    const j = await bot("/crm/inventario");
+    ALL = (j.rows || []).map(r => ({...r, entrega_ord: r.entrega === "Inmediata" ? 0 : /^20\d\d$/.test(r.entrega || "") ? Number(r.entrega) - 2000 : 99}));
+    $("who").textContent = session.user.email;
+    fillFacets();
+    const when = ALL.reduce((m, r) => r.confirmado && r.confirmado > m ? r.confirmado : m, "");
+    $("status").textContent = fmt.format(ALL.filter(r => r.flagged_state === "active_confirmed").length) + " unidades activas · actualizado " +
+      (when ? new Date(when).toLocaleDateString("es-PE", {day: "numeric", month: "short", year: "numeric"}) : "—");
+    search();
+  }catch(err){
+    if(err && err.code === "login"){ await sb.auth.signOut(); setNote("", false); return showLogin(err.message || "Tu correo no está habilitado como usuario del CRM."); }
+    setNote((err && err.message) || "No se pudo cargar el inventario. Pulsa Actualizar.", true);
+  }finally{ btn.disabled = false; }
+}
+let facetsDone = false;
+function fillFacets(){
+  if(facetsDone) return; facetsDone = true;
+  const uniq = k => [...new Set(ALL.map(r => r[k]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "es"));
+  for(const [id, list] of [["f-distrito", uniq("distrito")], ["f-inmob", uniq("inmobiliaria")], ["f-anio", uniq("entrega").filter(v => /^20\d\d$/.test(v))]]){
+    const sel = $(id); for(const v of list){ const o = document.createElement("option"); o.value = o.textContent = v; sel.appendChild(o); }
+  }
+}
+function pressed(groupId){ const b = $(groupId).querySelector('[aria-pressed="true"]'); return b ? b.dataset.v : ""; }
+document.querySelectorAll(".seg").forEach(g => g.addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  g.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+}));
+const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+
+function filtered(){
+  const d = $("f-distrito").value, i = $("f-inmob").value, p = norm($("f-proyecto").value.trim());
+  const max = parseFloat($("f-precio").value), cur = $("f-moneda").value;
+  const dorm = parseInt($("f-dorm").value, 10), area = parseFloat($("f-area").value);
+  const ent = pressed("f-entrega"), anio = $("f-anio").value, cond = pressed("f-cond"), est = $("f-estac").value;
+  return ALL.filter(r =>
+    (!d || r.distrito === d) && (!i || r.inmobiliaria === i) &&
+    (!p || norm(r.proyecto).includes(p) || norm(r.direccion).includes(p)) &&
+    (!(max > 0) || Number(cur === "PEN" ? r.precio_pen : r.precio_usd) <= max) &&
+    (!(dorm > 0) || (r.dormitorios != null && r.dormitorios >= dorm)) &&
+    (!(area > 0) || (r.area_total != null && Number(r.area_total) >= area)) &&
+    (!ent || (ent === "futura" ? /^20\d\d$/.test(r.entrega || "") : r.entrega === ent)) &&
+    (!anio || r.entrega === anio) && (!cond || r.condicion === cond) &&
+    (!est || (est === "si" ? String(r.estacionamiento).startsWith("Sí") : r.estacionamiento === est)));
+}
+const ORDERS = {
+  "precio_usd asc": (a, b) => a.precio_usd - b.precio_usd,
+  "precio_usd desc": (a, b) => b.precio_usd - a.precio_usd,
+  "area_total desc nulls last": (a, b) => (b.area_total == null) - (a.area_total == null) || Number(b.area_total) - Number(a.area_total),
+  "entrega_ord asc": (a, b) => a.entrega_ord - b.entrega_ord,
+  "distrito asc, proyecto asc": (a, b) => String(a.distrito).localeCompare(b.distrito, "es") || String(a.proyecto).localeCompare(b.proyecto, "es"),
+};
+function search(){
+  if(!ALL.length) return;
+  const cmp = ORDERS[$("f-orden").value] || ORDERS["precio_usd asc"];
+  const rows = filtered().sort((a, b) => cmp(a, b) || String(a.ref).localeCompare(b.ref));
+  lastRows = rows;
+  renderSummary(rows);
+  render(rows);
+  setNote(rows.length ? "" : "No hay unidades con esos filtros. Prueba ampliar el presupuesto o quitar algún filtro.", false);
+  $("btn-csv").hidden = !rows.length;
+}
+function renderSummary(rows){
+  const n = rows.length, inm = rows.filter(r => r.entrega === "Inmediata").length, seg = rows.filter(r => r.condicion === "segundo_uso").length;
+  const min = rows.reduce((m, r) => r.precio_usd != null && (m == null || r.precio_usd < m) ? r.precio_usd : m, null);
+  $("summary").innerHTML = [
+    [fmt.format(n), "unidades encontradas"],
+    [fmt.format(inm), inm === n ? "todas de entrega inmediata" : `de entrega inmediata (${fmt.format(n - inm)} futura o por confirmar)`],
+    [fmt.format(seg), `de 2do uso · ${fmt.format(n - seg)} nuevas`],
+    [min != null ? money("USD", min) : "—", "precio desde (aprox.)"],
+  ].map(([b, s]) => `<div class="chip"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join("");
+}
+function features(r){
+  const f = [];
+  f.push(r.dormitorios != null ? r.dormitorios + " dorm" : "dorm. s/d");
+  if(r.banos != null) f.push(Number(r.banos) + " baños");
+  if(r.area_total != null){
+    let a = Number(r.area_total).toLocaleString("es-PE") + " m²";
+    if(r.area_libre && Number(r.area_libre) > 0) a += ` (${Number(r.area_techada).toLocaleString("es-PE")} + ${Number(r.area_libre).toLocaleString("es-PE")} libre)`;
+    f.push(a);
+  }
+  if(r.piso) f.push("piso " + r.piso);
+  if(r.vista) f.push("vista " + String(r.vista).toLowerCase());
+  return f.join(" · ");
+}
+const estacPill = v => String(v).startsWith("Sí") ? `<span class="pill p-ok">${esc(v)}</span>` : v === "No" ? `<span class="pill p-info">No</span>` : `<span class="pill p-warn">Por confirmar</span>`;
+const condPill = v => v === "segundo_uso" ? `<span class="pill p-acc">2do uso</span>` : `<span class="pill p-info">Nuevo</span>`;
+const entPill = (v, label) => v === "Inmediata" ? `<span class="pill p-ok">Inmediata</span>` : v === "Por confirmar" ? `<span class="pill p-warn" title="${esc(label)}">Por confirmar</span>` : `<span class="pill p-info" title="${esc(label)}">${esc(v)}</span>${label ? `<span class="alt">${esc(label)}</span>` : ""}`;
+const priceCell = r => `${esc(money(r.moneda, r.precio))}<span class="alt">≈ ${esc(r.moneda === "USD" ? money("PEN", r.precio_pen) : money("USD", r.precio_usd))}</span>`;
+const isFlag = r => r.flagged_state && r.flagged_state !== "active_confirmed";
+const flagPill = r => r.flagged_state === "sold_rented" ? `<span class="pill p-bad">Vendido</span>` : `<span class="pill p-bad">Reservado / no disponible</span>`;
+const obsCell = r => esc(r.observaciones || "") + (r.trello_url ? ` <a href="${esc(r.trello_url)}" target="_blank" rel="noopener">Trello</a>` : "");
+function render(rows){
+  rows.forEach(r => { if(r.trello_url && r.unidad && r.trello_url.endsWith(r.unidad)) r.unidad = ""; });
+  $("rows").innerHTML = rows.map(r => `<tr${isFlag(r) ? ' class="flag"' : ""}>
+    <td>${esc(r.inmobiliaria)}</td>
+    <td><div class="proj">${esc(r.proyecto)}</div><div class="unit">Unidad ${esc(r.unidad || "—")} · ${esc(r.ref)}</div><button class="fbtn" type="button" data-ref="${esc(r.ref)}">Ficha comercial</button></td>
+    <td>${esc(r.distrito)}</td>
+    <td class="addr">${esc(r.direccion || "Por confirmar")}</td>
+    <td class="num">${priceCell(r)}</td>
+    <td class="feat">${esc(features(r))}</td>
+    <td>${estacPill(r.estacionamiento)}</td>
+    <td>${condPill(r.condicion)}</td>
+    <td>${isFlag(r) ? flagPill(r) : entPill(r.entrega, r.entrega_label)}</td>
+    <td>${esc(r.antiguedad)}</td>
+    <td class="obs">${obsCell(r)}</td></tr>`).join("");
+  $("cards").innerHTML = rows.map(r => `<div class="card">
+    <div class="top"><span class="proj">${esc(r.proyecto)} · ${esc(r.unidad || "")}</span><span class="num">${esc(money(r.moneda, r.precio))}</span></div>
+    <div class="unit">${esc(r.inmobiliaria)} · ${esc(r.distrito)}</div>
+    <div class="unit">📍 ${esc(r.direccion || "Por confirmar")}</div>
+    <div class="feat">${esc(features(r))}</div>
+    <div class="pills">${isFlag(r) ? flagPill(r) : entPill(r.entrega, "")} ${condPill(r.condicion)} ${estacPill(r.estacionamiento)}</div>
+    <div class="unit">Antigüedad: ${esc(r.antiguedad)}</div>
+    ${r.observaciones || r.trello_url ? `<div class="obs">${obsCell(r)}</div>` : ""}
+    <div><button class="fbtn" type="button" data-ref="${esc(r.ref)}">Ficha comercial</button></div></div>`).join("");
+}
+function saveFile(name, text, type){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type}));
+  a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function downloadCsv(){
+  const head = ["Referencia","Inmobiliaria","Proyecto","Unidad","Distrito","Dirección","Moneda","Precio","Precio aprox. US$","Dormitorios","Baños","Área total m²","Piso","Vista","Estacionamiento","Condición","Entrega","Fecha según fuente","Antigüedad","Observaciones"];
+  const q = v => { const s = String(v ?? ""); return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const lines = [head.join(";")].concat(lastRows.map(r => [r.ref,r.inmobiliaria,r.proyecto,r.unidad,r.distrito,r.direccion,r.moneda,r.precio,r.precio_usd,r.dormitorios,r.banos,r.area_total,r.piso,r.vista,r.estacionamiento,r.condicion === "segundo_uso" ? "2do uso" : "Nuevo",r.entrega,r.entrega_label,r.antiguedad,r.observaciones].map(q).join(";")));
+  saveFile("inventario-c2.csv", "﻿" + lines.join("\n"), "text/csv");
+}
+
+/* ---------- Ficha comercial: la que envía el bot (la arma el mismo servidor del bot) ---------- */
+let fichaText = null, fichaRef = null, fichaSeq = 0;
+async function openFicha(ref){
+  const seq = ++fichaSeq;
+  fichaRef = ref; fichaText = null;
+  $("ficha-ref").textContent = "Ref. " + ref; $("ficha-text").textContent = ""; $("ficha-warn").hidden = true;
+  $("ficha-status").textContent = "Armando la ficha con el bot… (unos segundos)";
+  if(!$("ficha").open) $("ficha").showModal();
+  try{
+    const j = await bot("/crm/ficha", {ref});
+    if(seq !== fichaSeq) return;
+    fichaText = j.text; $("ficha-text").textContent = j.text;
+    if(j.lifecycle_state && j.lifecycle_state !== "active_confirmed"){
+      $("ficha-warn").textContent = (j.lifecycle_state === "sold_rented" ? "Unidad VENDIDA" : "Unidad no disponible / reservada") + ": el bot no la ofrece. No envíes esta ficha a clientes.";
+      $("ficha-warn").hidden = false;
+    }
+    $("ficha-status").textContent = "Es la misma ficha que el bot envía por WhatsApp.";
+  }catch(err){
+    if(seq !== fichaSeq) return;
+    if(err && err.code === "login"){ $("ficha").close(); await sb.auth.signOut(); return showLogin(err.message || "Tu sesión venció. Vuelve a ingresar."); }
+    $("ficha-status").textContent = (err && err.message) || "No se pudo armar la ficha. Intenta de nuevo.";
+  }
+}
+document.addEventListener("click", e => { const b = e.target.closest(".fbtn"); if(b) openFicha(b.dataset.ref); });
+$("ficha-close").addEventListener("click", () => $("ficha").close());
+$("ficha-copy").addEventListener("click", async () => {
+  if(!fichaText) return;
+  try{ await navigator.clipboard.writeText(fichaText); $("ficha-status").textContent = "Copiada. Pégala en WhatsApp."; }
+  catch(_){ const sel = getSelection(), rg = document.createRange(); rg.selectNodeContents($("ficha-text")); sel.removeAllRanges(); sel.addRange(rg); $("ficha-status").textContent = "Texto seleccionado: cópialo con Ctrl+C."; }
+});
+$("ficha-dl").addEventListener("click", () => { if(fichaText) saveFile("ficha-" + fichaRef + ".txt", fichaText, "text/plain"); });
+
+/* ---------- Ampliar la tabla ---------- */
+function setWide(on){
+  document.body.classList.toggle("wide", on);
+  $("btn-wide").textContent = on ? "⤡ Mostrar filtros" : "⤢ Ampliar tabla";
+  $("btn-wide").setAttribute("aria-pressed", String(on));
+  try{ localStorage.setItem("inv-wide", on ? "1" : ""); }catch(_){}
+}
+$("btn-wide").addEventListener("click", () => setWide(!document.body.classList.contains("wide")));
+document.addEventListener("keydown", e => { if(e.key === "Escape" && document.body.classList.contains("wide") && !$("ficha").open) setWide(false); });
+try{ if(localStorage.getItem("inv-wide")) setWide(true); }catch(_){}
+
+$("filters").addEventListener("submit", e => { e.preventDefault(); search(); });
+$("btn-limpiar").addEventListener("click", () => {
+  $("filters").reset();
+  document.querySelectorAll(".seg").forEach(g => g.querySelectorAll("button").forEach((b, k) => b.setAttribute("aria-pressed", String(k === 0))));
+  search();
+});
+$("btn-csv").addEventListener("click", downloadCsv);
+$("btn-refresh").addEventListener("click", load);
+let autoTimer = null;
+function autoSearch(){ clearTimeout(autoTimer); autoTimer = setTimeout(search, 200); }
+$("filters").addEventListener("change", autoSearch);
+$("filters").addEventListener("input", e => { if(e.target.matches("input")) autoSearch(); });
+document.querySelectorAll(".seg").forEach(g => g.addEventListener("click", e => { if(e.target.closest("button")) autoSearch(); }));
+sb.auth.onAuthStateChange(ev => { if(ev === "SIGNED_OUT"){ ALL = []; } });
+load();
+
+</script>
+</body>
+</html>
