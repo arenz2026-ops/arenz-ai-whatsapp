@@ -123,6 +123,25 @@ dialog.ficha::backdrop{background:rgba(7,20,38,.55)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 
 
+.row3{display:grid;grid-template-columns:1fr 1fr 70px;gap:6px}
+.row2b{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+div.f{display:grid;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.ms{position:relative;text-transform:none;letter-spacing:0}
+.ms-btn{all:unset;box-sizing:border-box;width:100%;display:flex;justify-content:space-between;align-items:center;gap:6px;font:inherit;font-size:14px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:7px 9px;cursor:pointer}
+.ms-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.ms.on .ms-btn{border-color:var(--gold);box-shadow:inset 3px 0 0 var(--gold)}
+.ms-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ms-pop{position:absolute;z-index:30;left:0;right:0;top:calc(100% + 4px);background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:8px;display:grid;gap:6px}
+.ms-pop[hidden]{display:none}
+.ms-q{font-size:13px;padding:6px 8px}
+.ms-act{display:flex;gap:6px}
+.ms-act button{all:unset;cursor:pointer;font-size:12px;color:var(--accent);text-decoration:underline}
+.ms-list{max-height:240px;overflow-y:auto;display:grid;gap:2px}
+.ms-opt{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--ink);padding:4px 4px;border-radius:5px;cursor:pointer}
+.ms-opt:hover{background:var(--accent-soft)}
+.ms-opt input{width:auto;margin:0;accent-color:var(--navy)}
+.ms-opt .n{margin-left:auto;font-family:var(--f-mono);font-size:11.5px;color:var(--muted)}
+.ms-empty{font-size:12.5px;color:var(--muted);padding:4px}
 /* Programa de escritorio */
 .wrap{max-width:1600px}
 .hdr-right{display:grid;justify-items:end;gap:4px}
@@ -180,48 +199,32 @@ body{margin:0}
   <div class="layout">
     <form class="rail" id="filters" autocomplete="off">
       <h2>Filtros</h2>
-      <label class="f">Distrito
-        <select id="f-distrito"><option value="">Todos</option></select>
+      <div class="f">Distrito<div class="ms" id="ms-distrito" data-all="Todos"></div></div>
+      <div class="f">Inmobiliaria<div class="ms" id="ms-inmob" data-all="Todas"></div></div>
+      <div class="f">Proyecto<div class="ms" id="ms-proyecto" data-all="Todos"></div></div>
+      <label class="f">Buscar texto
+        <input id="f-proyecto" type="search" placeholder="Proyecto o dirección (ej. Salaverry)">
       </label>
-      <label class="f">Inmobiliaria
-        <select id="f-inmob"><option value="">Todas</option></select>
-      </label>
-      <label class="f">Proyecto
-        <input id="f-proyecto" type="search" placeholder="Proyecto o dirección">
-      </label>
-      <label class="f">Presupuesto máximo
-        <span class="row2">
-          <input id="f-precio" type="number" min="0" step="1000" placeholder="Ej. 100000" inputmode="numeric">
-          <select id="f-moneda"><option value="USD">US$</option><option value="PEN">S/</option></select>
+      <div class="f">Precio
+        <span class="row3">
+          <input id="f-pmin" type="number" min="0" step="1000" placeholder="Mínimo" inputmode="numeric" aria-label="Precio mínimo">
+          <input id="f-precio" type="number" min="0" step="1000" placeholder="Máximo" inputmode="numeric" aria-label="Precio máximo">
+          <select id="f-moneda" aria-label="Moneda"><option value="USD">US$</option><option value="PEN">S/</option></select>
         </span>
-      </label>
-      <label class="f">Dormitorios mínimos
-        <select id="f-dorm"><option value="">Cualquiera</option><option>1</option><option>2</option><option>3</option><option>4</option></select>
-      </label>
-      <label class="f">Área mínima (m²)
-        <input id="f-area" type="number" min="0" step="1" placeholder="Ej. 60" inputmode="numeric">
-      </label>
-      <div class="f" style="display:grid;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Entrega
-        <div class="seg" id="f-entrega" role="group" aria-label="Entrega">
-          <button type="button" data-v="" aria-pressed="true">Todas</button>
-          <button type="button" data-v="Inmediata" aria-pressed="false">Inmediata</button>
-          <button type="button" data-v="futura" aria-pressed="false">Futura</button>
-          <button type="button" data-v="Por confirmar" aria-pressed="false">Por confirmar</button>
-        </div>
       </div>
-      <label class="f">Año de entrega
-        <select id="f-anio"><option value="">Cualquiera</option></select>
-      </label>
-      <div class="f" style="display:grid;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">Condición
-        <div class="seg" id="f-cond" role="group" aria-label="Condición">
-          <button type="button" data-v="" aria-pressed="true">Todas</button>
-          <button type="button" data-v="nuevo" aria-pressed="false">Nuevo</button>
-          <button type="button" data-v="segundo_uso" aria-pressed="false">2do uso</button>
-        </div>
+      <div class="f">Dormitorios<div class="ms" id="ms-dorm" data-all="Cualquiera"></div></div>
+      <div class="f">Área (m²)
+        <span class="row2b">
+          <input id="f-area" type="number" min="0" step="1" placeholder="Mínima" inputmode="numeric" aria-label="Área mínima">
+          <input id="f-amax" type="number" min="0" step="1" placeholder="Máxima" inputmode="numeric" aria-label="Área máxima">
+        </span>
       </div>
-      <label class="f">Estacionamiento
-        <select id="f-estac"><option value="">Cualquiera</option><option value="si">Incluido</option><option value="No">No incluido</option><option value="Por confirmar">Por confirmar</option></select>
-      </label>
+      <div class="f">Entrega<div class="ms" id="ms-entrega" data-all="Todas"></div></div>
+      <div class="f">Año de entrega<div class="ms" id="ms-anio" data-all="Cualquiera"></div></div>
+      <div class="f">Condición<div class="ms" id="ms-cond" data-all="Todas"></div></div>
+      <div class="f">Estacionamiento<div class="ms" id="ms-estac" data-all="Cualquiera"></div></div>
+      <div class="f">Vista<div class="ms" id="ms-vista" data-all="Cualquiera"></div></div>
+      <div class="f">Estado<div class="ms" id="ms-estado" data-all="Todos"></div></div>
       <label class="f">Ordenar por
         <select id="f-orden">
           <option value="precio_usd asc">Precio: menor a mayor</option>
@@ -342,35 +345,106 @@ async function load(){
     setNote((err && err.message) || "No se pudo cargar el inventario. Pulsa Actualizar.", true);
   }finally{ btn.disabled = false; }
 }
-let facetsDone = false;
-function fillFacets(){
-  if(facetsDone) return; facetsDone = true;
-  const uniq = k => [...new Set(ALL.map(r => r[k]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "es"));
-  for(const [id, list] of [["f-distrito", uniq("distrito")], ["f-inmob", uniq("inmobiliaria")], ["f-anio", uniq("entrega").filter(v => /^20\d\d$/.test(v))]]){
-    const sel = $(id); for(const v of list){ const o = document.createElement("option"); o.value = o.textContent = v; sel.appendChild(o); }
-  }
-}
-function pressed(groupId){ const b = $(groupId).querySelector('[aria-pressed="true"]'); return b ? b.dataset.v : ""; }
-document.querySelectorAll(".seg").forEach(g => g.addEventListener("click", e => {
-  const b = e.target.closest("button"); if(!b) return;
-  g.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
-}));
+/* ---------- Filtros de selección múltiple ---------- */
 const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const MS = {};
+const dormKey = r => r.dormitorios == null ? "s/d" : r.dormitorios >= 4 ? "4+" : String(r.dormitorios);
+const entKey = r => r.entrega === "Inmediata" ? "Inmediata" : /^20\d\d$/.test(r.entrega || "") ? "Futura" : "Por confirmar";
+const estKey = r => String(r.estacionamiento).startsWith("Sí") ? "Incluido" : r.estacionamiento === "No" ? "No incluido" : "Por confirmar";
+const vistaKey = r => { const v = norm(r.vista); return /ext/.test(v) ? "Exterior" : /int/.test(v) ? "Interior" : v ? "Otra" : "Sin dato"; };
+const estadoKey = r => r.flagged_state && r.flagged_state !== "active_confirmed" ? "Vendido / reservado" : "Disponible";
+const condKey = r => r.condicion === "segundo_uso" ? "2do uso" : "Nuevo";
+const KEYS = {"ms-distrito": r => r.distrito, "ms-inmob": r => r.inmobiliaria, "ms-proyecto": r => r.proyecto, "ms-dorm": dormKey,
+  "ms-entrega": entKey, "ms-anio": r => /^20\d\d$/.test(r.entrega || "") ? r.entrega : null, "ms-cond": condKey,
+  "ms-estac": estKey, "ms-vista": vistaKey, "ms-estado": estadoKey};
+const ORDER_FIXED = {"ms-dorm": ["1", "2", "3", "4+", "s/d"], "ms-entrega": ["Inmediata", "Futura", "Por confirmar"],
+  "ms-estac": ["Incluido", "No incluido", "Por confirmar"], "ms-vista": ["Exterior", "Interior", "Otra", "Sin dato"],
+  "ms-cond": ["Nuevo", "2do uso"], "ms-estado": ["Disponible", "Vendido / reservado"]};
+
+function msLabel(st){
+  const vals = [...st.sel];
+  return vals.length === 0 ? st.all : vals.length === 1 ? vals[0] : vals.length + " seleccionados";
+}
+function msPaint(id){
+  const st = MS[id];
+  st.root.querySelector(".ms-val").textContent = msLabel(st);
+  st.root.querySelector(".ms-btn").title = st.sel.size ? [...st.sel].join(", ") : "";
+  st.root.classList.toggle("on", st.sel.size > 0);
+  const q = norm(st.root.querySelector(".ms-q").value);
+  const shown = st.opts.filter(o => !q || norm(o.v).includes(q));
+  st.root.querySelector(".ms-list").innerHTML = shown.length ? shown.map(o =>
+    `<label class="ms-opt"><input type="checkbox" value="${esc(o.v)}"${st.sel.has(o.v) ? " checked" : ""}><span>${esc(o.v)}</span><span class="n">${fmt.format(o.n)}</span></label>`).join("")
+    : `<div class="ms-empty">Sin opciones</div>`;
+}
+function msInit(id){
+  const root = $(id);
+  root.innerHTML = `<button type="button" class="ms-btn" aria-haspopup="listbox" aria-expanded="false"><span class="ms-val"></span><span aria-hidden="true">▾</span></button>
+    <div class="ms-pop" hidden><input class="ms-q" type="search" placeholder="Buscar…" aria-label="Buscar opción">
+    <div class="ms-act"><button type="button" data-a="all">Marcar todos</button><button type="button" data-a="none">Limpiar</button></div>
+    <div class="ms-list" role="listbox" aria-multiselectable="true"></div></div>`;
+  const st = MS[id] = {root, all: root.dataset.all || "Todos", sel: new Set(), opts: []};
+  const pop = root.querySelector(".ms-pop"), btn = root.querySelector(".ms-btn");
+  btn.addEventListener("click", () => { const open = pop.hidden; msCloseAll(); if(open){ pop.hidden = false; btn.setAttribute("aria-expanded", "true"); const q = root.querySelector(".ms-q"); if(st.opts.length > 8) q.focus(); } });
+  root.querySelector(".ms-q").addEventListener("input", () => msPaint(id));
+  root.querySelector(".ms-q").hidden = false;
+  root.querySelector(".ms-list").addEventListener("change", e => {
+    const cb = e.target.closest("input[type=checkbox]"); if(!cb) return;
+    cb.checked ? st.sel.add(cb.value) : st.sel.delete(cb.value);
+    msPaint(id); onFilterChange(id);
+  });
+  root.querySelector(".ms-act").addEventListener("click", e => {
+    const a = e.target.closest("button"); if(!a) return;
+    const q = norm(root.querySelector(".ms-q").value);
+    if(a.dataset.a === "all") st.opts.filter(o => !q || norm(o.v).includes(q)).forEach(o => st.sel.add(o.v)); else st.sel.clear();
+    msPaint(id); onFilterChange(id);
+  });
+  msPaint(id);
+}
+function msCloseAll(){ document.querySelectorAll(".ms-pop").forEach(p => { p.hidden = true; p.parentElement.querySelector(".ms-btn").setAttribute("aria-expanded", "false"); }); }
+document.addEventListener("click", e => { if(!e.target.closest(".ms")) msCloseAll(); });
+document.addEventListener("keydown", e => { if(e.key === "Escape") msCloseAll(); });
+Object.keys(KEYS).forEach(msInit);
+
+// Options and counts. Proyecto only offers the projects of the chosen districts and inmobiliarias.
+function msOptions(id, rows){
+  const counts = new Map();
+  rows.forEach(r => { const v = KEYS[id](r); if(v != null && v !== "") counts.set(v, (counts.get(v) || 0) + 1); });
+  const fixed = ORDER_FIXED[id];
+  const vals = fixed ? fixed.filter(v => counts.has(v)) : [...counts.keys()].sort((a, b) => String(a).localeCompare(String(b), "es"));
+  const st = MS[id];
+  st.opts = vals.map(v => ({v, n: counts.get(v)}));
+  [...st.sel].forEach(v => { if(!counts.has(v)) st.sel.delete(v); });
+  msPaint(id);
+}
+function fillFacets(){
+  Object.keys(KEYS).filter(id => id !== "ms-proyecto").forEach(id => msOptions(id, ALL));
+  refreshProjects();
+}
+function refreshProjects(){
+  const pass = id => r => MS[id].sel.size === 0 || MS[id].sel.has(KEYS[id](r));
+  msOptions("ms-proyecto", ALL.filter(r => pass("ms-distrito")(r) && pass("ms-inmob")(r)));
+}
+function onFilterChange(id){
+  if(id === "ms-distrito" || id === "ms-inmob") refreshProjects();
+  autoSearch();
+}
 
 function filtered(){
-  const d = $("f-distrito").value, i = $("f-inmob").value, p = norm($("f-proyecto").value.trim());
-  const max = parseFloat($("f-precio").value), cur = $("f-moneda").value;
-  const dorm = parseInt($("f-dorm").value, 10), area = parseFloat($("f-area").value);
-  const ent = pressed("f-entrega"), anio = $("f-anio").value, cond = pressed("f-cond"), est = $("f-estac").value;
-  return ALL.filter(r =>
-    (!d || r.distrito === d) && (!i || r.inmobiliaria === i) &&
-    (!p || norm(r.proyecto).includes(p) || norm(r.direccion).includes(p)) &&
-    (!(max > 0) || Number(cur === "PEN" ? r.precio_pen : r.precio_usd) <= max) &&
-    (!(dorm > 0) || (r.dormitorios != null && r.dormitorios >= dorm)) &&
-    (!(area > 0) || (r.area_total != null && Number(r.area_total) >= area)) &&
-    (!ent || (ent === "futura" ? /^20\d\d$/.test(r.entrega || "") : r.entrega === ent)) &&
-    (!anio || r.entrega === anio) && (!cond || r.condicion === cond) &&
-    (!est || (est === "si" ? String(r.estacionamiento).startsWith("Sí") : r.estacionamiento === est)));
+  const p = norm($("f-proyecto").value.trim());
+  const min = parseFloat($("f-pmin").value), max = parseFloat($("f-precio").value), cur = $("f-moneda").value;
+  const amin = parseFloat($("f-area").value), amax = parseFloat($("f-amax").value);
+  const active = Object.keys(KEYS).filter(id => MS[id].sel.size);
+  return ALL.filter(r => {
+    for(const id of active) if(!MS[id].sel.has(KEYS[id](r))) return false;
+    if(p && !norm(r.proyecto).includes(p) && !norm(r.direccion).includes(p)) return false;
+    const price = Number(cur === "PEN" ? r.precio_pen : r.precio_usd);
+    if(min > 0 && !(price >= min)) return false;
+    if(max > 0 && !(price <= max)) return false;
+    const area = r.area_total == null ? null : Number(r.area_total);
+    if(amin > 0 && !(area != null && area >= amin)) return false;
+    if(amax > 0 && !(area != null && area <= amax)) return false;
+    return true;
+  });
 }
 const ORDERS = {
   "precio_usd asc": (a, b) => a.precio_usd - b.precio_usd,
@@ -502,16 +576,15 @@ try{ if(localStorage.getItem("inv-wide")) setWide(true); }catch(_){}
 $("filters").addEventListener("submit", e => { e.preventDefault(); search(); });
 $("btn-limpiar").addEventListener("click", () => {
   $("filters").reset();
-  document.querySelectorAll(".seg").forEach(g => g.querySelectorAll("button").forEach((b, k) => b.setAttribute("aria-pressed", String(k === 0))));
-  search();
+  Object.keys(MS).forEach(id => { MS[id].sel.clear(); MS[id].root.querySelector(".ms-q").value = ""; });
+  fillFacets(); search();
 });
 $("btn-csv").addEventListener("click", downloadCsv);
 $("btn-refresh").addEventListener("click", load);
 let autoTimer = null;
 function autoSearch(){ clearTimeout(autoTimer); autoTimer = setTimeout(search, 200); }
-$("filters").addEventListener("change", autoSearch);
-$("filters").addEventListener("input", e => { if(e.target.matches("input")) autoSearch(); });
-document.querySelectorAll(".seg").forEach(g => g.addEventListener("click", e => { if(e.target.closest("button")) autoSearch(); }));
+$("filters").addEventListener("change", e => { if(!e.target.closest(".ms")) autoSearch(); });
+$("filters").addEventListener("input", e => { if(e.target.matches("input") && !e.target.closest(".ms")) autoSearch(); });
 sb.auth.onAuthStateChange(ev => { if(ev === "SIGNED_OUT"){ ALL = []; } });
 load();
 
