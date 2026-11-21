@@ -3747,6 +3747,74 @@ def crm_send_message():
     return jsonify(reply[0]), reply[1]
 
 
+# Inventario C2 como programa del escritorio (crm/inventario.html, mismo origen que el CRM CREENZIA): solo para los
+# usuarios activos del CRM. Las columnas son las de la vista inventory_catalog, que ya excluye datos de contacto.
+INVENTARIO_COLUMNS = ("ref,inmobiliaria,proyecto,unidad,piso,vista,distrito,direccion,moneda,precio,precio_usd,precio_pen,"
+                      "dormitorios,banos,area_total,area_techada,area_libre,estacionamiento,condicion,entrega,"
+                      "entrega_label,antiguedad,observaciones,trello_url,flagged_state,confirmado")
+INVENTARIO_PAGE = 1000
+
+
+def crm_request_user(memory):
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    return crm_user_from_token(memory, token)
+
+
+@app.route("/crm/inventario", methods=["POST", "OPTIONS"])
+def crm_inventory():
+    """Todas las unidades del Inventario C2 (vista inventory_catalog), para filtrarlas en la página."""
+    if request.method == "OPTIONS":
+        return "", 204
+    memory = get_conversation_memory_store()
+    if not memory:
+        return jsonify({"status": "no_memory"}), 503
+    try:
+        if not crm_request_user(memory):
+            return jsonify({"status": "forbidden", "error": "Tu sesión venció. Vuelve a ingresar."}), 403
+        rows, offset = [], 0
+        while True:
+            response = requests.get(f"{memory.url}/rest/v1/inventory_catalog", headers=memory.headers, timeout=30,
+                                    params={"select": INVENTARIO_COLUMNS, "order": "ref", "limit": INVENTARIO_PAGE,
+                                            "offset": offset})
+            response.raise_for_status()
+            page = response.json()
+            rows += page
+            if len(page) < INVENTARIO_PAGE:
+                break
+            offset += INVENTARIO_PAGE
+    except (requests.RequestException, ValueError):
+        logger.warning("CRM inventory unavailable")
+        return jsonify({"status": "error", "error": "No se pudo leer el inventario. Intenta de nuevo."}), 502
+    return jsonify({"status": "ok", "rows": rows})
+
+
+@app.route("/crm/ficha", methods=["POST", "OPTIONS"])
+def crm_unit_ficha():
+    """La ficha comercial de una unidad, exactamente la que el bot envía por WhatsApp (full_unit_reply)."""
+    if request.method == "OPTIONS":
+        return "", 204
+    memory, store = get_conversation_memory_store(), get_inventory_store()
+    if not memory or not store:
+        return jsonify({"status": "no_memory"}), 503
+    reference = str((request.get_json(silent=True) or {}).get("ref") or "").strip()
+    if not re.fullmatch(r"C2-[A-F0-9]{12}", reference):
+        return jsonify({"status": "invalid", "error": "Referencia no válida."}), 400
+    try:
+        if not crm_request_user(memory):
+            return jsonify({"status": "forbidden", "error": "Tu sesión venció. Vuelve a ingresar."}), 403
+        response = requests.get(f"{store.url}/rest/v1/inventory_properties", headers=store.headers, timeout=10,
+                                params={"select": InventoryStore.property_fields, "public_reference": f"eq.{reference}"})
+        response.raise_for_status()
+        rows = response.json()
+    except (requests.RequestException, ValueError):
+        return jsonify({"status": "error", "error": "No se pudo leer la unidad. Intenta de nuevo."}), 502
+    if not rows:
+        return jsonify({"status": "not_found", "error": "No se encontró la unidad."}), 404
+    row = rows[0]
+    item = {"public": public_property_snapshot(row, []), "delivery": property_delivery(row)}
+    return jsonify({"status": "ok", "text": full_unit_reply(item), "lifecycle_state": row.get("lifecycle_state")})
+
+
 CONSENT_TEXT_VERSION = "aviso-v1"
 CONSENT_YES, CONSENT_NO = "consent_comercial_si", "consent_comercial_no"
 CONSENT_PROMPT = (f"Soy un asistente virtual con inteligencia artificial de {COMMERCIAL_BRAND}. Usamos tus datos solo para "
