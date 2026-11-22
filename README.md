@@ -179,6 +179,46 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
      unidades entregadas aún no tiene fotos reales. Una imagen que no es real debe quedar con `category = 'render'`.
 5. Se revisa el resultado en el buscador web y con una conversación de prueba.
 
+## Búsquedas activas con alertas de inventario (CRM CREENZIA)
+
+Cuando un prospecto busca algo que hoy no está en el **Inventario C2**, su búsqueda queda guardada. Si después aparece una
+unidad que la cumple, el CRM crea **una tarea interna** para el asesor responsable (módulo Tareas) con la referencia `C2-…`,
+el proyecto/unidad, el precio en su moneda original, el motivo y la fecha del inventario. **No se escribe al cliente**: el
+asesor reconfirma la unidad y decide. Todo vive en Supabase (`sql/busquedas_activas.sql`); costo 0.
+
+- **Búsqueda**: se arma sola con los criterios que ya capturó el bot (operación, tipo, distritos, dormitorios, presupuesto y
+  moneda, forma de pago, entrega, estacionamiento). En la ficha del prospecto → «Búsqueda activa» se edita, se marca qué es
+  **obligatorio** y qué es preferencia, y se pausa, cierra o reanuda. Si falta un obligatorio queda «pendiente de confirmación»
+  y no se cruza. La forma de pago es informativa (el inventario no la trae).
+- **Reglas**: solo unidades `active_confirmed` (fuera reservadas, vendidas, inactivas). Un obligatorio «Por confirmar» en la
+  unidad (dormitorios, entrega, estacionamiento) ⇒ **requiere verificación**, nunca coincidencia confirmada. Otra moneda ⇒
+  conversión aproximada (S/ 3.45 por US$, igual que el Inventario C2); a ±3 % del límite ⇒ requiere verificación.
+- **Cuándo cruza**: un trigger por sentencia en `inventory_properties` solo marca `inventory_changed_at`. `pg_cron`
+  (`crm-busquedas-activas`, cada 5 min) cruza cuando pasaron 10 min sin cambios (carga terminada), cuando hay búsquedas nuevas o
+  una vez al día. Guardas: no cruza si el inventario está vencido (> 10 días) o si las unidades vigentes caen más de 30 %
+  frente al cruce anterior (carga incompleta). Una importación fallida se deshace sola y no deja rastro.
+- **Sin duplicados**: una fila por (búsqueda, unidad) y la tarea solo nace cuando la unidad **empieza** a cumplir (nueva,
+  vuelve a estar disponible o cambio de precio/entrega/dormitorios). Repetir la carga o reintentar no crea otra tarea. Si la
+  unidad sale y vuelve, se avisa una vez más; si el cliente la descartó, no. Lo que ya calza al crear, editar o reanudar una
+  búsqueda queda como **línea base** (se ve en la ficha, sin tarea). Historial en `crm_search_match_events`.
+- **Suprimidas**: búsquedas pausadas o cerradas, prospectos «No contactar», de prueba o con cierre ganado.
+
+**Pruebas**: `sql/busquedas_activas_pruebas.sql` (datos ficticios sobre la base real; termina con un error a propósito para
+deshacer todo y mostrar el informe): caso Lince 2 dorm. entrega inmediata hasta S/ 450 000 con la unidad bajando de
+S/ 465 000 a S/ 440 000 procesada 3 veces ⇒ 1 sola tarea para la asesora; reservada, requisito pendiente, cerrada,
+No contactar, importación fallida, carga incompleta, reactivación, descarte del cliente y apagado ⇒ sin tareas de más.
+
+**Activar / desactivar** (solo administrador):
+1. CRM → **Tareas** → «Alertas de inventario» → **Simular ahora** (no guarda nada) y revisar.
+2. **Activar alertas** → **Confirmar activación**. Por defecto lo que ya calza hoy queda como línea base; marcar «Avisar también
+   lo que ya calza hoy» solo si se quiere una tarea por cada coincidencia actual.
+3. **Apagar alertas** detiene las tareas al instante (las búsquedas y el historial se conservan).
+   Por SQL: `update crm_search_settings set enabled = false where id = 1;`
+   Simulación por SQL: `select * from crm_search_cross(true);` (en modo simulación no escribe más que el registro en `crm_search_runs`).
+
+**Pendiente de producción**: la actualización semanal del inventario (Lista de Precios C2 y Power BI → `inventory_staging`
+→ SQL; Trello) sigue iniciándose a mano; las alertas corren solas apenas termina esa carga.
+
 ## Seguimiento automático
 
 Se ejecuta cada hora a **costo 0** con GitHub Actions (`.github/workflows/seguimientos.yml`), que

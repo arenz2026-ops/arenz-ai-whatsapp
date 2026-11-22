@@ -250,6 +250,25 @@ td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{displ
   .sheet-body{padding:14px 16px 40px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+/* Búsqueda activa y alertas de inventario */
+.task .d.det{white-space:pre-line;margin-top:4px}
+.srch-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0 10px}
+.chip{font-size:12px;padding:3px 9px;border-radius:20px;font-weight:600;background:var(--mist);color:var(--muted)}
+.chip.on{background:#E7F3EC;color:var(--ok)} .chip.paused{background:var(--gold-soft);color:#6E5610} .chip.off{background:#ECECEC;color:#555}
+.chip.warn{background:#FCEBDD;color:var(--warn)}
+.srch-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;align-items:end;margin:8px 0}
+.srch-form .wide{grid-column:span 2}
+.srch-form .req{display:flex;gap:5px;align-items:center;font-size:12px;color:var(--muted);margin-top:4px}
+.srch-form .req input{width:14px;height:14px;accent-color:var(--navy)}
+table.mini{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px}
+table.mini th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:5px 6px;border-bottom:1px solid var(--line)}
+table.mini td{padding:6px;border-bottom:1px solid var(--line);vertical-align:top}
+table.mini select{padding:4px 6px;font-size:12px}
+.admin-card{background:#fff;border:1px solid var(--line);border-left:4px solid var(--gold);border-radius:var(--r-s);padding:14px 16px;margin:12px 20px 14px;max-width:900px}
+.admin-card h4{font-family:var(--narrow);font-size:17px;color:var(--navy);margin:0 0 6px}
+.admin-card .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.sim-wrap{max-height:340px;overflow:auto;margin-top:10px}
+@media (max-width:720px){ .srch-form{grid-template-columns:1fr 1fr} .srch-form .wide{grid-column:span 2} }
 </style>
 </head>
 <body>
@@ -318,6 +337,7 @@ td.five5{min-width:230px;font-size:12.5px;line-height:1.45} td.five5 small{displ
   </div>
 
   <div id="view-tasks" class="hidden">
+    <div id="alertAdmin" class="admin-card hidden"></div>
     <div class="toolbar">
       <select id="tWho" aria-label="Responsable"><option value="me">Mis tareas</option><option value="">Todas</option></select>
       <label class="chk"><input type="checkbox" id="tDone"> Ver completadas</label>
@@ -592,6 +612,7 @@ async function openLead(id, focus){
   S.openId = id;
   $("scrim").classList.remove("hidden"); sh.classList.remove("hidden");
   if (!reopen) {
+    S.showAllCands = false;
     sh.innerHTML = `<div class="sheet-head"><div><h2 id="sheetTitle">${esc(l.full_name || fmtPhone(l.phone))}</h2><div class="sub">Cargando ficha…</div></div><button class="close" aria-label="Cerrar">×</button></div>`;
     sh.querySelector(".close").onclick = closeLead;
   }
@@ -694,6 +715,8 @@ function renderLead(l, d, notes){
       ${ses.summary ? `<div class="summary"><b>Resumen del bot:</b> ${esc(ses.summary)}</div>` : ""}
     </div>
 
+    <div class="section" id="srchSection"><h4>Búsqueda activa</h4>${S.searchCache && S.searchCache[l.id] ? searchHTML(l, S.searchCache[l.id]) : '<p class="hist">Cargando búsqueda…</p>'}</div>
+
     ${cadenceHTML(l, d)}
 
     ${permsHTML(l, d.consents || [])}
@@ -734,6 +757,8 @@ function renderLead(l, d, notes){
   bindAttend(l);
   bindPerms(l);
   bindCadence(l, d);
+  if (S.searchCache && S.searchCache[l.id]) bindSearch(l, S.searchCache[l.id]);
+  loadSearch(l);
   $("dStage").onchange = () => $("lostWrap").classList.toggle("hidden", $("dStage").value !== "cerrado_perdido");
   $("dSave").onclick = async () => {
     const stage = $("dStage").value, lost = $("dLost").value || null;
@@ -1057,6 +1082,133 @@ function bindAttend(l){
   };
 }
 
+
+/* ---------- Búsqueda activa: alertas automáticas cuando el Inventario C2 trae una unidad que calza ---------- */
+const S_REQ = [["operacion","Operación"],["tipo","Tipo"],["distrito","Distrito"],["dormitorios","Dormitorios"],["presupuesto","Presupuesto"],["entrega","Entrega"],["estacionamiento","Estacionamiento"]];
+const OUTCOMES = [["pendiente","Pendiente"],["contactado","Se le envió al cliente"],["descartada_cliente","El cliente la descartó"],["descartada_asesor","Descartada por el asesor"]];
+const SEARCH_STATUS = {activa:["Activa","on"], pausada:["Pausada","paused"], cerrada:["Cerrada","off"]};
+async function loadSearch(l){
+  const r = await sb.rpc("crm_search_get", { p_lead_id: l.id });
+  if (S.openId !== l.id) return;
+  const sec = $("srchSection"); if (!sec) return;
+  if (r.error) { sec.innerHTML = `<h4>Búsqueda activa</h4><p class="hist">No se pudo cargar: ${esc(r.error.message)}</p>`; return; }
+  S.searchCache = S.searchCache || {}; S.searchCache[l.id] = r.data || {};
+  const keep = document.activeElement && sec.contains(document.activeElement);
+  if (keep) return;                       // no se pisa lo que el asesor está escribiendo
+  sec.innerHTML = `<h4>Búsqueda activa</h4>` + searchHTML(l, r.data || {});
+  bindSearch(l, r.data || {});
+}
+function reqChk(s, key){ const on = (s.required||[]).includes(key); return `<label class="req"><input type="checkbox" data-req="${key}" ${on?"checked":""}> Obligatorio</label>`; }
+function searchHTML(l, g){
+  const s = g.search, st = g.settings || {};
+  if (!s) return `<p class="hist">Aún no hay criterios de este cliente. Cuando converse con el bot se toman solos; también puedes escribirlos aquí y guardar.</p>` + searchForm({required:["operacion","distrito","dormitorios","presupuesto"], districts:[]}) + `<div class="row"><button class="btn btn-gold" id="sSave" type="button">Guardar búsqueda</button></div>`;
+  const [stName, stCls] = SEARCH_STATUS[s.status] || [s.status, ""];
+  const pend = g.pending || [], cands = g.candidates || [], hist = g.history || [];
+  const verif = cands.filter(c=>c.status==="verificar").length;
+  const head = `<div class="srch-head"><span class="chip ${stCls}">Búsqueda ${stName.toLowerCase()}</span>
+      ${pend.length ? `<span class="chip warn">Pendiente de confirmar: ${esc(pend.join(", "))}</span>` : ""}
+      <span class="chip ${st.enabled?"on":"off"}">${st.enabled ? "Alertas de inventario encendidas" : "Alertas de inventario apagadas (piloto)"}</span>
+      <span class="hist">${s.edited_by_team ? "Editada por el equipo" : "Tomada de la conversación con el bot"}${s.status_reason ? " · "+esc(s.status_reason) : ""}</span></div>`;
+  const buttons = `<div class="row" style="gap:8px;flex-wrap:wrap">
+      <button class="btn btn-gold" id="sSave" type="button">Guardar búsqueda</button>
+      ${s.status==="activa" ? `<button class="btn btn-ghost" id="sPause" type="button">Pausar</button><button class="btn btn-ghost" id="sClose" type="button">Cerrar</button>`
+                            : `<button class="btn btn-primary" id="sResume" type="button">${s.status==="cerrada"?"Reabrir":"Reanudar"}</button>`}
+      <button class="btn btn-ghost" id="sFromBot" type="button">Tomar de la conversación</button>
+      <span class="hist">Solo se avisa lo que aparezca o cambie en el inventario <b>después</b> de guardar; lo que ya calza hoy se lista abajo.</span></div>`;
+  const rows = cands.slice(0, S.showAllCands ? 500 : 12).map(c => `<tr>
+      <td><b>${esc(c.ref)}</b><br><span class="hist">${esc([c.proyecto, c.unidad].filter(Boolean).join(" · "))}</span></td>
+      <td>${esc(c.distrito||"")}<br><span class="hist">${c.dormitorios ?? "?"} dorm.</span></td>
+      <td>${esc(c.precio)}${c.precio_busqueda ? `<br><span class="hist">≈ ${esc(c.precio_busqueda)} (aprox.)</span>` : ""}</td>
+      <td>${esc(c.entrega||"—")}<br><span class="hist">Estac.: ${esc(c.estacionamiento||"—")}</span></td>
+      <td>${c.status==="coincide" ? '<span class="chip on">Coincide</span>' : `<span class="chip warn">Requiere verificación</span><br><span class="hist">${esc((c.pending||[]).join(", "))}</span>`}
+          ${(c.preferencias_no||[]).length ? `<br><span class="hist">No cumple preferencia: ${esc(c.preferencias_no.join(", "))}</span>` : ""}</td>
+      <td>${c.match_id ? `<select data-outcome="${c.match_id}" aria-label="Resultado">${OUTCOMES.map(([v,n])=>`<option value="${v}" ${v===c.outcome?"selected":""}>${n}</option>`).join("")}</select>` : '<span class="hist">—</span>'}</td></tr>`).join("");
+  const table = cands.length ? `<table class="mini"><thead><tr><th>Unidad C2</th><th>Dónde</th><th>Precio</th><th>Entrega</th><th>Estado</th><th>Resultado</th></tr></thead><tbody>${rows}</tbody></table>
+      ${cands.length > 12 && !S.showAllCands ? `<button class="linky" id="sAll" type="button">Ver las ${cands.length} unidades</button>` : ""}`
+    : `<p class="hist">${pend.length ? "Completa los requisitos pendientes para cruzar con el inventario." : "Hoy ninguna unidad vigente del Inventario C2 cumple los requisitos obligatorios. Si aparece una, se crea una tarea para el responsable."}</p>`;
+  const evName = {nueva:"apareció", tarea_creada:"tarea creada", deja_de_cumplir:"dejó de cumplir", reactivada:"volvió a cumplir", reactivada_sin_aviso:"volvió (sin aviso: descartada)", confirmada:"dato confirmado", linea_base:"ya existía"};
+  const histHTML = hist.length ? `<details><summary class="hist">Historial de alertas (${hist.length})</summary>${hist.map(h => `<p class="hist"><b>${esc(h.ref)}</b> · ${esc(h.reason||"")} · ${esc((OUTCOMES.find(o=>o[0]===h.outcome)||[,h.outcome])[1])}${h.alerts?` · ${h.alerts} aviso${h.alerts>1?"s":""}`:""}<br>${(h.events||[]).map(e=>fmtDate(e.at)+" "+esc(evName[e.event] || e.event.replace("resultado:","resultado: ").replace(/_/g," "))).join(" → ")}</p>`).join("")}</details>` : "";
+  return head + searchForm(s) + buttons + `<h4 style="font-size:15px;margin-top:16px">Unidades que hoy cumplen (${cands.length}${verif?` · ${verif} por verificar`:""})</h4>` + table + histHTML;
+}
+function searchForm(s){
+  const opt = (arr, v) => arr.map(([k,n]) => `<option value="${k}" ${String(v??"")===k?"selected":""}>${n}</option>`).join("");
+  const park = s.parking_required===true ? "true" : s.parking_required===false ? "false" : "";
+  return `<div class="srch-form">
+    <div><label for="sOp">Operación</label><select id="sOp">${opt([["","—"],["compra","Compra"],["alquiler","Alquiler"]], s.operation)}</select>${reqChk(s,"operacion")}</div>
+    <div><label for="sType">Tipo</label><select id="sType">${opt([["","Cualquiera"],["departamento","Departamento"],["casa","Casa"],["oficina","Oficina"],["terreno","Terreno"]], s.property_type)}</select>${reqChk(s,"tipo")}</div>
+    <div class="wide"><label for="sDist">Distritos (separados por coma)</label><input id="sDist" type="text" value="${esc((s.districts||[]).join(", "))}" placeholder="Lince, Jesús María">${reqChk(s,"distrito")}</div>
+    <div><label for="sBeds">Dormitorios</label><input id="sBeds" type="number" min="0" max="9" value="${s.bedrooms ?? ""}">${reqChk(s,"dormitorios")}</div>
+    <div><label for="sBudget">Presupuesto máximo</label><input id="sBudget" type="number" min="0" step="1000" value="${s.budget_max ?? ""}">${reqChk(s,"presupuesto")}</div>
+    <div><label for="sCur">Moneda</label><select id="sCur">${opt([["","—"],["PEN","Soles (S/)"],["USD","Dólares (US$)"]], s.currency)}</select><span class="req">&nbsp;</span></div>
+    <div><label for="sDel">Entrega</label><select id="sDel">${opt([["","Sin definir"],["inmediata","Inmediata"],["futura","Acepta futura"]], s.delivery)}</select>${reqChk(s,"entrega")}</div>
+    <div><label for="sPark">Estacionamiento</label><select id="sPark">${opt([["","Sin definir"],["true","Lo necesita"],["false","No es necesario"]], park)}</select>${reqChk(s,"estacionamiento")}</div>
+    <div><label for="sPay">Forma de pago</label><select id="sPay">${opt([["","Sin definir"],["contado","Al contado"],["credito","Crédito hipotecario"],["mixto","Contado y crédito"],["por_definir","Por definir"]], s.payment_method)}</select><span class="req">Solo informativo (el inventario no lo indica)</span></div>
+  </div>`;
+}
+function readSearchForm(){
+  const req = [...document.querySelectorAll("#srchSection [data-req]")].filter(x=>x.checked).map(x=>x.dataset.req);
+  return { operation:$("sOp").value, property_type:$("sType").value, districts:$("sDist").value.split(",").map(x=>x.trim()).filter(Boolean),
+           bedrooms:$("sBeds").value, budget_max:$("sBudget").value, currency:$("sCur").value, delivery:$("sDel").value,
+           parking_required:$("sPark").value, payment_method:$("sPay").value, required:req };
+}
+function bindSearch(l, g){
+  const sec = $("srchSection"); if (!sec) return;
+  const after = async (msg) => { toast(msg); sec.querySelectorAll("button,select,input").forEach(x=>x.blur()); await loadSearch(l); };
+  const call = async (fn, args, msg) => { const r = await sb.rpc(fn, args); if (r.error) return toast("No se pudo: " + r.error.message); await after(msg); };
+  const save = $("sSave"); if (save) save.onclick = () => {
+    const f = readSearchForm();
+    if (f.budget_max && !f.currency) return toast("Elige la moneda del presupuesto.");
+    call("crm_search_save", { p_lead_id:l.id, p:f }, "Búsqueda guardada");
+  };
+  const ps = $("sPause"); if (ps) ps.onclick = () => call("crm_search_set_status", { p_lead_id:l.id, p_status:"pausada", p_reason:"" }, "Búsqueda pausada: no generará alertas");
+  const cl = $("sClose"); if (cl) cl.onclick = () => call("crm_search_set_status", { p_lead_id:l.id, p_status:"cerrada", p_reason:"" }, "Búsqueda cerrada");
+  const rs = $("sResume"); if (rs) rs.onclick = () => call("crm_search_set_status", { p_lead_id:l.id, p_status:"activa", p_reason:"" }, "Búsqueda activa");
+  const fb = $("sFromBot"); if (fb) fb.onclick = () => call("crm_search_reset_from_bot", { p_lead_id:l.id }, "Criterios tomados de la conversación");
+  const all = $("sAll"); if (all) all.onclick = () => { S.showAllCands = true; sec.innerHTML = `<h4>Búsqueda activa</h4>` + searchHTML(l, g); bindSearch(l, g); };
+  sec.querySelectorAll("[data-outcome]").forEach(sel => sel.onchange = () =>
+    call("crm_search_set_outcome", { p_match_id:sel.dataset.outcome, p_outcome:sel.value, p_note:"" }, "Resultado registrado"));
+}
+
+/* Panel del administrador (pestaña Tareas): simular, activar o apagar las alertas */
+async function loadAlertAdmin(){
+  const box = $("alertAdmin"); if (!box || !S.me || S.me.role !== "admin") return;
+  const r = await sb.rpc("crm_search_admin_status");
+  if (r.error) { box.classList.remove("hidden"); box.innerHTML = `<h4>Alertas de inventario</h4><p class="hist">No disponible: ${esc(r.error.message)}</p>`; return; }
+  const g = r.data || {}, st = g.settings || {}, n = g.searches || {}, run = (g.runs || [])[0];
+  box.classList.remove("hidden");
+  box.innerHTML = `<h4>Alertas de inventario (búsquedas activas)</h4>
+    <div class="srch-head"><span class="chip ${st.enabled?"on":"off"}">${st.enabled ? "Encendidas" : "Apagadas"}</span>
+      <span class="hist">${n.activas||0} búsquedas activas · ${n.pausadas||0} pausadas · ${n.cerradas||0} cerradas</span>
+      <span class="hist">${run ? `Último cruce: ${fmtDate(run.started_at)} · ${esc(run.mode)} · ${esc(run.status||"")}${run.tasks_created?` · ${run.tasks_created} tareas`:""}` : "Aún no hay cruces"}</span></div>
+    <p class="hist" style="margin:0">Cuando el Inventario C2 se actualiza, el CRM cruza las búsquedas y crea una tarea interna para el responsable si aparece una unidad nueva, vuelve una unidad o un cambio de precio la hace calzar. No se escribe al cliente.</p>
+    <div class="row">
+      <button class="btn btn-ghost" id="aSim" type="button">Simular ahora (no guarda nada)</button>
+      ${st.enabled ? `<button class="btn btn-ghost" id="aOff" type="button">Apagar alertas</button>`
+                   : `<label class="chk"><input type="checkbox" id="aExisting"> Avisar también lo que ya calza hoy</label><button class="btn btn-primary" id="aOn" type="button">Activar alertas</button>`}
+    </div><div id="aOut"></div>`;
+  $("aSim").onclick = async () => {
+    $("aOut").innerHTML = '<p class="hist">Simulando…</p>';
+    const s = await sb.rpc("crm_search_simulate", { p_alert_existing: !!($("aExisting") && $("aExisting").checked) });
+    if (s.error) { $("aOut").innerHTML = `<p class="hist">No se pudo: ${esc(s.error.message)}</p>`; return; }
+    const rows = s.data || [], tasks = rows.filter(x=>x.accion==="tarea").length;
+    $("aOut").innerHTML = `<p class="hist" style="margin-top:10px"><b>${tasks} tarea${tasks===1?"":"s"}</b> se crearían ahora · ${rows.filter(x=>/^línea base/.test(x.accion||"")).length} unidades quedarían como línea base (sin tarea) · ${rows.filter(x=>/^búsqueda no evaluada/.test(x.accion||"")).length} búsquedas no se evalúan.</p>
+      <div class="sim-wrap"><table class="mini"><thead><tr><th>Prospecto</th><th>Asesor</th><th>Unidad</th><th>Precio</th><th>Estado</th><th>Qué pasaría</th></tr></thead><tbody>
+      ${rows.slice(0,300).map(x=>`<tr><td>${esc(x.prospecto)}</td><td>${esc(x.asesor)}</td><td>${esc(x.ref||"")}<br><span class="hist">${esc(x.unidad||"")}</span></td><td>${esc(x.precio||"")}</td><td>${x.status==="verificar"?"Requiere verificación":esc(x.status||"")}</td><td>${esc(x.accion||"")}${x.motivo?`<br><span class="hist">${esc(x.motivo)}</span>`:""}</td></tr>`).join("")}
+      </tbody></table></div>`;
+  };
+  const on = $("aOn"); if (on) on.onclick = async () => {
+    if (on.dataset.confirm !== "1") { on.dataset.confirm = "1"; on.textContent = "Confirmar activación"; return; }
+    on.disabled = true;
+    const a = await sb.rpc("crm_search_activate", { p_alert_existing: !!($("aExisting") && $("aExisting").checked) });
+    if (a.error) { on.disabled = false; return toast("No se pudo activar: " + a.error.message); }
+    toast("Alertas activadas"); await refresh(false); loadAlertAdmin();
+  };
+  const off = $("aOff"); if (off) off.onclick = async () => {
+    const a = await sb.rpc("crm_search_deactivate"); if (a.error) return toast("No se pudo: " + a.error.message);
+    toast("Alertas apagadas"); loadAlertAdmin();
+  };
+}
+
 /* ---------- Tareas ---------- */
 function taskHTML(t, withLead){
   const lead = S.leads.find(l=>l.id===t.lead_id);
@@ -1067,7 +1219,7 @@ function taskHTML(t, withLead){
     <div><div class="t">${esc(t.title)}</div>
       <div class="d"><span class="due">${t.due_at? (overdue?"Vencida · ":"Para ")+fmtDate(t.due_at) : "Sin fecha"}</span> · ${esc(who)}
       ${withLead && lead ? ` · <button class="linky" data-open="${lead.id}">${esc(lead.full_name || fmtPhone(lead.phone))}</button>` : ""}</div>
-      ${t.detail ? `<div class="d">${esc(t.detail)}</div>` : ""}</div>
+      ${t.detail ? `<div class="d det">${esc(t.detail)}</div>` : ""}</div>
   </div>`;
 }
 function bindTaskChecks(root, after){
@@ -1196,6 +1348,7 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => {
   if (b.dataset.view === "clients") loadClients();
   if (b.dataset.view === "results") loadResults();
   if (b.dataset.view === "cadence") loadCadence();
+  if (b.dataset.view === "tasks") loadAlertAdmin();
 });
 
 sb.auth.onAuthStateChange((ev) => { if (ev === "SIGNED_OUT") { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); } });
