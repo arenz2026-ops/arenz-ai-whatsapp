@@ -456,8 +456,10 @@ def run_trello_photos_task():
         return jsonify({"status": "no_trello_keys"}), 503
     if not (supabase_url and supabase_key):
         return jsonify({"status": "no_supabase"}), 503
+    # Sin clave de OpenAI no hay revisión visual: las fotos se cargan, pero ninguna se aprueba para clientes.
+    reviewer = trello_photos.ImageReviewer(OPENAI_API_KEY, OPENAI_MODEL) if OPENAI_API_KEY else None
     started = trello_photos.start_background(trello_photos.TrelloClient(*credentials),
-                                             trello_photos.MediaStore(supabase_url, supabase_key))
+                                             trello_photos.MediaStore(supabase_url, supabase_key), reviewer)
     return jsonify({"status": "started" if started else "already_running"}), 202
 
 

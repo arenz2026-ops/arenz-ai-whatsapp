@@ -168,7 +168,10 @@ aparece en varias fuentes: **Lista de Precios C2 > Power BI Tale > Trello**.
    tarjeta vinculada al inventario (máx. 15, fuera de VENDIDO/DESCARTADO), convierte HEIC/PNG a JPG de máx. 1600 px, los
    sube al bucket `inmuebles` (`proyectos/<slug>/<slug>_trello_NN.jpg`), los registra en `inventory_project_media` y llama a
    `sync_property_media_from_projects()`. Corre en segundo plano; `GET` del mismo enlace muestra el resultado. Es
-   idempotente, no toca tarjetas que ya tienen fotos curadas y se omiten adjuntos con nombre de documento (DNI, partida, contrato…). Se ejecuta cada lunes desde
+   idempotente, no toca tarjetas que ya tienen fotos curadas y se omiten adjuntos con nombre de documento (DNI, partida, contrato…). **Revisión visual**: cada imagen
+   nueva pasa por un modelo con visión (`OPENAI_API_KEY`, `OPENAI_MODEL`) antes de aprobarse. Solo `foto`, `render` y
+   `plano` quedan aprobadas; `no_enviar` (números de cuenta, vouchers, DNI, capturas…) o una revisión fallida quedan con
+   `approved_for_client = false` y aparecen en el log como *held for manual review*. Sin clave de OpenAI no se aprueba nada. Se ejecuta cada lunes desde
    GitHub Actions (`.github/workflows/fotos-trello.yml`) y a mano con **Actions → Fotos Trello → Run workflow**.
    - **Fotos por tipología**: `inventory_project_media.bedrooms` (opcional) limita una foto a las unidades con ese número
      de dormitorios; vacío = todas las unidades del proyecto. Las fotos que no están en Trello (p. ej. carpetas de Drive
