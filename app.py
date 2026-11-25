@@ -2573,6 +2573,33 @@ def pending_photos(store, phone, reference):
     return urls, [url for url in urls if url not in already]
 
 
+# 25/11: una foto de Trello era la del número de cuenta de la empresa. El cliente lo dijo dos veces y el bot respondió
+# "Ya te envié todas las fotos" y luego volvió a mostrar el listado.
+WRONG_IMAGE_WORDS = re.compile(r"(?:foto|imagen|im[aá]genes)\w* (?:\w+ ){0,2}no (?:es|son|corresponde)|"
+                               r"no (?:es|son|corresponde\w*) (?:una |la |el |de |al |a la )?(?:\w+ ){0,2}(?:fotos?|imagen|im[aá]genes)\b|"
+                               r"(?:foto|imagen) equivocada", re.IGNORECASE)
+ACCOUNT_WORDS = re.compile(r"\bn(?:ú|u)?(?:mero|ro)\.? de (?:la )?cuenta|cuenta bancaria|\bvoucher\b|\bdni\b", re.IGNORECASE)
+ASKS_FOR_ACCOUNT = re.compile(r"\?|\bcu[aá]l\b|p[aá]same|env[ií]a|m[aá]nda|\bdame\b|\bpasa\b", re.IGNORECASE)
+WRONG_IMAGE_REPLY = ("Tienes razón, disculpa 🙏 Esa imagen no corresponde al departamento. Gracias por avisarme. "
+                     "Un asesor de {brand} puede enviarte las fotos correctas. ¿Quieres que te contacte un asesor?")
+WRONG_IMAGE_HANDOFF_REPLY = ("Tienes razón, disculpa 🙏 Esa imagen no corresponde al departamento. El asesor de {brand} "
+                             "que te contactará te enviará las fotos correctas.")
+
+
+def wrong_image_complaint(text):
+    """'Es la foto del nro de cuenta, no es imagen de un inmueble' -- not '¿cuál es el número de cuenta?'."""
+    text = text or ""
+    if ACCOUNT_WORDS.search(text):
+        return not ASKS_FOR_ACCOUNT.search(text)
+    # "Esas fotos no son reales" pide fotos reales: lo responde real_photos_reply.
+    return bool(WRONG_IMAGE_WORDS.search(text)) and not REAL_PHOTO_WORDS.search(text)
+
+
+def wrong_image_reply(stage, reference):
+    logger.warning("Client reported a wrong image: reference=%s", reference)
+    return (WRONG_IMAGE_HANDOFF_REPLY if stage == "handoff" else WRONG_IMAGE_REPLY).format(brand=COMMERCIAL_BRAND)
+
+
 def asks_real_photos(text):
     """'Esas fotos no son reales, envíame fotos reales' (18/11): pide fotos reales, no rechaza las fotos."""
     return bool(PHOTO_WORDS.search(text or "") and REAL_PHOTO_WORDS.search(text or ""))
@@ -2624,6 +2651,9 @@ def photo_turn(store, phone, previous, text, reply, stage, selection=None):
                     photos=[{"reference": reference, "url": pending[0], "caption": offer}])
         return plan
     shown = latest_presented_references(previous)
+    if len(shown) == 1 and wrong_image_complaint(text):
+        closing = wrong_image_reply(stage, shown[0])
+        return {"stored": closing + photo_reference_marker(shown[0]), "text": closing, "photos": []}
     if len(shown) == 1 and asks_real_photos(text):
         closing = real_photos_reply(store, shown[0], stage)
         return {"stored": closing + photo_reference_marker(shown[0]), "text": closing, "photos": []}
@@ -3096,6 +3126,9 @@ def conversational_turn(sender, previous, text, observation, inventory_store):
         return ({"observation": observation, "search_state": turn_state, "criteria": criteria, "stage": new_stage,
                  "summary": summary, "plan": plan or {"stored": stored, "text": reply, "photos": []},
                  "inventory_matches": found[0], "inventory_cutoff": found[1]}, text)
+
+    if unit and wrong_image_complaint(text):
+        return done(wrong_image_reply(stage, unit), stage, f"Cliente reporta que una imagen de {unit} no corresponde al inmueble; revisar fotos.", unit)
 
     if unit and kind != "cierra" and (request == "negociar_precio" or NEGOTIATION_PATTERN.search(text or "")):
         found = matches()
