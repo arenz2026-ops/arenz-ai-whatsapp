@@ -59,14 +59,41 @@ class RunTest(unittest.TestCase):
         store.sync_units.return_value = 316
         return trello, store
 
+    def reviewer(self, *categorias):
+        reviewer = mock.Mock()
+        reviewer.review.side_effect = [{"categoria": c, "motivo": "x"} for c in categorias]
+        return reviewer
+
     def test_loads_missing_photos_and_syncs_units(self):
         trello, store = self.make([att(1), att(2, "plano.pdf", mime="application/pdf"), att(3)])
-        summary = tp.run(trello, store)
-        self.assertEqual(summary, {"tarjetas": 1, "fotos_nuevas": 2, "errores": 0, "unidades_con_fotos": 316})
+        summary = tp.run(trello, store, reviewer=self.reviewer("foto", "render"))
+        self.assertEqual(summary, {"tarjetas": 1, "fotos_nuevas": 2, "aprobadas": 2, "retenidas": 0, "errores": 0,
+                                   "unidades_con_fotos": 316})
         rows = [c.args[0] for c in store.add_media.call_args_list]
         self.assertEqual([r["display_order"] for r in rows], [1, 2])
         self.assertEqual(rows[0]["storage_path"], "proyectos/torre-bolivar-pueblo-libre/torre-bolivar-pueblo-libre_trello_01.jpg")
-        self.assertTrue(all(r["approved_for_client"] and r["category"] == "foto" and r["trello_short_link"] == "abc123" for r in rows))
+        self.assertEqual([r["category"] for r in rows], ["foto", "render"])
+        self.assertTrue(all(r["approved_for_client"] and r["trello_short_link"] == "abc123" for r in rows))
+
+    def test_numero_de_cuenta_queda_retenido(self):
+        """25/11: la 'foto' de vd022 San Miguel era el número de cuenta de la empresa y llegó a un cliente."""
+        trello, store = self.make([att(1), att(2)])
+        summary = tp.run(trello, store, reviewer=self.reviewer("no_enviar", "foto"))
+        rows = [c.args[0] for c in store.add_media.call_args_list]
+        self.assertEqual([(r["category"], r["approved_for_client"], r["approved_at"] is None) for r in rows],
+                         [("no_enviar", False, True), ("foto", True, False)])
+        self.assertEqual((summary["aprobadas"], summary["retenidas"]), (1, 1))
+
+    def test_sin_revisor_o_si_falla_nada_se_aprueba(self):
+        trello, store = self.make([att(1), att(2)])
+        reviewer = mock.Mock()
+        reviewer.review.side_effect = [RuntimeError("caído"), {"categoria": "foto", "motivo": "x"}]
+        tp.run(trello, store, reviewer=reviewer)
+        self.assertEqual([c.args[0]["approved_for_client"] for c in store.add_media.call_args_list], [False, True])
+        trello, store = self.make([att(1)])
+        tp.run(trello, store)
+        self.assertEqual(store.add_media.call_args.args[0]["category"], "revisar")
+        self.assertFalse(store.add_media.call_args.args[0]["approved_for_client"])
 
     def test_idempotent_skips_loaded_orders(self):
         trello, store = self.make([att(1), att(2)], have={"abc123": {1, 2}})
@@ -105,6 +132,22 @@ class RunTest(unittest.TestCase):
         trello.download.side_effect = [b"not an image", image_bytes("JPEG", (10, 10))]
         summary = tp.run(trello, store)
         self.assertEqual((summary["fotos_nuevas"], summary["errores"]), (1, 1))
+
+    def test_reviewer_sends_image_and_reads_verdict(self):
+        session = mock.Mock()
+        session.post.return_value.json.return_value = {"output": [{"content": [
+            {"type": "output_text", "text": '{"categoria": "no_enviar", "motivo": "captura con datos bancarios"}'}]}]}
+        verdict = tp.ImageReviewer("K", "gpt-4.1-mini", session).review(b"jpeg")
+        self.assertEqual(verdict["categoria"], "no_enviar")
+        content = session.post.call_args.kwargs["json"]["input"][0]["content"]
+        self.assertTrue(content[1]["image_url"].startswith("data:image/jpeg;base64,"))
+        self.assertIn("número de cuenta", content[0]["text"])
+
+    def test_reviewer_rejects_unknown_category(self):
+        session = mock.Mock()
+        session.post.return_value.json.return_value = {"output_text": '{"categoria": "selfie", "motivo": "x"}'}
+        with self.assertRaises(ValueError):
+            tp.ImageReviewer("K", session=session).review(b"jpeg")
 
     def test_download_uses_oauth_header(self):
         session = mock.Mock()

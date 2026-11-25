@@ -6,11 +6,17 @@ proceso las descarga, las convierte a JPG (máx. 1600 px), las sube al bucket p�
 (`proyectos/<slug>/<slug>_trello_NN.jpg`) y las registra en `inventory_project_media`; al final llama a
 `sync_property_media_from_projects()`, que las copia a cada unidad (`inventory_property_media`).
 
+Revisión visual (25/11: una "foto" de Trello era el número de cuenta de la empresa y llegó a un cliente): antes de
+aprobar, cada imagen pasa por un modelo con visión (ImageReviewer). Solo se aprueban foto real, render o plano; lo demás
+(documentos, capturas, vouchers…) o si la revisión falla, queda con approved_for_client = false para revisarla a mano.
+
 Es idempotente: cada foto ocupa un display_order (1..MAX_PHOTOS_PER_CARD) y las ya cargadas no se
 vuelven a procesar, así que se puede repetir sin duplicar. Solo toca tarjetas vinculadas al inventario,
 fuera de VENDIDO / DESCARTADO, y que no tengan fotos cargadas por otra vía (las curadas a mano se respetan).
 """
+import base64
 import io
+import json
 import logging
 import os
 import re
@@ -35,6 +41,61 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp")
 PRIVATE_NAMES = re.compile(r"dni|documento|partida|contrato|recibo|voucher|minuta|escritura|copia\s*literal|"
                            r"vigencia|ficha\s*registral|captura|screenshot", re.IGNORECASE)
 STATUS_SUFFIX = re.compile(r"_(lanzamiento|preventa|construcci[oó]n|construci[oó]n|entrega.*)$", re.IGNORECASE)
+
+
+REVIEW_CATEGORIES = ("foto", "render", "plano", "no_enviar")
+APPROVED_CATEGORIES = {"foto", "render", "plano"}
+REVIEW_PROMPT = (
+    "Eres el control de calidad de las imágenes que una inmobiliaria envía por WhatsApp a sus clientes como fotos de un "
+    "departamento o proyecto. Mira la imagen y clasifícala:\n"
+    "- foto: fotografía real del inmueble, del edificio o de sus áreas comunes, interior o exterior.\n"
+    "- render: imagen generada por computadora del inmueble o del proyecto.\n"
+    "- plano: plano o distribución del departamento o del edificio.\n"
+    "- no_enviar: cualquier otra cosa: número de cuenta, datos bancarios o de pago, voucher, DNI u otro documento, "
+    "contrato, captura de pantalla, chat, lista de precios, flyer con datos de pago o de contacto, fotos de personas, "
+    "imagen borrosa o que no se reconoce. Ante la duda, no_enviar.\n"
+    "En 'motivo' describe en pocas palabras qué se ve, sin copiar números ni datos personales.")
+REVIEW_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["categoria", "motivo"],
+                 "properties": {"categoria": {"type": "string", "enum": list(REVIEW_CATEGORIES)},
+                                "motivo": {"type": "string"}}}
+
+
+class ImageReviewer:
+    """Mira cada imagen con un modelo con visión antes de aprobarla para clientes."""
+
+    def __init__(self, api_key, model="gpt-4.1-mini", session=None):
+        self.api_key, self.model = api_key, model
+        self.http = session or requests.Session()
+
+    def review(self, jpeg):
+        """{'categoria': foto|render|plano|no_enviar, 'motivo': str}."""
+        image = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        payload = {"model": self.model, "max_output_tokens": 100,
+                   "input": [{"role": "user", "content": [{"type": "input_text", "text": REVIEW_PROMPT},
+                                                          {"type": "input_image", "image_url": image, "detail": "low"}]}],
+                   "text": {"format": {"type": "json_schema", "name": "revision_imagen", "strict": True, "schema": REVIEW_SCHEMA}}}
+        response = self.http.post("https://api.openai.com/v1/responses", json=payload, timeout=60,
+                                  headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"})
+        response.raise_for_status()
+        data = response.json()
+        text = data.get("output_text") or next(
+            part["text"] for item in data.get("output", []) for part in item.get("content", []) if part.get("type") == "output_text")
+        verdict = json.loads(text)
+        if verdict.get("categoria") not in REVIEW_CATEGORIES:
+            raise ValueError("unknown category")
+        return verdict
+
+
+def review_photo(reviewer, jpeg, log=logger):
+    """(category, approved). Sin revisor o si la revisión falla, la imagen queda retenida."""
+    if not reviewer:
+        return "revisar", False
+    try:
+        verdict = reviewer.review(jpeg)
+    except Exception as error:  # la revisión nunca aprueba por defecto
+        log.warning("Photo review failed: category=%s", type(error).__name__)
+        return "revisar", False
+    return verdict["categoria"], verdict["categoria"] in APPROVED_CATEGORIES
 
 
 def trello_credentials():
@@ -161,10 +222,10 @@ def card_slug(card, slugs):
     return slug if owner in (None, card["short_link"]) else f"{slug}-{card['short_link'].lower()}"
 
 
-def run(trello, store, now=None, log=logger):
+def run(trello, store, now=None, log=logger, reviewer=None):
     """Carga las fotos que falten. Devuelve un resumen con contadores."""
     now = now or datetime.now(timezone.utc)
-    summary = {"tarjetas": 0, "fotos_nuevas": 0, "errores": 0, "unidades_con_fotos": None}
+    summary = {"tarjetas": 0, "fotos_nuevas": 0, "aprobadas": 0, "retenidas": 0, "errores": 0, "unidades_con_fotos": None}
     orders, slugs = store.existing_media()
     for card in store.inventory_cards():
         have = orders.get(card["short_link"], set())
@@ -186,11 +247,15 @@ def run(trello, store, now=None, log=logger):
             try:
                 jpeg = to_jpeg(trello.download(attachment["url"]))
                 path = f"proyectos/{slug}/{slug}_trello_{order:02d}.jpg"
+                category, approved = review_photo(reviewer, jpeg, log)
                 url = store.upload(path, jpeg)
                 store.add_media({"media_url": url, "storage_path": path, "project_slug": slug,
-                                 "trello_short_link": card["short_link"], "category": "foto", "display_order": order,
-                                 "approved_for_client": True, "approved_at": now.isoformat()})
+                                 "trello_short_link": card["short_link"], "category": category, "display_order": order,
+                                 "approved_for_client": approved, "approved_at": now.isoformat() if approved else None})
                 summary["fotos_nuevas"] += 1
+                summary["aprobadas" if approved else "retenidas"] += 1
+                if not approved:
+                    log.warning("Trello photo held for manual review: card=%s order=%s category=%s", card["short_link"], order, category)
             except Exception as error:  # una foto dañada no detiene el resto
                 log.warning("Trello photo skipped: card=%s order=%s category=%s", card["short_link"], order, type(error).__name__)
                 summary["errores"] += 1
@@ -208,7 +273,7 @@ def state():
     return dict(_state)
 
 
-def start_background(trello, store):
+def start_background(trello, store, reviewer=None):
     """Lanza run() en un hilo (puede tardar minutos: gunicorn corta las peticiones a los 30 s)."""
     if not _lock.acquire(blocking=False):
         return False
@@ -216,7 +281,7 @@ def start_background(trello, store):
     def worker():
         _state.update(status="running", started_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), finished_at=None, result=None)
         try:
-            _state["result"] = run(trello, store)
+            _state["result"] = run(trello, store, reviewer=reviewer)
             _state["status"] = "done"
         except Exception as error:
             logger.warning("Trello photo sync failed: category=%s", type(error).__name__)
