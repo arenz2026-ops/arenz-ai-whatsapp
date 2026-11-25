@@ -589,6 +589,21 @@ CASOS = [
          enviadas=fotos_enviadas("C2-268EAF11F560", 15), ia=ia("general_question", ""),
          espera=[NO_CIERRA, NO_DERIVA, contiene("en construcción"), contiene("referenciales"), contiene("te contacte un asesor")]),
 
+    # ---- 25/11: una foto de Trello era el número de cuenta de la empresa. El bot respondió "Ya te envié todas las fotos"
+    # y luego repitió el listado.
+    dict(id="real_2511_foto_del_numero_de_cuenta", grupo="fotos", real=True,
+         cliente="Es la foto del nro de cuenta, no es imagen de un inmueble",
+         historia=historial("property_detail", CRITERIOS_CHORRILLOS, "1", "🏠 DEPARTAMENTO EN VENTA – UNIVERSO, CHORRILLOS\n"
+                            "💰 PRECIO DE VENTA: S/ 295,000\n\nRef. C2-D5ACE8F77103"),
+         enviadas=TODAS_UNI, ia=ia("unknown", ""),
+         espera=[NO_CIERRA, NO_DERIVA, contiene("no corresponde al departamento"), contiene("te contacte un asesor"),
+                 no_contiene("Ya te envié todas las fotos")]),
+    dict(id="real_2511_es_el_numero_de_cuenta_de_tu_empresa", grupo="fotos", real=True, cliente="Es el nro de cuenta de tu empresa",
+         historia=historial("property_detail", CRITERIOS_CHORRILLOS, "1", "🏠 DEPARTAMENTO EN VENTA – UNIVERSO, CHORRILLOS\n"
+                            "💰 PRECIO DE VENTA: S/ 295,000\n\nRef. C2-D5ACE8F77103"),
+         enviadas=TODAS_UNI, ia=ia("unknown", ""),
+         espera=[NO_CIERRA, NO_DERIVA, contiene("no corresponde al departamento"), no_contiene("Responde con el número")]),
+
     # ---- distritos con artículo (17/11: "La Victoria" -> "no te entendí" tres veces)
     dict(id="real_1711_santa_catalina_la_victoria", grupo="distrito", real=True, cliente="Santa Catalina La Victoria",
          historia=H_DISTRITOS,
@@ -717,6 +732,8 @@ CLASES = {
     "mas_imagenes_sin_fotos_pendientes": ("pide_otra_cosa", "fotos"),
     "real_1811_esas_fotos_no_son_reales": ("rechaza",),  # lo que devolvió la IA real
     "fotos_reales_proyecto_en_construccion": ("otra",),
+    "real_2511_foto_del_numero_de_cuenta": ("otra", "dato_unidad"),  # lo que devolvió la IA real
+    "real_2511_es_el_numero_de_cuenta_de_tu_empresa": ("otra",),
     "negociacion_real_a_ese_precio": ("otra",),  # lo que devolvió la IA real: la regla de respaldo lo detecta
     "negociacion_me_lo_dejas": ("pide_otra_cosa", "negociar_precio"),
     "negociacion_si_al_asesor": ("acepta",),
